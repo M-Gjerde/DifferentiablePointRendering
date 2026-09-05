@@ -4,6 +4,7 @@
 #include "PrimalKernels.h"
 #include "IntersectionKernels.h"
 #include "KernelHelpers.h"
+#include "Core/ScopedTimer.h"
 #include <cmath>
 namespace Pale {
 void launchRayGenEmitterKernel(RenderPackage &pkg, uint32_t forwardPass) {
@@ -183,9 +184,15 @@ void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
     });
     kernelEvent2.wait();
 }
-void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+// Host-selected variants remove unused lighting branches and profiling state
+// from each work item without changing samples, hit limits, or transport.
+template<bool SharedLighting, bool ProfileCounters>
+class CameraRgbGatherKernel;
+
+template<bool SharedLighting, bool ProfileCounters>
+static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex) {
     auto &queue = pkg.queue;
-    auto &scene = pkg.scene;
+    const auto sceneCapture = pkg.scene;
     auto &settings = pkg.settings;
     const PrimalActivityStats primalActivityStats = pkg.primalActivityStats;
     auto &photonMap = pkg.intermediates.map;
@@ -193,22 +200,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
     const uint32_t imageWidth = sensor.camera.width;
     const uint32_t imageHeight = sensor.camera.height;
     const uint32_t pixelCount = imageWidth * imageHeight;
-    queue.fill(sensor.framebuffer, float4{0.0f}, pixelCount).wait();
-    queue.fill(sensor.medianDepthBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.meanDepthBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.medianWorldPositionBuffer, float4{0.0f}, pixelCount).wait();
-    queue.fill(sensor.visibleNormalBuffer, float4{0.0f}, pixelCount).wait();
-    queue.fill(sensor.normalFromDepthBuffer, float4{0.0f}, pixelCount).wait();
-    queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount).wait();
-    queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount).wait();
-    queue.fill(sensor.visibilityWeightedOpacityBuffer, 0.0f, pixelCount).wait();
-    sycl::event kernelEvent3 = queue.parallel_for<class CameraGatherKernel>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
+    ScopedTimer gatherTimer("Forward camera: RGB gather", spdlog::level::debug);
+    sycl::event kernelEvent3 = queue.parallel_for<CameraRgbGatherKernel<SharedLighting, ProfileCounters>>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
+        GPUSceneBuffers scene = sceneCapture;
+        if constexpr (!ProfileCounters) scene.profileCounters = nullptr;
         constexpr float kAlphaEpsilon = 1.0e-8f;
         const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
         const uint32_t pixelX = pixelIndex % imageWidth;
@@ -221,14 +216,13 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         const uint32_t pointHitBatchLookaheadCapacity =
             rendererDebugPointHitBatchLookaheadCapacity(settings);
         const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
-        const bool shareLocalLayerDirectLighting = settings.rendererDebugShareLocalLayerDirectLighting;
-        const bool profileEnabled = scene.profileCounters != nullptr;
+        constexpr bool shareLocalLayerDirectLighting = SharedLighting;
+        constexpr bool profileEnabled = ProfileCounters;
         uint64_t profilePointHitQueries = 0u;
         uint64_t profilePointHitCandidates = 0u;
         uint64_t profileLocalLayers = 0u;
         uint64_t profileLocalLayerHits = 0u;
         uint64_t profileObjectProfileHits = 0u;
-        uint64_t profileLowPassProfileHits = 0u;
         uint64_t profileRegularizerHits = 0u;
         uint64_t profilePhotonGatherCalls = 0u;
         uint64_t profileDirectLightCalls = 0u;
@@ -240,11 +234,6 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         uint64_t profileMaxSplatTerminations = 0u;
         bool profileStoppedByNoHit = false;
         bool profileStoppedByOpacity = false;
-        const MinimumProjectedFootprintFilter minimumFootprintFilter =
-            minimumProjectedFootprintFilterFromSettings(
-                settings,
-                sensor.camera,
-                float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
         uint32_t directPointInstanceIndex = kInvalidIndex;
         const bool canUsePointHitBatches =
             pointHitBatchSize > 1u &&
@@ -345,13 +334,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             if (profileEnabled) {
                 profileLocalLayers += 1u;
                 profileLocalLayerHits += localLayer.hitCount;
-                for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
-                    if (localLayer.hits[localHitIndex].alphaProfileBranch == kSurfelAlphaProfileLowPass) {
-                        profileLowPassProfileHits += 1u;
-                    } else {
-                        profileObjectProfileHits += 1u;
-                    }
-                }
+                profileObjectProfileHits += localLayer.hitCount;
             }
             if (localLayer.hitCount == 0u) {
                 return;
@@ -533,8 +516,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     std::numeric_limits<float>::infinity(),
                     pointHits,
                     pointHitBatchLookaheadCapacity,
-                    pointInstanceIndex,
-                    minimumFootprintFilter);
+                    pointInstanceIndex);
                 if (profileEnabled) {
                     profilePointHitQueries += 1u;
                     profilePointHitCandidates += hitCount;
@@ -654,8 +636,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                         scene,
                         localLayerDepthEpsilon,
                         maxLocalSurfelHits,
-                        localLayerNormalCosineThreshold,
-                        minimumFootprintFilter);
+                        localLayerNormalCosineThreshold);
                     if (profileEnabled) {
                         profilePointHitCandidates += localLayer.hitCount;
                     }
@@ -718,6 +699,17 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         // =====================================================================
         // Store regularizer outputs.
         // =====================================================================
+        // Every forward output is overwritten by its producing kernel. Reset
+        // only the adjoint inputs here, avoiding 15 separate blocking clears.
+        sensor.depthDistortionAdjointBuffer[pixelIndex] = 0.0f;
+        sensor.intraSlabDepthAdjointBuffer[pixelIndex] = 0.0f;
+        sensor.curvatureScaleAdjointBuffer[pixelIndex] = 0.0f;
+        // These outputs must also be fresh when the optional curvature pass is skipped.
+        sensor.curvatureScaleBuffer[pixelIndex] = 0.0f;
+        sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
+        if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
+            sensor.curvaturePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
+        }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         sensor.intraSlabDepthBuffer[pixelIndex] = intraSlabDepthLossSum;
         sensor.intraSlabDepthActiveSlabCountBuffer[pixelIndex] =
@@ -750,7 +742,6 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             addRenderProfileCounter(&counters->forwardGatherLocalLayers, profileLocalLayers);
             addRenderProfileCounter(&counters->forwardGatherLocalLayerHits, profileLocalLayerHits);
             addRenderProfileCounter(&counters->forwardGatherObjectProfileHits, profileObjectProfileHits);
-            addRenderProfileCounter(&counters->forwardGatherLowPassProfileHits, profileLowPassProfileHits);
             addRenderProfileCounter(&counters->forwardGatherRegularizerHits, profileRegularizerHits);
             addRenderProfileCounter(&counters->forwardGatherPhotonGatherCalls, profilePhotonGatherCalls);
             addRenderProfileCounter(&counters->forwardGatherDirectLightCalls, profileDirectLightCalls);
@@ -763,10 +754,29 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         }
     });
     kernelEvent3.wait();
+    gatherTimer.stop();
+}
+
+void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+    if (pkg.settings.rendererDebugShareLocalLayerDirectLighting) {
+        if (pkg.scene.profileCounters) launchCameraRgbGatherKernel<true, true>(pkg, cameraIndex);
+        else launchCameraRgbGatherKernel<true, false>(pkg, cameraIndex);
+    } else {
+        if (pkg.scene.profileCounters) launchCameraRgbGatherKernel<false, true>(pkg, cameraIndex);
+        else launchCameraRgbGatherKernel<false, false>(pkg, cameraIndex);
+    }
+    auto &queue = pkg.queue;
+    auto &scene = pkg.scene;
+    auto &settings = pkg.settings;
+    SensorGPU sensor = pkg.sensors[cameraIndex];
+    const uint32_t imageWidth = sensor.camera.width;
+    const uint32_t imageHeight = sensor.camera.height;
+    const uint32_t pixelCount = imageWidth * imageHeight;
     // -------------------------------------------------------------------------
     // Pass 2:
     //   Normal from 2DGS-style pseudo surface depth map
     // -------------------------------------------------------------------------
+    ScopedTimer normalTimer("Forward camera: normals from depth", spdlog::level::debug);
     sycl::event kernelEvent4 = queue.parallel_for<class SurfaceDepthNormalKernel>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
         const std::uint32_t pixelIndex = tid[0];
         const std::uint32_t x = pixelIndex % imageWidth;
@@ -821,6 +831,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         sensor.normalFromDepthBuffer[pixelIndex] = float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
     });
     kernelEvent4.wait();
+    normalTimer.stop();
 
     // -------------------------------------------------------------------------
     // Pass 3: curvature-aware surfel-scale regularizer.
@@ -845,16 +856,22 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
     const float slabThickness = rendererDebugLocalLayerDepthEpsilon(settings);
     const CurvatureDensificationStats curvatureDensificationStats =
         pkg.curvatureDensificationStats;
+    const bool hasCurvatureDensificationConsumer =
+        curvatureDensificationStats.numPoints == scene.pointCount &&
+        curvatureDensificationStats.violationSum != nullptr &&
+        curvatureDensificationStats.violationCount != nullptr &&
+        curvatureDensificationStats.directionTensorUu != nullptr &&
+        curvatureDensificationStats.directionTensorUv != nullptr &&
+        curvatureDensificationStats.directionTensorVv != nullptr;
+    if (settings.curvatureScaleRegularizerWeight == 0.0f &&
+        !hasCurvatureDensificationConsumer && !settings.computeCurvatureDiagnostics) {
+        return;
+    }
+    ScopedTimer curvatureTimer("Forward camera: curvature and slab search", spdlog::level::debug);
     sycl::event scaleCurvatureEvent = queue.parallel_for<class ScaleCurvatureRegularizerKernel2>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
             const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
             const uint32_t pixelX = pixelIndex % imageWidth;
             const uint32_t pixelY = pixelIndex / imageWidth;
-
-            sensor.curvatureScaleBuffer[pixelIndex] = 0.0f;
-            sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
-            if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
-                sensor.curvaturePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
-            }
 
             // N(x+1,y) and N(x,y+1) must exist. Their validity flag also rejects
             // the border invalidated by SurfaceDepthNormalKernel.
@@ -939,7 +956,6 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
             const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
             const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
-            const MinimumProjectedFootprintFilter minimumFootprintFilter = minimumProjectedFootprintFilterFromSettings(settings, sensor.camera, float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
 
             float closestSurfaceDepthDifference = std::numeric_limits<float>::infinity();
             PointCloudLocalLayer selectedLayer{};
@@ -956,7 +972,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 if (instance.geometryType == GeometryType::Mesh) { break; }
                 if (instance.geometryType != GeometryType::PointCloud) { break; }
 
-                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(scaleRegularizerRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold, minimumFootprintFilter);
+                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(scaleRegularizerRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold);
                 if (localLayer.hitCount == 0u) { break; }
 
                 const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
@@ -1156,6 +1172,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 1u;
     });
     scaleCurvatureEvent.wait();
+    curvatureTimer.stop();
 }
 
 void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPassIdx) {
@@ -1215,11 +1232,6 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         float accumulatedMeanDepth = 0.0f;
         const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
         const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
-        const MinimumProjectedFootprintFilter minimumFootprintFilter =
-            minimumProjectedFootprintFilterFromSettings(
-                settings,
-                sensor.camera,
-                float2{static_cast<float>(pixelX), static_cast<float>(pixelY)});
         uint32_t directPointInstanceIndex = kInvalidIndex;
         const bool canUsePointHitBatches =
             pointHitBatchSize > 1u &&
@@ -1290,8 +1302,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                     std::numeric_limits<float>::infinity(),
                     pointHits,
                     batchCapacity,
-                    pointInstanceIndex,
-                    minimumFootprintFilter);
+                    pointInstanceIndex);
 
                 if (hitCount == 0u) { break; }
 
@@ -1325,12 +1336,6 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                     pointHit.alphaGeom = worldHit.alphaGeom;
                     pointHit.hitPositionW = worldHit.hitPositionW;
                     pointHit.uv = phiInverse(worldHit.hitPositionW, scene.points[worldHit.primitiveIndex]);
-                    pointHit.objectAlphaGeom = worldHit.alphaGeom;
-                    pointHit.lowPassAlphaGeom = 0.0f;
-                    pointHit.lowPassDeltaPixels = float2{0.0f, 0.0f};
-                    pointHit.lowPassSigmaPixels = 0.0f;
-                    pointHit.alphaProfileBranch = kSurfelAlphaProfileObject;
-                    pointHit.usesSurfelCenterHitPosition = 0u;
                     accumulatePointHit(pointHit);
                     primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
                     continue;

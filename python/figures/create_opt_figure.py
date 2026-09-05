@@ -119,6 +119,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--slow-start-speedup-until-iteration",
+        type=int,
+        default=2000,
+        help=(
+            "Gradually increase from the slow-start frame stride to --frame-stride "
+            "between --slow-start-until-iteration and this iteration. Set equal to "
+            "--slow-start-until-iteration for an immediate transition."
+        ),
+    )
+    parser.add_argument(
         "--slow-start-frame-density",
         "--slow-start-duration-scale",
         dest="slow_start_frame_density",
@@ -516,6 +526,7 @@ def select_render_frames_for_gif(
     frame_stride: int,
     max_gif_frames: int | None,
     slow_start_until_iteration: int,
+    slow_start_speedup_until_iteration: int,
     slow_start_frame_stride: int,
 ) -> List[Path]:
     if frame_stride < 1:
@@ -528,19 +539,48 @@ def select_render_frames_for_gif(
         raise ValueError(
             f"--slow-start-frame-stride must be >= 1, got {slow_start_frame_stride}"
         )
+    if slow_start_speedup_until_iteration < slow_start_until_iteration:
+        raise ValueError(
+            "--slow-start-speedup-until-iteration must be >= "
+            "--slow-start-until-iteration, got "
+            f"{slow_start_speedup_until_iteration} < {slow_start_until_iteration}"
+        )
 
     selected_frame_paths = []
+    next_selected_frame_index = 0.0
     for frame_index, render_frame_path in enumerate(render_frame_paths):
+        if frame_index + 1.0e-9 < next_selected_frame_index:
+            continue
+
+        selected_frame_paths.append(render_frame_path)
         render_iteration = parse_frame_index_from_name(render_frame_path, "render")
         use_slow_start_stride = (
             slow_start_until_iteration > 0
             and render_iteration is not None
             and render_iteration <= slow_start_until_iteration
         )
-        active_stride = slow_start_frame_stride if use_slow_start_stride else frame_stride
+        use_speedup_ramp = (
+            slow_start_until_iteration > 0
+            and render_iteration is not None
+            and slow_start_until_iteration < render_iteration
+            and render_iteration < slow_start_speedup_until_iteration
+        )
 
-        if frame_index % active_stride == 0:
-            selected_frame_paths.append(render_frame_path)
+        if use_slow_start_stride:
+            active_stride = float(slow_start_frame_stride)
+        elif use_speedup_ramp:
+            ramp_progress = (
+                (render_iteration - slow_start_until_iteration)
+                / (slow_start_speedup_until_iteration - slow_start_until_iteration)
+            )
+            active_stride = (
+                slow_start_frame_stride
+                + (frame_stride - slow_start_frame_stride) * ramp_progress
+            )
+        else:
+            active_stride = float(frame_stride)
+
+        next_selected_frame_index = frame_index + max(1.0, active_stride)
 
     if render_frame_paths[-1] not in selected_frame_paths:
         selected_frame_paths.append(render_frame_paths[-1])
@@ -625,6 +665,7 @@ def build_gif(
     max_gif_frames: int | None,
     last_frame_hold_seconds: float,
     slow_start_until_iteration: int,
+    slow_start_speedup_until_iteration: int,
     slow_start_frame_stride: int,
 ) -> Path:
     renders_dir = run_dir / "renders"
@@ -658,6 +699,7 @@ def build_gif(
         frame_stride=frame_stride,
         max_gif_frames=max_gif_frames,
         slow_start_until_iteration=slow_start_until_iteration,
+        slow_start_speedup_until_iteration=slow_start_speedup_until_iteration,
         slow_start_frame_stride=slow_start_frame_stride,
     ) if all_render_frame_paths else []
 
@@ -718,7 +760,7 @@ def build_gif(
         font,
     )
 
-    output_path = renders_dir / output_name
+    output_path = run_dir / output_name
 
     base_duration_ms = max(1, int(round(1000.0 / max(fps, 1.0e-6))))
 
@@ -872,6 +914,7 @@ def main() -> None:
         max_gif_frames=args.max_gif_frames,
         last_frame_hold_seconds=args.last_frame_hold_seconds,
         slow_start_until_iteration=args.slow_start_until_iteration,
+        slow_start_speedup_until_iteration=args.slow_start_speedup_until_iteration,
         slow_start_frame_stride=slow_start_frame_stride,
     )
 
@@ -886,7 +929,8 @@ def main() -> None:
         print(
             "Slow start       : "
             f"<= iter {args.slow_start_until_iteration}, "
-            f"frame stride {slow_start_frame_stride}"
+            f"frame stride {slow_start_frame_stride}; speed up through iter "
+            f"{args.slow_start_speedup_until_iteration} to frame stride {args.frame_stride}"
         )
     else:
         print("Slow start       : disabled")

@@ -57,9 +57,16 @@ public:
     ScopedTimer &operator=(ScopedTimer &&) = delete;
 
     ~ScopedTimer() {
+        stop();
+    }
+
+    // End a stage before the surrounding function returns. Calling stop again
+    // (including from the destructor) must not record the same stage twice.
+    void stop() {
         if (!m_enabled) {
             return;
         }
+        m_enabled = false;
 
         const auto end = Clock::now();
         const double durationMs = std::chrono::duration<double, std::milli>(end - m_start).count();

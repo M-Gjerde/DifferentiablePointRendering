@@ -278,7 +278,11 @@ def rebuild_optimizer_preserving_state(
                 continue
 
             if value.ndim >= 1 and value.shape[0] == old_n:
-                out = torch.zeros_like(new_p.data)
+                out = torch.zeros(
+                    (new_n,) + tuple(value.shape[1:]),
+                    device=new_p.device,
+                    dtype=value.dtype,
+                )
 
                 keep_idx_t = torch.as_tensor(keep_idx_np, device=value.device, dtype=torch.long)
                 kept_value = value.index_select(0, keep_idx_t)
@@ -1157,7 +1161,7 @@ def save_manual_snapshot(
         primitive_ages: np.ndarray | None = None,
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
-        densification_position_threshold: float | None = None,
+        densification_position_threshold: float | np.ndarray | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     renders_dir = renders_output_dir(output_dir)
@@ -1238,7 +1242,7 @@ def save_iteration_point_cloud_snapshot(
         primitive_ages: np.ndarray | None = None,
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
-        densification_position_threshold: float | None = None,
+        densification_position_threshold: float | np.ndarray | None = None,
 ) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -1695,6 +1699,7 @@ def update_densification_statistics(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         densify_position_grad_vector_accum_np: np.ndarray,
+        densify_radiance_rms_accum_np: np.ndarray,
         rotations: torch.Tensor,
         albedos: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
@@ -1702,8 +1707,10 @@ def update_densification_statistics(
         densify_bsdf_gamma: float,
         densify_position_grad_per_camera_np: np.ndarray,
         densify_position_grad_per_camera_count_np: np.ndarray,
+        densify_radiance_rms_sum_per_camera_np: np.ndarray | None = None,
         densification_downweight_normal_gradients: bool = False,
         densification_tangent_only: bool = True,
+        densification_relative_error: bool = False,
 ) -> None:
     if densification_interval <= 0:
         return
@@ -1764,6 +1771,43 @@ def update_densification_statistics(
         raise RuntimeError(
             "Densification accumulator point-count mismatch: "
             f"accum={densify_position_grad_accum_np.shape[0]}, renderer_stats={point_count}"
+        )
+
+    if densify_radiance_rms_accum_np.shape != (point_count, 1):
+        raise RuntimeError(
+            "Densification radiance accumulator must have shape "
+            f"{(point_count, 1)}, got {densify_radiance_rms_accum_np.shape}"
+        )
+
+    per_camera_radiance_rms_np: np.ndarray | None = None
+    if densification_relative_error:
+        if densify_radiance_rms_sum_per_camera_np is None:
+            raise RuntimeError(
+                "Relative densification requires renderer gradient stat "
+                "'clone_radiance_rms_sum_per_camera'. Rebuild the pale module."
+            )
+        radiance_sum_np = np.asarray(
+            densify_radiance_rms_sum_per_camera_np,
+            dtype=np.float32,
+            order="C",
+        )
+        if radiance_sum_np.shape != (point_count, camera_count):
+            raise RuntimeError(
+                "densify_radiance_rms_sum_per_camera_np must have shape "
+                f"{(point_count, camera_count)}, got {radiance_sum_np.shape}"
+            )
+        per_camera_radiance_rms_np = np.zeros_like(radiance_sum_np)
+        np.divide(
+            radiance_sum_np,
+            per_camera_count_np,
+            out=per_camera_radiance_rms_np,
+            where=per_camera_count_np > 0,
+        )
+        per_camera_radiance_rms_np = np.nan_to_num(
+            per_camera_radiance_rms_np,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
         )
 
     with torch.no_grad():
@@ -1860,11 +1904,12 @@ def update_densification_statistics(
     density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
     densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
 
-    linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
-    bsdf_normalizer_np = (np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma).astype(
-        np.float32)
-    densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
-    density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
+    if not densification_relative_error:
+        linear_rgb_bsdf_scale_np = np.mean(albedo_np, axis=1)
+        bsdf_normalizer_np = (np.maximum(linear_rgb_bsdf_scale_np, densify_bsdf_floor) ** densify_bsdf_gamma).astype(
+            np.float32)
+        densify_position_signal_np = densify_position_signal_np / bsdf_normalizer_np[:, None]
+        density_grad_position_vector_np = density_grad_position_vector_np / bsdf_normalizer_np[:, None]
 
     densify_position_signal_np = np.nan_to_num(
         densify_position_signal_np,
@@ -1890,6 +1935,20 @@ def update_densification_statistics(
         densify_position_signal_np[update_density_scalar_mask_np, 0]
     )
     densify_position_grad_denom_np[update_density_scalar_mask_np, 0] += 1.0
+
+    if per_camera_radiance_rms_np is not None:
+        mean_visible_radiance_rms_np = (
+            per_camera_radiance_rms_np * visible_mask_float_np
+        ).sum(axis=1) / safe_active_camera_count_np[:, 0]
+        mean_visible_radiance_rms_np = np.nan_to_num(
+            mean_visible_radiance_rms_np,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        densify_radiance_rms_accum_np[update_density_scalar_mask_np, 0] += (
+            mean_visible_radiance_rms_np[update_density_scalar_mask_np]
+        )
 
     vector_norm_np = np.linalg.norm(density_grad_position_vector_np, axis=1)
 
@@ -2011,8 +2070,12 @@ def position_densification_snapshot_statistics(
         trainable_surfel_mask: torch.Tensor,
         densification_grad_quantile: float,
         densification_grad_abs_min: float,
-) -> tuple[np.ndarray, np.ndarray, float, float]:
-    """Return the exact scalar signal and effective threshold used for position splits."""
+        densify_radiance_rms_accum_np: np.ndarray | None = None,
+        densification_radiance_floor: float = 1.0e-3,
+        densification_radiance_quantile_bins: int = 1,
+        densification_radiance_quantile_min_bin_size: int = 16,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """Return position signals and exact global/per-surfel selection thresholds."""
     accum = np.asarray(densify_position_grad_accum_np, dtype=np.float32).reshape(-1)
     denom = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
     trainable = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
@@ -2031,15 +2094,14 @@ def position_densification_snapshot_statistics(
         float(densification_grad_abs_min),
         float(np.finfo(np.float32).tiny),
     )
-    absolute_candidates = (
+    quantile_population = (
         valid
         & finite_signal
         & trainable
-        & (signal >= absolute_minimum)
     )
-    if np.any(absolute_candidates):
+    if np.any(quantile_population):
         quantile_threshold = float(np.quantile(
-            signal[absolute_candidates],
+            signal[quantile_population],
             float(densification_grad_quantile),
         ))
         threshold = max(absolute_minimum, quantile_threshold)
@@ -2052,10 +2114,52 @@ def position_densification_snapshot_statistics(
         0.0,
         float(np.iinfo(np.uint32).max),
     ).astype(np.uint32)
-    # Persist and compare the same float32 threshold so the PLY round-trip cannot
-    # move a primitive across the split boundary by rounding the scalar later.
+    # Compare and persist float32 thresholds so a PLY round-trip cannot move a
+    # primitive across a selection boundary through scalar rounding.
     threshold = float(np.float32(threshold))
-    return signal, sample_counts, threshold, quantile_threshold
+    effective_thresholds = np.full(signal.shape, threshold, dtype=np.float32)
+
+    radiance_bin_count = max(1, int(densification_radiance_quantile_bins))
+    minimum_bin_size = max(1, int(densification_radiance_quantile_min_bin_size))
+    if densify_radiance_rms_accum_np is not None and radiance_bin_count > 1:
+        radiance_accum = np.asarray(
+            densify_radiance_rms_accum_np, dtype=np.float32
+        ).reshape(-1)
+        if radiance_accum.shape != signal.shape:
+            raise RuntimeError(
+                "Densification radiance accumulator length mismatch: "
+                f"radiance={radiance_accum.shape}, signal={signal.shape}"
+            )
+        radiance_rms = np.zeros(signal.shape, dtype=np.float32)
+        radiance_rms[valid] = radiance_accum[valid] / denom[valid]
+        radiance_rms = np.nan_to_num(
+            radiance_rms, nan=0.0, posinf=0.0, neginf=0.0
+        )
+        radiance_reference = max(
+            float(densification_radiance_floor),
+            float(np.finfo(np.float32).tiny),
+        )
+        radiance_ratio = np.maximum(radiance_rms, radiance_reference) / radiance_reference
+        radiance_bin_indices = np.floor(np.log2(radiance_ratio)).astype(np.int32)
+        radiance_bin_indices = np.clip(
+            radiance_bin_indices, 0, radiance_bin_count - 1
+        )
+
+        for bin_index in range(radiance_bin_count):
+            bin_population = quantile_population & (radiance_bin_indices == bin_index)
+            if int(np.count_nonzero(bin_population)) < minimum_bin_size:
+                continue
+            bin_quantile_threshold = float(np.quantile(
+                signal[bin_population],
+                float(densification_grad_quantile),
+            ))
+            bin_threshold = float(np.float32(max(
+                absolute_minimum,
+                bin_quantile_threshold,
+            )))
+            effective_thresholds[bin_population] = bin_threshold
+
+    return signal, sample_counts, effective_thresholds, threshold, quantile_threshold
 
 
 def maybe_make_densification_result(
@@ -2072,6 +2176,7 @@ def maybe_make_densification_result(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         densify_position_grad_vector_accum_np: np.ndarray,
+        densify_radiance_rms_accum_np: np.ndarray,
         densify_after: int,
         densification_interval: int,
         densification_verbose: bool,
@@ -2096,6 +2201,7 @@ def maybe_make_densification_result(
         (
             avg_density_grad_norm_np,
             _position_sample_counts_np,
+            grad_thresholds_np,
             grad_threshold,
             grad_quantile_threshold,
         ) = position_densification_snapshot_statistics(
@@ -2104,6 +2210,14 @@ def maybe_make_densification_result(
             trainable_surfel_mask=trainable_surfel_mask,
             densification_grad_quantile=densification_grad_quantile,
             densification_grad_abs_min=densification_grad_abs_min,
+            densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+            densification_radiance_floor=float(config.densification_radiance_floor),
+            densification_radiance_quantile_bins=int(
+                config.densification_radiance_quantile_bins
+            ),
+            densification_radiance_quantile_min_bin_size=int(
+                config.densification_radiance_quantile_min_bin_size
+            ),
         )
         valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
         avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
@@ -2267,7 +2381,7 @@ def maybe_make_densification_result(
                 valid_denom_np
                 & finite_grad
                 & trainable_np
-                & (grad_pos_norm_np >= grad_threshold)
+                & (grad_pos_norm_np >= grad_thresholds_np)
         )
         curvature_candidate_mask_np = (
                 valid_curvature_observation_np
@@ -2287,6 +2401,10 @@ def maybe_make_densification_result(
                 densify_reason = "no_candidates_after_position_or_curvature"
         else:
 
+            position_selection_score_np = np.divide(
+                grad_pos_norm_np,
+                np.maximum(grad_thresholds_np, np.finfo(np.float32).tiny),
+            ).astype(np.float32, copy=False)
             densification_result = density.make_under_reconstruction_clones(
                 positions=positions,
                 rotations=rotations,
@@ -2296,9 +2414,9 @@ def maybe_make_densification_result(
                 betas=betas,
                 powers=powers,
                 grad_position_np=avg_density_grad_vector_np,
-                selection_score_np=grad_pos_norm_np,
+                selection_score_np=position_selection_score_np,
                 trainable_surfel_mask=trainable_surfel_mask,
-                grad_threshold=grad_threshold,
+                grad_threshold=1.0,
                 max_clone_fraction=float(config.densification_max_new_fraction),
                 clone_offset_scale=split_offset_scale,
                 clone_scale_factor=float(config.densification_split_scale_factor),

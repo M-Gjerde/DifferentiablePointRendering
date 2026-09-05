@@ -49,7 +49,6 @@ REQUIRED_SETTINGS = {
     "enable_adjoint_shadow_rays",
     "adjoint_shadow_path_rays",
     "share_local_layer_direct_lighting",
-    "minimum_projected_footprint",
 }
 
 

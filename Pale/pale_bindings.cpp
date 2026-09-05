@@ -5,6 +5,8 @@
 
 #include "Renderer/RenderPackage.h"
 #include "Renderer/Kernels/KernelHelpers.h"
+#include "Renderer/Kernels/BvhRefitKernels.h"
+#include "Core/ScopedTimer.h"
 
 #include <algorithm>
 #include <array>
@@ -138,6 +140,7 @@ class PythonRenderer {
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         Pale::float4 *rgba = nullptr;
+        Pale::float4 *relativeDensificationAdjoint = nullptr;
         // [combined RGB objective, half-MSE, DSSIM].
         float *loss = nullptr;
     };
@@ -146,6 +149,9 @@ class PythonRenderer {
         float ssimWeight = 0.0f;
         int ssimWindowSize = 11;
         float ssimSigma = 1.5f;
+        bool relativeDensification = false;
+        bool densificationFullPosition = true;
+        float densificationRadianceFloor = 0.01f;
     };
 
     struct RgbSsimScratch {
@@ -292,22 +298,17 @@ public:
                     get_f(settingsDict,
                           "curvature_scale_weight",
                           m_settings.curvatureScaleRegularizerWeight);
+            m_settings.computeCurvatureDiagnostics =
+                    get_b(settingsDict, "compute_curvature_diagnostics", false);
             m_settings.rendererDebugShareLocalLayerDirectLighting =
                     get_b(settingsDict,
                           "share_local_layer_direct_lighting",
                           m_settings.rendererDebugShareLocalLayerDirectLighting);
+            parallelBvhRefit = get_b(settingsDict, "parallel_bvh_refit", true);
             curvatureDensificationEnabled =
                     get_b(settingsDict, "enable_curvature_densification", false);
             primalActivityTrackingEnabled =
                     get_b(settingsDict, "enable_primal_activity_tracking", false);
-            m_settings.rendererDebugMinimumProjectedFootprint =
-                    get_b(settingsDict,
-                          "minimum_projected_footprint",
-                          m_settings.rendererDebugMinimumProjectedFootprint);
-            m_settings.rendererDebugMinimumProjectedFootprintPixels =
-                    get_f(settingsDict,
-                          "minimum_projected_footprint_pixels",
-                          m_settings.rendererDebugMinimumProjectedFootprintPixels);
             // Finite-difference/debug controls. Exposing these through the
             // regular settings dictionary lets tests exercise both the batched
             // and scalar intersection paths with identical scene data.
@@ -382,8 +383,6 @@ public:
         Pale::Log::PA_INFO("  Shared slab direct light  : {}", m_settings.rendererDebugShareLocalLayerDirectLighting);
         Pale::Log::PA_INFO("  Curvature densification   : {}", curvatureDensificationEnabled);
         Pale::Log::PA_INFO("  Primal activity tracking  : {}", primalActivityTrackingEnabled);
-        Pale::Log::PA_INFO("  Minimum footprint enabled : {}", m_settings.rendererDebugMinimumProjectedFootprint);
-        Pale::Log::PA_INFO("  Minimum footprint sigma px: {}", m_settings.rendererDebugMinimumProjectedFootprintPixels);
         Pale::Log::PA_INFO("  Local layer depth epsilon : {}", m_settings.rendererDebugLocalLayerDepthEpsilon);
         Pale::Log::PA_INFO("  Local layer normal cosine : {}", m_settings.rendererDebugLocalLayerNormalCosineThreshold);
         Pale::Log::PA_INFO("  Max splat events per ray  : {}", m_settings.rendererDebugMaxSplatEventsPerRay);
@@ -419,6 +418,7 @@ public:
     ~PythonRenderer() {
         if (deviceSelector) {
             auto queue = deviceSelector->getQueue();
+            freePointBvhRefitPlan(queue);
 
             Pale::freeGradientsForScene(queue, gradients);
             Pale::freeGradientsForScene(queue, depthDistortionGradients);
@@ -426,6 +426,7 @@ public:
             Pale::freeGradientsForScene(queue, visibilityOpacityGradients);
             Pale::freeGradientsForScene(queue, intraSlabDepthGradients);
             Pale::freeGradientsForScene(queue, curvatureScaleGradients);
+            Pale::freeGradientsForScene(queue, densificationGradients);
             Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
             Pale::freePrimalActivityStats(queue, primalActivityStats);
 
@@ -685,10 +686,12 @@ public:
 
             TrainingTargetDevice &target = trainingTargets[cameraName];
             ensureTrainingTargetCapacity(target, cameraName, width, height, syclQueue);
+            // targetRgba owns the upload source and is destroyed each iteration.
+            // Complete the asynchronous copy while that host storage is alive.
             syclQueue.memcpy(
                 target.rgba,
                 targetRgba.data(),
-                pixelCount * sizeof(Pale::float4));
+                pixelCount * sizeof(Pale::float4)).wait_and_throw();
         }
 
         syclQueue.wait_and_throw();
@@ -719,6 +722,7 @@ public:
                 selectedBatch.sensors,
                 gradients,
                 selectedBatch.debugImages.data());
+            runRelativeDensificationAdjoint(selectedBatch, rgbLossOptions, syclQueue);
         }
 
         py::dict lossValues;
@@ -776,6 +780,7 @@ public:
                 selectedBatch.sensors,
                 gradients,
                 selectedBatch.debugImages.data());
+            runRelativeDensificationAdjoint(selectedBatch, rgbLossOptions, syclQueue);
 
             ensureDeviceTrainingState(gradients.numPoints, syclQueue);
             launchDeviceTrainingStepKernel(
@@ -840,6 +845,7 @@ public:
                 selectedBatch.sensors,
                 gradients,
                 selectedBatch.debugImages.data());
+            runRelativeDensificationAdjoint(selectedBatch, rgbLossOptions, syclQueue);
         }
 
         py::dict lossValues;
@@ -1420,6 +1426,7 @@ public:
         std::vector<uint32_t> gradPositionRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<Pale::float3> cloneSignalPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<float> cloneRadianceRmsSumPerPrimitivePerCameraHost(primitiveCameraCount);
 
         if (pointCount > 0) {
             if (gradients.gradPosition) {
@@ -1545,6 +1552,13 @@ public:
                     cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
                     gradients.cloneSignalRecordCountPerPrimitivePerCamera,
                     primitiveCameraCount * sizeof(uint32_t));
+            }
+            if (primitiveCameraCount > 0 &&
+                gradients.cloneRadianceRmsSumPerPrimitivePerCamera) {
+                syclQueue.memcpy(
+                    cloneRadianceRmsSumPerPrimitivePerCameraHost.data(),
+                    gradients.cloneRadianceRmsSumPerPrimitivePerCamera,
+                    primitiveCameraCount * sizeof(float));
             }
 
             syclQueue.wait_and_throw();
@@ -1736,6 +1750,30 @@ public:
                 ),
                 py::capsule(ownedVector, [](void *pointer) {
                     delete static_cast<std::vector<uint32_t> *>(pointer);
+                })
+            );
+        };
+
+        auto makeFloatCameraArray =
+                [](std::vector<float> &hostVector,
+                   std::size_t pointCount,
+                   std::size_t cameraSlotCount) -> py::array {
+            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(pointCount),
+                static_cast<ssize_t>(cameraSlotCount)
+            };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(cameraSlotCount * sizeof(float)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+            return py::array(
+                py::buffer_info(
+                    ownedVector->data(), sizeof(float),
+                    py::format_descriptor<float>::format(), 2,
+                    arrayShape, arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
                 })
             );
         };
@@ -1948,6 +1986,8 @@ public:
             cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_record_count_per_camera"] = makeUintCameraArray(
             cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_radiance_rms_sum_per_camera"] = makeFloatCameraArray(
+            cloneRadianceRmsSumPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         adjointImagesDictionary["gradient_stats"] = std::move(gradientStatsDictionary);
 
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);
@@ -2655,6 +2695,7 @@ public:
         std::vector<uint32_t> cloneSignalActiveCameraCountHost(pointCount, 0u);
         std::vector<Pale::float3> cloneSignalPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount, 0u);
+        std::vector<float> cloneRadianceRmsSumPerPrimitivePerCameraHost(primitiveCameraCount, 0.0f);
 
         if (pointCount > 0) {
             if (sourceGradients.cloneSignalMeanNorm) {
@@ -2699,6 +2740,11 @@ public:
                 syclQueue.memcpy(cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
                                  sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(uint32_t));
+            }
+            if (sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera) {
+                syclQueue.memcpy(cloneRadianceRmsSumPerPrimitivePerCameraHost.data(),
+                                 sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(float));
             }
         }
         syclQueue.wait_and_throw();
@@ -2769,6 +2815,26 @@ public:
                 }));
         };
 
+        auto makeFloatCameraArray =
+                [](std::vector<float> &hostVector, std::size_t pointCount,
+                   std::size_t cameraSlotCount) -> py::array {
+            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            std::vector<ssize_t> arrayShape{
+                static_cast<ssize_t>(pointCount),
+                static_cast<ssize_t>(cameraSlotCount)
+            };
+            std::vector<ssize_t> arrayStrides{
+                static_cast<ssize_t>(cameraSlotCount * sizeof(float)),
+                static_cast<ssize_t>(sizeof(float))
+            };
+            return py::array(
+                py::buffer_info(ownedVector->data(), sizeof(float), py::format_descriptor<float>::format(), 2,
+                                arrayShape, arrayStrides),
+                py::capsule(ownedVector, [](void *pointer) {
+                    delete static_cast<std::vector<float> *>(pointer);
+                }));
+        };
+
         py::dict gradientStatsDictionary;
         gradientStatsDictionary["position_per_camera"] =
                 makeFloat3CameraArray(gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
@@ -2784,6 +2850,8 @@ public:
                 makeFloat3CameraArray(cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_record_count_per_camera"] =
                 makeUintCameraArray(cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_radiance_rms_sum_per_camera"] =
+                makeFloatCameraArray(cloneRadianceRmsSumPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         return gradientStatsDictionary;
     }
 
@@ -3504,6 +3572,7 @@ public:
 
     void rebuild_bvh() {
         syncPointParametersFromGpuIfDirty();
+        freePointBvhRefitPlan(deviceSelector->getQueue());
         const std::size_t previousDeviceOptimizerPointCount = deviceTrainingState.pointCount;
         Pale::AssetAccessFromManager assetAccessor(*assetManager);
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
@@ -3518,6 +3587,7 @@ public:
         Pale::freeGradientsForScene(deviceSelector->getQueue(), visibilityOpacityGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), intraSlabDepthGradients);
         Pale::freeGradientsForScene(deviceSelector->getQueue(), curvatureScaleGradients);
+        Pale::freeGradientsForScene(deviceSelector->getQueue(), densificationGradients);
         Pale::freeCurvatureDensificationStats(
             deviceSelector->getQueue(), curvatureDensificationStats);
         Pale::freePrimalActivityStats(
@@ -4141,6 +4211,15 @@ private:
         options.ssimWindowSize = get_i(
             optionsDictionary, "ssim_window_size", options.ssimWindowSize);
         options.ssimSigma = get_f(optionsDictionary, "ssim_sigma", options.ssimSigma);
+        options.relativeDensification = get_b(optionsDictionary, "densification_relative_error", false);
+        options.densificationFullPosition = get_b(optionsDictionary, "densification_full_position", true);
+        options.densificationRadianceFloor = get_f(
+            optionsDictionary, "densification_radiance_floor", options.densificationRadianceFloor);
+        const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
+        if (!std::isfinite(options.densificationRadianceFloor) ||
+            options.densificationRadianceFloor <= 0.0f || !std::isfinite(floorSquared) || floorSquared <= 0.0f) {
+            throw std::runtime_error("densification_radiance_floor and its square must be finite and positive");
+        }
 
         if (!std::isfinite(options.ssimWeight) ||
             options.ssimWeight < 0.0f || options.ssimWeight > 1.0f) {
@@ -4459,7 +4538,10 @@ private:
         const float biasCorrection2 =
                 useAdam ? 1.0f - std::pow(options.beta2, static_cast<float>(adamStep)) : 1.0f;
 
-        queue.parallel_for<class DeviceTrainingStepKernelTag>(
+        const bool timeKernel = Pale::ScopedTimerDetail::isProfilingEnabled() ||
+            Pale::ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug);
+        Pale::ScopedTimer timer("Device optimizer: parameter update", spdlog::level::debug);
+        sycl::event updateEvent = queue.parallel_for<class DeviceTrainingStepKernelTag>(
             sycl::range<1>(sceneGpu.pointCount),
             [points = sceneGpu.points,
              gradPosition = pointGradients.gradPosition,
@@ -4838,157 +4920,150 @@ private:
                     lrBeta);
                 point.beta = clampValue(cleanParameter(point.beta, 1.0f) - betaUpdate, -2.0f, 5.0f);
             });
+        if (timeKernel) {
+            updateEvent.wait_and_throw();
+        }
+    }
+
+    void freePointBvhRefitPlan(sycl::queue queue) {
+        // USM frees do not wait for kernels holding these pointers.
+        if (pointBvhRefitTasks || pointQbvhRefitTasks) {
+            queue.wait_and_throw();
+            sycl::free(pointBvhRefitTasks, queue);
+            sycl::free(pointQbvhRefitTasks, queue);
+        }
+        pointBvhRefitTasks = nullptr;
+        pointQbvhRefitTasks = nullptr;
+        pointBvhRefitLevels.clear();
+        pointQbvhRefitTaskCount = 0;
+        pointBvhRefitPlanReady = false;
+    }
+
+    void ensurePointBvhRefitPlan(sycl::queue queue) {
+        if (pointBvhRefitPlanReady) return;
+        // Also clear a partially uploaded plan if a previous allocation failed.
+        freePointBvhRefitPlan(queue);
+        using Pale::PointBvhRefitDetail::NodeTask;
+        std::vector<std::vector<NodeTask>> levels;
+        std::vector<NodeTask> qbvhTasks;
+        std::unordered_set<std::uint32_t> scheduledRanges;
+        for (const Pale::InstanceRecord &instance : buildProducts.instances) {
+            if (instance.geometryType != Pale::GeometryType::PointCloud ||
+                !scheduledRanges.insert(instance.blasRangeIndex).second) continue;
+            const auto range = buildProducts.bottomLevelRanges.at(instance.blasRangeIndex);
+            std::vector<std::uint32_t> heights(range.nodeCount, 0u);
+            // The builder appends both children after their parent. Schedule by
+            // height, not storage depth, so each parent reads completed children.
+            for (std::uint32_t remaining = range.nodeCount; remaining > 0u; --remaining) {
+                const std::uint32_t index = remaining - 1u;
+                const auto &node = buildProducts.bottomLevelNodes.at(range.firstNode + index);
+                if (node.triCount == 0u) {
+                    if (node.leftFirst <= index || node.leftFirst + 1u >= range.nodeCount) {
+                        throw std::runtime_error("Invalid point BVH child order for refit");
+                    }
+                    heights[index] = 1u + std::max(heights[node.leftFirst], heights[node.leftFirst + 1u]);
+                }
+                if (levels.size() <= heights[index]) levels.resize(heights[index] + 1u);
+                levels[heights[index]].push_back({instance.blasRangeIndex, index});
+            }
+            if (sceneGpu.pointQbvhNodes && sceneGpu.pointQbvhRanges &&
+                instance.blasRangeIndex < sceneGpu.pointQbvhRangeCount) {
+                const auto packed = buildProducts.pointQbvhRanges.at(instance.blasRangeIndex);
+                if (packed.firstNode + packed.nodeCount <= sceneGpu.pointQbvhNodeCount) {
+                    for (std::uint32_t i = 0u; i < packed.nodeCount; ++i) {
+                        qbvhTasks.push_back({instance.blasRangeIndex, i});
+                    }
+                }
+            }
+        }
+        std::vector<NodeTask> tasks;
+        for (const auto &level : levels) {
+            pointBvhRefitLevels.push_back({static_cast<std::uint32_t>(tasks.size()),
+                                           static_cast<std::uint32_t>(level.size())});
+            tasks.insert(tasks.end(), level.begin(), level.end());
+        }
+        if (!tasks.empty()) {
+            pointBvhRefitTasks = sycl::malloc_device<NodeTask>(tasks.size(), queue);
+            if (!pointBvhRefitTasks) throw std::bad_alloc();
+            queue.memcpy(pointBvhRefitTasks, tasks.data(), tasks.size() * sizeof(NodeTask)).wait_and_throw();
+        }
+        if (!qbvhTasks.empty()) {
+            pointQbvhRefitTasks = sycl::malloc_device<NodeTask>(qbvhTasks.size(), queue);
+            if (!pointQbvhRefitTasks) throw std::bad_alloc();
+            queue.memcpy(pointQbvhRefitTasks, qbvhTasks.data(), qbvhTasks.size() * sizeof(NodeTask)).wait_and_throw();
+        }
+        pointQbvhRefitTaskCount = qbvhTasks.size();
+        pointBvhRefitPlanReady = true;
     }
 
     void launchPointBvhRefitKernel(sycl::queue queue) {
+        if (!parallelBvhRefit) {
+            const bool timeKernel = Pale::ScopedTimerDetail::isProfilingEnabled() ||
+                Pale::ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug);
+            Pale::ScopedTimer timer("Device optimizer: point BVH refit", spdlog::level::debug);
+            auto event = launchSerialPointBvhRefitKernel(queue);
+            if (timeKernel) event.wait_and_throw();
+            return;
+        }
+        if (!sceneGpu.points || !sceneGpu.blasNodes || !sceneGpu.blasRanges ||
+            !sceneGpu.tlasNodes || !sceneGpu.instances || !sceneGpu.transforms ||
+            !sceneGpu.pointPermutation || !sceneGpu.pointTraversalData ||
+            buildProducts.instances.empty() || sceneGpu.blasNodeCount == 0u ||
+            sceneGpu.tlasNodeCount == 0u) return;
+
+        ensurePointBvhRefitPlan(queue);
+        const bool timeKernel = Pale::ScopedTimerDetail::isProfilingEnabled() ||
+            Pale::ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug);
+        Pale::ScopedTimer timer("Device optimizer: point BVH refit", spdlog::level::debug);
+        const auto scene = sceneGpu;
+        const auto *tasks = pointBvhRefitTasks;
+        // DeviceSelector supplies an in-order queue: parameter updates precede
+        // leaves, each level precedes its parents, and traversal follows refit.
+        for (std::size_t level = 0; level < pointBvhRefitLevels.size(); ++level) {
+            const auto range = pointBvhRefitLevels[level];
+            if (range.nodeCount == 0u) continue;
+            if (level == 0u) {
+                queue.parallel_for<class PointBvhLeafRefitKernelTag>(
+                    sycl::range<1>(range.nodeCount), [=](sycl::id<1> index) {
+                        Pale::PointBvhRefitDetail::refitNode<true>(scene, tasks[range.firstNode + index[0]]);
+                    });
+            } else {
+                queue.parallel_for<class PointBvhInternalRefitKernelTag>(
+                    sycl::range<1>(range.nodeCount), [=](sycl::id<1> index) {
+                        Pale::PointBvhRefitDetail::refitNode<false>(scene, tasks[range.firstNode + index[0]]);
+                    });
+            }
+        }
+        if (pointQbvhRefitTaskCount != 0u) {
+            const auto *qbvhTasks = pointQbvhRefitTasks;
+            queue.parallel_for<class PointQbvhRefitKernelTag>(
+                sycl::range<1>(pointQbvhRefitTaskCount), [=](sycl::id<1> index) {
+                    Pale::PointBvhRefitDetail::refitQbvhNode(scene, qbvhTasks[index[0]]);
+                });
+        }
+        const auto instanceCount = static_cast<std::uint32_t>(buildProducts.instances.size());
+        sycl::event refitEvent = queue.single_task<class PointTlasRefitKernelTag>([=]() {
+            Pale::PointBvhRefitDetail::refitTlas(scene, instanceCount);
+        });
+        if (timeKernel) refitEvent.wait_and_throw();
+    }
+
+    sycl::event launchSerialPointBvhRefitKernel(sycl::queue queue) {
         if (!sceneGpu.points || !sceneGpu.blasNodes || !sceneGpu.blasRanges ||
             !sceneGpu.tlasNodes || !sceneGpu.instances || !sceneGpu.transforms ||
             !sceneGpu.pointPermutation || !sceneGpu.pointTraversalData) {
-            return;
+            return {};
         }
 
         const std::uint32_t instanceCount =
                 static_cast<std::uint32_t>(buildProducts.instances.size());
         if (instanceCount == 0u || sceneGpu.blasNodeCount == 0u || sceneGpu.tlasNodeCount == 0u) {
-            return;
+            return {};
         }
 
-        queue.single_task<class PointBvhRefitKernelTag>(
+        sycl::event refitEvent = queue.single_task<class PointBvhRefitKernelTag>(
             [scene = sceneGpu, instanceCount]() {
-                auto dot3 = [](const Pale::float3 &a, const Pale::float3 &b) -> float {
-                    return a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
-                };
-                auto cross3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
-                    return Pale::float3{
-                        a.y() * b.z() - a.z() * b.y(),
-                        a.z() * b.x() - a.x() * b.z(),
-                        a.x() * b.y() - a.y() * b.x()
-                    };
-                };
-                auto normalizeOrFallback = [&](const Pale::float3 &value,
-                                               const Pale::float3 &fallback) -> Pale::float3 {
-                    const float lengthSquared = dot3(value, value);
-                    if (!sycl::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) {
-                        return fallback;
-                    }
-                    return value * sycl::rsqrt(lengthSquared);
-                };
-                auto min3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
-                    return Pale::float3{
-                        sycl::fmin(a.x(), b.x()),
-                        sycl::fmin(a.y(), b.y()),
-                        sycl::fmin(a.z(), b.z())
-                    };
-                };
-                auto max3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
-                    return Pale::float3{
-                        sycl::fmax(a.x(), b.x()),
-                        sycl::fmax(a.y(), b.y()),
-                        sycl::fmax(a.z(), b.z())
-                    };
-                };
-                auto makeSurfelAabbBeta = [&](const Pale::Point &surfel,
-                                               Pale::float3 &aabbMin,
-                                               Pale::float3 &aabbMax) {
-                    const Pale::float3 tangentU =
-                            normalizeOrFallback(surfel.tanU, Pale::float3{1.0f, 0.0f, 0.0f});
-                    const Pale::float3 tangentV =
-                            normalizeOrFallback(surfel.tanV, Pale::float3{0.0f, 1.0f, 0.0f});
-                    const Pale::float3 normalDirection =
-                            normalizeOrFallback(cross3(tangentU, tangentV), Pale::float3{0.0f, 0.0f, 1.0f});
-
-                    const float supportRadiusU = sycl::fmax(surfel.scale.x(), 0.0f);
-                    const float supportRadiusV = sycl::fmax(surfel.scale.y(), 0.0f);
-                    constexpr float normalThickness = 0.001f;
-
-                    auto computeAxisExtent = [&](int axisIndex) -> float {
-                        const float tangentUComponent =
-                                axisIndex == 0
-                                    ? tangentU.x()
-                                    : (axisIndex == 1 ? tangentU.y() : tangentU.z());
-                        const float tangentVComponent =
-                                axisIndex == 0
-                                    ? tangentV.x()
-                                    : (axisIndex == 1 ? tangentV.y() : tangentV.z());
-                        const float normalComponent =
-                                sycl::fabs(axisIndex == 0
-                                               ? normalDirection.x()
-                                               : (axisIndex == 1 ? normalDirection.y() : normalDirection.z()));
-                        const float projectedInPlane =
-                                sycl::sqrt((supportRadiusU * tangentUComponent) *
-                                           (supportRadiusU * tangentUComponent) +
-                                           (supportRadiusV * tangentVComponent) *
-                                           (supportRadiusV * tangentVComponent));
-                        return projectedInPlane + normalThickness * normalComponent;
-                    };
-
-                    const Pale::float3 halfExtent{
-                        computeAxisExtent(0),
-                        computeAxisExtent(1),
-                        computeAxisExtent(2)
-                    };
-                    aabbMin = surfel.position - halfExtent;
-                    aabbMax = surfel.position + halfExtent;
-                };
-                auto writePackedPointBvhChild = [](Pale::PackedPointBVHNode &packedNode,
-                                                   bool writeLeftChild,
-                                                   const Pale::BVHNode *nodes,
-                                                   std::uint32_t childNodeIndex) {
-                    const Pale::BVHNode &childNode = nodes[childNodeIndex];
-                    const std::uint32_t childIndex =
-                            childNode.triCount > 0u ? childNode.leftFirst : childNodeIndex;
-                    const std::uint32_t childCount =
-                            childNode.triCount > 0u ? childNode.triCount : 0u;
-
-                    if (writeLeftChild) {
-                        packedNode.leftAabbMin = childNode.aabbMin;
-                        packedNode.leftAabbMax = childNode.aabbMax;
-                        packedNode.leftIndex = childIndex;
-                        packedNode.leftCount = childCount;
-                    } else {
-                        packedNode.rightAabbMin = childNode.aabbMin;
-                        packedNode.rightAabbMax = childNode.aabbMax;
-                        packedNode.rightIndex = childIndex;
-                        packedNode.rightCount = childCount;
-                    }
-                };
-                auto writePackedPointBvhNode = [&](Pale::PackedPointBVHNode *packedNodes,
-                                                   const Pale::BVHNode *nodes,
-                                                   std::uint32_t localNodeIndex) {
-                    const Pale::BVHNode &node = nodes[localNodeIndex];
-                    Pale::PackedPointBVHNode packedNode{};
-                    if (node.triCount > 0u) {
-                        writePackedPointBvhChild(packedNode, true, nodes, localNodeIndex);
-                    } else {
-                        writePackedPointBvhChild(packedNode, true, nodes, node.leftFirst);
-                        writePackedPointBvhChild(packedNode, false, nodes, node.leftFirst + 1u);
-                    }
-                    packedNodes[localNodeIndex] = packedNode;
-                };
-                auto updatePackedPointQbvhNode = [](Pale::PackedPointQBVHNode &qbvhNode,
-                                                    const Pale::BVHNode *nodes) {
-                    for (std::uint32_t slot = 0u; slot < 4u; ++slot) {
-                        const std::uint32_t sourceNodeIndex = qbvhNode.childSourceNodeIndex[slot];
-                        if (sourceNodeIndex == UINT32_MAX) {
-                            continue;
-                        }
-
-                        const Pale::BVHNode &sourceNode = nodes[sourceNodeIndex];
-                        qbvhNode.minX[slot] = sourceNode.aabbMin.x();
-                        qbvhNode.minY[slot] = sourceNode.aabbMin.y();
-                        qbvhNode.minZ[slot] = sourceNode.aabbMin.z();
-                        qbvhNode.maxX[slot] = sourceNode.aabbMax.x();
-                        qbvhNode.maxY[slot] = sourceNode.aabbMax.y();
-                        qbvhNode.maxZ[slot] = sourceNode.aabbMax.z();
-
-                        if (sourceNode.triCount > 0u) {
-                            qbvhNode.childIndex[slot] = sourceNode.leftFirst;
-                            qbvhNode.childCount[slot] = sourceNode.triCount;
-                        } else {
-                            qbvhNode.childCount[slot] = 0u;
-                        }
-                    }
-                };
+                using namespace Pale::PointBvhRefitDetail;
 
                 for (std::uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {
                     const Pale::InstanceRecord &instance = scene.instances[instanceIndex];
@@ -5002,16 +5077,6 @@ private:
                     }
 
                     Pale::BVHNode *nodes = scene.blasNodes + blasRange.firstNode;
-                    Pale::PackedPointBVHNode *packedNodes = nullptr;
-                    if (scene.pointPackedBvhNodes != nullptr &&
-                        scene.pointPackedBvhRanges != nullptr &&
-                        instance.blasRangeIndex < scene.pointPackedBvhRangeCount) {
-                        const Pale::BLASRange packedRange = scene.pointPackedBvhRanges[instance.blasRangeIndex];
-                        if (packedRange.nodeCount >= blasRange.nodeCount &&
-                            packedRange.firstNode + packedRange.nodeCount <= scene.pointPackedBvhNodeCount) {
-                            packedNodes = scene.pointPackedBvhNodes + packedRange.firstNode;
-                        }
-                    }
                     Pale::PackedPointQBVHNode *qbvhNodes = nullptr;
                     std::uint32_t qbvhNodeCount = 0u;
                     if (scene.pointQbvhNodes != nullptr &&
@@ -5028,37 +5093,12 @@ private:
                     for (int localNodeIndex = static_cast<int>(blasRange.nodeCount) - 1;
                          localNodeIndex >= 0;
                          --localNodeIndex) {
-                        Pale::BVHNode &node = nodes[localNodeIndex];
-                        if (node.triCount > 0u) {
-                            Pale::float3 nodeMin{FLT_MAX, FLT_MAX, FLT_MAX};
-                            Pale::float3 nodeMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-                            for (std::uint32_t primitiveOffset = 0u;
-                                 primitiveOffset < node.triCount;
-                                 ++primitiveOffset) {
-                                const std::uint32_t primitiveIndex =
-                                        scene.pointPermutation[node.leftFirst + primitiveOffset];
-                                scene.pointTraversalData[node.leftFirst + primitiveOffset] =
-                                        Pale::makeSurfelTraversalData(scene.points[primitiveIndex], primitiveIndex);
-                                Pale::float3 surfelMin{0.0f};
-                                Pale::float3 surfelMax{0.0f};
-                                makeSurfelAabbBeta(scene.points[primitiveIndex], surfelMin, surfelMax);
-                                nodeMin = min3(nodeMin, surfelMin);
-                                nodeMax = max3(nodeMax, surfelMax);
-                            }
-                            node.aabbMin = nodeMin;
-                            node.aabbMax = nodeMax;
+                        const NodeTask task{instance.blasRangeIndex,
+                                            static_cast<std::uint32_t>(localNodeIndex)};
+                        if (nodes[localNodeIndex].triCount > 0u) {
+                            refitNode<true>(scene, task);
                         } else {
-                            const Pale::BVHNode &leftNode = nodes[node.leftFirst];
-                            const Pale::BVHNode &rightNode = nodes[node.leftFirst + 1u];
-                            node.aabbMin = min3(leftNode.aabbMin, rightNode.aabbMin);
-                            node.aabbMax = max3(leftNode.aabbMax, rightNode.aabbMax);
-                        }
-
-                        if (packedNodes != nullptr) {
-                            writePackedPointBvhNode(
-                                packedNodes,
-                                nodes,
-                                static_cast<std::uint32_t>(localNodeIndex));
+                            refitNode<false>(scene, task);
                         }
                     }
 
@@ -5071,48 +5111,9 @@ private:
                     }
                 }
 
-                for (int tlasNodeIndex = static_cast<int>(scene.tlasNodeCount) - 1;
-                     tlasNodeIndex >= 0;
-                     --tlasNodeIndex) {
-                    Pale::TLASNode &node = scene.tlasNodes[tlasNodeIndex];
-                    if (node.count > 0u) {
-                        const std::uint32_t instanceIndex = node.leftChild;
-                        if (instanceIndex >= instanceCount) {
-                            continue;
-                        }
-                        const Pale::InstanceRecord &instance = scene.instances[instanceIndex];
-                        const Pale::BLASRange blasRange = scene.blasRanges[instance.blasRangeIndex];
-                        if (blasRange.nodeCount == 0u) {
-                            continue;
-                        }
-                        const Pale::BVHNode &rootNode = scene.blasNodes[blasRange.firstNode];
-                        const Pale::Transform &transform = scene.transforms[instance.transformIndex];
-
-                        Pale::float3 worldMin{FLT_MAX, FLT_MAX, FLT_MAX};
-                        Pale::float3 worldMax{-FLT_MAX, -FLT_MAX, -FLT_MAX};
-                        for (int cornerIndex = 0; cornerIndex < 8; ++cornerIndex) {
-                            const bool bx = (cornerIndex & 4) != 0;
-                            const bool by = (cornerIndex & 2) != 0;
-                            const bool bz = (cornerIndex & 1) != 0;
-                            const Pale::float3 pointObject{
-                                bx ? rootNode.aabbMax.x() : rootNode.aabbMin.x(),
-                                by ? rootNode.aabbMax.y() : rootNode.aabbMin.y(),
-                                bz ? rootNode.aabbMax.z() : rootNode.aabbMin.z()
-                            };
-                            const Pale::float3 pointWorld = Pale::toWorldPoint(pointObject, transform);
-                            worldMin = min3(worldMin, pointWorld);
-                            worldMax = max3(worldMax, pointWorld);
-                        }
-                        node.aabbMin = worldMin;
-                        node.aabbMax = worldMax;
-                    } else {
-                        const Pale::TLASNode &leftNode = scene.tlasNodes[node.leftChild];
-                        const Pale::TLASNode &rightNode = scene.tlasNodes[node.rightChild];
-                        node.aabbMin = min3(leftNode.aabbMin, rightNode.aabbMin);
-                        node.aabbMax = max3(leftNode.aabbMax, rightNode.aabbMax);
-                    }
-                }
+                refitTlas(scene, instanceCount);
             });
+        return refitEvent;
     }
 
     static py::dict makeZeroLossValuesDictionary() {
@@ -5485,6 +5486,10 @@ private:
     }
 
     static void freeTrainingTarget(TrainingTargetDevice &target, sycl::queue queue) {
+        if (target.relativeDensificationAdjoint) {
+            sycl::free(target.relativeDensificationAdjoint, queue);
+            target.relativeDensificationAdjoint = nullptr;
+        }
         if (target.rgba) {
             sycl::free(target.rgba, queue);
             target.rgba = nullptr;
@@ -5574,8 +5579,56 @@ private:
         rgbSsimScratch.pixelCapacity = pixelCount;
     }
 
+    static float relativeDensificationWeight(
+        const Pale::float4 &rendered, const Pale::float4 &target, float floorSquared) {
+        const float meanSquaredRadiance = (
+            rendered.x()*rendered.x() + rendered.y()*rendered.y() + rendered.z()*rendered.z() +
+            target.x()*target.x() + target.y()*target.y() + target.z()*target.z()) / 6.0f;
+        return 1.0f / (meanSquaredRadiance + floorSquared);
+    }
+
+    // A mixed SSIM source is not a scalar multiple of the RGB residual. Use a
+    // separate relative-MSE source in that case, with separate gradient storage.
+    // The ordinary half-MSE path instead fuses the statistic into its existing
+    // adjoint traversal using the frozen per-pixel multiplier in framebuffer.w.
+    void runRelativeDensificationAdjoint(
+        SelectedTrainingBatch &batch, const RgbLossOptions &options, sycl::queue queue) {
+        if (!options.relativeDensification || options.ssimWeight <= 0.0f) return;
+        if (densificationGradients.numPoints != gradients.numPoints ||
+            densificationGradients.cameraSlotCount != gradients.cameraSlotCount ||
+            !densificationGradients.gradPosition) {
+            Pale::freeGradientsForScene(queue, densificationGradients);
+            densificationGradients = Pale::makeGradientsForScene(queue, buildProducts, nullptr);
+        }
+        std::vector<Pale::SensorGPU> relativeSensors = batch.sensors;
+        for (std::size_t i = 0; i < relativeSensors.size(); ++i) {
+            relativeSensors[i].framebuffer = batch.targets[i]->relativeDensificationAdjoint;
+            relativeSensors[i].relativeDensification = true;
+            relativeSensors[i].densificationFullPosition = options.densificationFullPosition;
+            relativeSensors[i].densificationRadianceFloorSquared =
+                    options.densificationRadianceFloor * options.densificationRadianceFloor;
+        }
+        pathTracer->renderBackward(relativeSensors, densificationGradients, nullptr);
+        const std::size_t n = gradients.numPoints;
+        const std::size_t nc = n * gradients.cameraSlotCount;
+        queue.memcpy(gradients.cloneSignal, densificationGradients.cloneSignal, n*sizeof(Pale::float3));
+        queue.memcpy(gradients.cloneSignalPerPrimitivePerCamera,
+                     densificationGradients.cloneSignalPerPrimitivePerCamera, nc*sizeof(Pale::float3));
+        queue.memcpy(gradients.cloneSignalRecordCountPerPrimitivePerCamera,
+                     densificationGradients.cloneSignalRecordCountPerPrimitivePerCamera, nc*sizeof(uint32_t));
+        queue.memcpy(gradients.cloneRadianceRmsSumPerPrimitivePerCamera,
+                     densificationGradients.cloneRadianceRmsSumPerPrimitivePerCamera, nc*sizeof(float));
+        queue.memcpy(gradients.cloneSignalMeanNorm, densificationGradients.cloneSignalMeanNorm, n*sizeof(float));
+        queue.memcpy(gradients.cloneSignalStd, densificationGradients.cloneSignalStd, n*sizeof(float));
+        queue.memcpy(gradients.cloneSignalCoherence, densificationGradients.cloneSignalCoherence, n*sizeof(float));
+        queue.memcpy(gradients.cloneSignalDisagreement, densificationGradients.cloneSignalDisagreement, n*sizeof(float));
+        queue.memcpy(gradients.cloneSignalActiveCameraCount,
+                     densificationGradients.cloneSignalActiveCameraCount, n*sizeof(uint32_t));
+        queue.wait_and_throw();
+    }
+
     void launchRgbLossAdjointKernel(sycl::queue queue,
-                                    const Pale::SensorGPU &sensor,
+                                    Pale::SensorGPU &sensor,
                                     TrainingTargetDevice &target,
                                     const RgbLossOptions &options) {
         if (!sensor.framebuffer || !target.rgba || !target.loss) {
@@ -5590,6 +5643,32 @@ private:
                                           ? 1.0f / (static_cast<float>(pixelCount) * 3.0f)
                                           : 0.0f;
 
+        sensor.relativeDensification = options.relativeDensification && options.ssimWeight <= 0.0f;
+        sensor.densificationFullPosition = options.densificationFullPosition;
+        const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
+        sensor.densificationRadianceFloorSquared = floorSquared;
+        if (options.relativeDensification && options.ssimWeight > 0.0f) {
+            if (!target.relativeDensificationAdjoint) {
+                target.relativeDensificationAdjoint = sycl::malloc_device<Pale::float4>(pixelCount, queue);
+                if (!target.relativeDensificationAdjoint) {
+                    throw std::runtime_error("Failed to allocate relative densification adjoint");
+                }
+            }
+            queue.parallel_for<class RelativeDensificationSourceKernelTag>(
+                sycl::range<1>(pixelCount),
+                [framebuffer = sensor.framebuffer, targetRgba = target.rgba,
+                 source = target.relativeDensificationAdjoint, invElementCount, floorSquared](sycl::id<1> id) {
+                    const Pale::float4 rendered = framebuffer[id[0]], targetPixel = targetRgba[id[0]];
+                    const float relativeWeight = relativeDensificationWeight(
+                        rendered, targetPixel, floorSquared);
+                    source[id[0]] = Pale::float4{
+                        (rendered.x()-targetPixel.x())*invElementCount,
+                        (rendered.y()-targetPixel.y())*invElementCount,
+                        (rendered.z()-targetPixel.z())*invElementCount,
+                        relativeWeight};
+                });
+        }
+
         queue.fill(target.loss, 0.0f, 3u);
         if (options.ssimWeight <= 0.0f) {
             queue.parallel_for<class RgbLossAdjointKernelTag>(
@@ -5597,7 +5676,8 @@ private:
                 [framebuffer = sensor.framebuffer,
                  targetRgba = target.rgba,
                  lossOut = target.loss,
-                 invElementCount](sycl::id<1> pixelId) {
+                 invElementCount, relativeDensification = options.relativeDensification,
+                 floorSquared](sycl::id<1> pixelId) {
                     const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
                     const Pale::float4 rendered = framebuffer[pixelIndex];
                     const Pale::float4 targetPixel = targetRgba[pixelIndex];
@@ -5625,7 +5705,7 @@ private:
                         diffR * invElementCount,
                         diffG * invElementCount,
                         diffB * invElementCount,
-                        0.0f
+                        relativeDensification ? relativeDensificationWeight(rendered, targetPixel, floorSquared) : 0.0f
                     };
                 });
             return;
@@ -5882,6 +5962,7 @@ private:
     Pale::PointGradients visibilityOpacityGradients{};
     Pale::PointGradients intraSlabDepthGradients{};
     Pale::PointGradients curvatureScaleGradients{};
+    Pale::PointGradients densificationGradients{};
     Pale::CurvatureDensificationStats curvatureDensificationStats{};
     Pale::PrimalActivityStats primalActivityStats{};
     bool primalActivityTrackingEnabled{false};
@@ -5890,6 +5971,12 @@ private:
     RgbSsimScratch rgbSsimScratch{};
     DeviceAdamState deviceTrainingState{};
     bool devicePointParametersDirty{false};
+    bool parallelBvhRefit{true};
+    bool pointBvhRefitPlanReady{false};
+    Pale::PointBvhRefitDetail::NodeTask *pointBvhRefitTasks{nullptr};
+    Pale::PointBvhRefitDetail::NodeTask *pointQbvhRefitTasks{nullptr};
+    std::vector<Pale::BLASRange> pointBvhRefitLevels{};
+    std::size_t pointQbvhRefitTaskCount{0};
 
     // Adjoint buffers
     bool adjointBuffersAllocated{false};

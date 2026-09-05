@@ -5,6 +5,8 @@ module;
 
 #include <sycl/sycl.hpp>
 #include <filesystem>
+#include <limits>
+#include <stdexcept>
 #include "Kernels/SyclBridge.h"
 #include "Core/ScopedTimer.h"
 
@@ -58,6 +60,26 @@ namespace Pale {
         allocateIntermediates(newCapacity);
     }
 
+    void PathTracer::ensureMeasurementTwoPointEventCapacity(uint32_t cameraRayCount) {
+        // Every selected camera slab enumerates all lights. The shadow-sample
+        // setting is not the number of events produced by this direct-light path.
+        const uint64_t required = static_cast<uint64_t>(cameraRayCount) * m_sceneGPU.lightCount;
+        if (required <= m_intermediates.maxMeasurementTwoPointEventCount) return;
+        if (required > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("Too many camera slab/light events for the adjoint event counter");
+        }
+        auto *events = sycl::malloc_device<MeasurementGradientEventXY>(
+            static_cast<std::size_t>(required), m_queue);
+        if (events == nullptr) {
+            throw std::runtime_error("Unable to allocate the complete camera slab/light event buffer");
+        }
+        m_queue.wait_and_throw();
+        sycl::free(m_intermediates.measurementTwoPointEvents, m_queue);
+        m_intermediates.measurementTwoPointEvents = events;
+        m_intermediates.maxMeasurementTwoPointEventCount = static_cast<uint32_t>(required);
+        Log::PA_INFO("Adjoint slab/light event capacity: {}", required);
+    }
+
     void PathTracer::allocateIntermediates(uint32_t newCapacity) {
         freeIntermediates();
         m_rayQueueCapacity = newCapacity;
@@ -95,7 +117,7 @@ namespace Pale {
                 sycl::malloc_device<MeasurementGradientEvent>(m_rayQueueCapacity, m_queue);
         Log::PA_TRACE("Allocated sizeMeasurementEventsBytes: {}", Utils::formatBytes(sizeMeasurementEventsBytes));
 
-        const uint32_t measurementTwoPointEventCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays;
+        const uint32_t measurementTwoPointEventCapacity = m_rayQueueCapacity;
         const std::size_t sizeMeasurementEventsTwoPointBytes =
                 sizeof(MeasurementGradientEventXY) * measurementTwoPointEventCapacity;
         m_intermediates.measurementTwoPointEvents = sycl::malloc_device<MeasurementGradientEventXY>(
@@ -138,7 +160,15 @@ namespace Pale {
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
         m_intermediates.maxMeasurementEventCount = m_rayQueueCapacity;;
 
-        const uint32_t gradientRecordCapacity = m_rayQueueCapacity * m_settings.numAdjointPathShadowRays * 10;
+        // Contributions are reduced in bounded batches; additional lights do
+        // not require duplicating the gradient scratch buffer.
+        const uint64_t requiredGradientRecords = std::max<uint64_t>(
+            static_cast<uint64_t>(m_rayQueueCapacity) * 10u,
+            kMaxLocalSurfelHits * (1u + kMaxSplatEventsPerRay * kMaxLocalSurfelHits));
+        if (requiredGradientRecords > std::numeric_limits<uint32_t>::max()) {
+            throw std::runtime_error("Adjoint gradient scratch exceeds the counter range");
+        }
+        const uint32_t gradientRecordCapacity = static_cast<uint32_t>(requiredGradientRecords);
         // TODO depends on number of sensors
         const std::size_t sizeGradientRecordsBytes =
                 sizeof(SurfelGradientRecord) * gradientRecordCapacity;
@@ -574,13 +604,16 @@ namespace Pale {
 
     void PathTracer::renderBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients,
                                     DebugImages *debugImages) {
+        uint32_t maximumCameraRayCount = 0u;
         for (const auto &sensor: sensors) {
             const uint32_t requiredRayCapacity = sensor.width * sensor.height;
+            maximumCameraRayCount = std::max(maximumCameraRayCount, requiredRayCapacity);
             if (requiredRayCapacity > m_rayQueueCapacity) {
                 Log::PA_INFO("RayQueue Capacity too small for per pixel adjoint pass. Resizing queue capacity..");
                 ensureRayCapacity(requiredRayCapacity);
             }
         }
+        ensureMeasurementTwoPointEventCapacity(maximumCameraRayCount);
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting Adjoint rendering pass");

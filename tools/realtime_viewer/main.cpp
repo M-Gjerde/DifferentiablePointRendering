@@ -168,6 +168,17 @@ namespace {
                mode == ViewImageMode::IntraSlabPositionGradient;
     }
 
+    [[nodiscard]] bool requiresVisibleSlabSearch(ViewImageMode mode) {
+        // The per-primitive maps use the identity selected by the curvature
+        // pass, even when the displayed quantity itself is not curvature.
+        return mode == ViewImageMode::CurvatureScale ||
+               mode == ViewImageMode::CurvaturePrimitiveScore ||
+               mode == ViewImageMode::PositionPrimitiveScore ||
+               mode == ViewImageMode::DensificationOrigin ||
+               mode == ViewImageMode::PrimitiveAge ||
+               isRegularizerGradientView(mode);
+    }
+
     [[nodiscard]] bool isSsimDebugView(ViewImageMode mode) {
         return mode == ViewImageMode::SsimTarget ||
                mode == ViewImageMode::RgbHalfMse ||
@@ -705,7 +716,6 @@ namespace {
         appendCounterTextRow(stream, "Local layers", counters.forwardGatherLocalLayers, pixelCount);
         appendCounterTextRow(stream, "Local layer hits", counters.forwardGatherLocalLayerHits, pixelCount);
         appendCounterTextRow(stream, "Object-profile local hits", counters.forwardGatherObjectProfileHits, pixelCount);
-        appendCounterTextRow(stream, "Low-pass local hits", counters.forwardGatherLowPassProfileHits, pixelCount);
         appendCounterTextRow(stream, "Regularizer hits", counters.forwardGatherRegularizerHits, pixelCount);
         appendCounterTextRow(stream, "Photon gather calls", counters.forwardGatherPhotonGatherCalls, pixelCount);
         appendCounterTextRow(stream, "Direct-light calls", counters.forwardGatherDirectLightCalls, pixelCount);
@@ -728,8 +738,6 @@ namespace {
                        ? static_cast<double>(counters.forwardGatherLocalLayerHits) /
                          static_cast<double>(counters.forwardGatherLocalLayers)
                        : 0.0) << '\n';
-        stream << "Low-pass hit share\t"
-               << percent(counters.forwardGatherLowPassProfileHits, counters.forwardGatherLocalLayerHits) << '\n';
         return stream.str();
     }
 
@@ -932,7 +940,6 @@ namespace {
                     drawCounterRow("Local layers", counters.forwardGatherLocalLayers, pixelCount);
                     drawCounterRow("Local layer hits", counters.forwardGatherLocalLayerHits, pixelCount);
                     drawCounterRow("Object-profile local hits", counters.forwardGatherObjectProfileHits, pixelCount);
-                    drawCounterRow("Low-pass local hits", counters.forwardGatherLowPassProfileHits, pixelCount);
                     drawCounterRow("Regularizer hits", counters.forwardGatherRegularizerHits, pixelCount);
                     drawCounterRow("Photon gather calls", counters.forwardGatherPhotonGatherCalls, pixelCount);
                     drawCounterRow("Direct-light calls", counters.forwardGatherDirectLightCalls, pixelCount);
@@ -957,9 +964,6 @@ namespace {
                         : 0.0;
                 ImGui::Text("Candidates/query: %.3f", candidatesPerQuery);
                 ImGui::Text("Hits/layer: %.3f", hitsPerLayer);
-                ImGui::Text(
-                    "Low-pass hit share: %.2f%%",
-                    percent(counters.forwardGatherLowPassProfileHits, counters.forwardGatherLocalLayerHits));
             }
 
             if (ImGui::CollapsingHeader("Raw timer events")) {
@@ -2388,8 +2392,6 @@ namespace {
         settings.pointGeometryCoverageScale = 1.0f;
         settings.pointGeometryMinimumContributors = 1u;
         settings.pointGeometryDebugShowAlbedo = false;
-        settings.rendererDebugMinimumProjectedFootprint = false;
-        settings.rendererDebugMinimumProjectedFootprintPixels = 0.707f;
         return settings;
     }
 
@@ -3009,8 +3011,6 @@ int main(int argc, char** argv) {
         Pale::SceneBuild::BuildOptions buildOptions{};
         buildOptions.bvhMaxLeafPoints = 4u;
         buildOptions.pointBvhUseBinnedSah = true;
-        buildOptions.pointBvhEffectiveAlphaMin = 0.01f;
-        buildOptions.pointBvhMinRadiusScale = 0.10f;
 
         Pale::SceneBuild::BuildProducts buildProducts =
             Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
@@ -3061,7 +3061,6 @@ int main(int argc, char** argv) {
         Pale::PathTracer tracer(queue, settings);
         Pale::CurvatureDensificationStats curvatureDensificationStats =
             Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
-        tracer.setCurvatureDensificationStats(&curvatureDensificationStats);
         Pale::SceneBuild::BuildProducts renderBuildProducts = buildProducts;
         renderBuildProducts.cameraGPUs.clear();
         Pale::SensorGPU sensor{};
@@ -3189,7 +3188,6 @@ int main(int argc, char** argv) {
                 Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
                 curvatureDensificationStats =
                     Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
-                tracer.setCurvatureDensificationStats(&curvatureDensificationStats);
             }
             sceneGpu.profileCounters =
                 gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
@@ -4338,7 +4336,15 @@ int main(int argc, char** argv) {
                 return;
             }
 
+            // These maps need a fresh visible-slab identity/curvature output.
+            const bool needsSlabSearch = requiresVisibleSlabSearch(nextMode);
+            if (needsSlabSearch || requiresVisibleSlabSearch(viewImageMode)) {
+                renderRequested = true;
+            }
             viewImageMode = nextMode;
+            if (needsSlabSearch) {
+                return;
+            }
             updateDisplayTexture();
         };
 
@@ -4568,6 +4574,11 @@ int main(int argc, char** argv) {
             }
 
             Pale::PathTracerSettings activeTracerSettings = settings;
+            activeTracerSettings.computeCurvatureDiagnostics =
+                requiresVisibleSlabSearch(viewImageMode);
+            tracer.setCurvatureDensificationStats(
+                viewImageMode == ViewImageMode::CurvaturePrimitiveScore
+                    ? &curvatureDensificationStats : nullptr);
             if (runAdjointEveryRender || runAdjointNextRender) {
                 viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
                 viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
@@ -5512,32 +5523,6 @@ int main(int argc, char** argv) {
                         "Binned SAH",
                         &buildOptions.pointBvhUseBinnedSah);
 
-                    float pointBvhAlphaMin = buildOptions.pointBvhEffectiveAlphaMin;
-                    if (ImGui::DragFloat(
-                            "Alpha cutoff",
-                            &pointBvhAlphaMin,
-                            0.001f,
-                            0.0f,
-                            0.10f,
-                            "%.4f")) {
-                        buildOptions.pointBvhEffectiveAlphaMin =
-                            std::clamp(pointBvhAlphaMin, 0.0f, 0.10f);
-                        pointBvhBuildChanged = true;
-                    }
-
-                    float pointBvhMinRadiusScale = buildOptions.pointBvhMinRadiusScale;
-                    if (ImGui::DragFloat(
-                            "Min radius",
-                            &pointBvhMinRadiusScale,
-                            0.005f,
-                            0.0f,
-                            1.0f,
-                            "%.3f")) {
-                        buildOptions.pointBvhMinRadiusScale =
-                            std::clamp(pointBvhMinRadiusScale, 0.0f, 1.0f);
-                        pointBvhBuildChanged = true;
-                    }
-
                     if (pointBvhBuildChanged) {
                         rebuildSceneGpu();
                         renderRequested = true;
@@ -5628,24 +5613,7 @@ int main(int argc, char** argv) {
                         renderRequested = true;
                     }
 
-                    if (ImGui::Checkbox(
-                            "2DGS low-pass footprint",
-                            &settings.rendererDebugMinimumProjectedFootprint)) {
-                        renderRequested = true;
-                    }
 
-                    float lowPassSigmaPixels =
-                        settings.rendererDebugMinimumProjectedFootprintPixels;
-                    if (ImGui::SliderFloat(
-                            "Low-pass sigma px",
-                            &lowPassSigmaPixels,
-                            0.05f,
-                            2.0f,
-                            "%.2f")) {
-                        settings.rendererDebugMinimumProjectedFootprintPixels =
-                            std::max(lowPassSigmaPixels, 0.0f);
-                        renderRequested = true;
-                    }
                 }
 
                 if (ImGui::Checkbox("Show point albedo", &settings.pointGeometryDebugShowAlbedo)) {

@@ -212,201 +212,6 @@ namespace Pale {
         return true;
     }
 
-    struct MinimumProjectedFootprintFilter {
-        bool enabled = false;
-        CameraGPU camera{};
-        float sigmaPixels = 0.901f;
-        float supportRadiusPerUnitDepthWorld = 0.0f;
-        uint32_t hasSamplePixel = 0u;
-        float2 samplePixel{FLT_MAX, FLT_MAX};
-    };
-
-    struct SurfelAlphaProfileEvaluation {
-        float alphaGeom = 0.0f;
-        float objectAlphaGeom = 0.0f;
-        float lowPassAlphaGeom = 0.0f;
-        float2 lowPassDeltaPixels{0.0f, 0.0f};
-        float lowPassSigmaPixels = 0.0f;
-        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
-        bool useSurfelCenterHitPosition = false;
-    };
-
-    SYCL_EXTERNAL inline MinimumProjectedFootprintFilter disabledMinimumProjectedFootprintFilter() {
-        return MinimumProjectedFootprintFilter{};
-    }
-
-    SYCL_EXTERNAL inline float minimumProjectedFootprintFocalPixels(const CameraGPU &camera);
-
-    SYCL_EXTERNAL inline MinimumProjectedFootprintFilter minimumProjectedFootprintFilterFromSettings(
-        const PathTracerSettings &settings,
-        const CameraGPU &camera,
-        const float2 &samplePixel = float2{FLT_MAX, FLT_MAX}) {
-        MinimumProjectedFootprintFilter filter{};
-        filter.enabled =
-            settings.rendererDebugMinimumProjectedFootprint &&
-            settings.rendererDebugMinimumProjectedFootprintPixels > 0.0f;
-        filter.camera = camera;
-        filter.sigmaPixels = sycl::fmax(settings.rendererDebugMinimumProjectedFootprintPixels, 1.0e-4f);
-        const float focalPixels = minimumProjectedFootprintFocalPixels(camera);
-        constexpr float kScreenGaussianSupportSigma = 3.0f;
-        filter.supportRadiusPerUnitDepthWorld =
-            focalPixels > 0.0f
-                ? kScreenGaussianSupportSigma * filter.sigmaPixels / focalPixels
-                : 0.0f;
-        filter.hasSamplePixel =
-            sycl::isfinite(samplePixel.x()) && sycl::isfinite(samplePixel.y()) ? 1u : 0u;
-        filter.samplePixel = samplePixel;
-        return filter;
-    }
-
-    SYCL_EXTERNAL inline float minimumProjectedFootprintFocalPixels(const CameraGPU &camera) {
-        if (camera.hasPinholeIntrinsics != 0u && camera.fx > 0.0f && camera.fy > 0.0f) {
-            return sycl::fmin(sycl::fabs(camera.fx), sycl::fabs(camera.fy));
-        }
-
-        const float height = sycl::fmax(static_cast<float>(camera.height), 1.0f);
-        return 0.5f * height / sycl::tan(0.5f * glm::radians(camera.fovy));
-    }
-
-    SYCL_EXTERNAL inline bool projectWorldPointToPixel(
-        const CameraGPU &camera,
-        const float3 &pointW,
-        float2 &pixelOut) {
-        const float4 viewPosition = camera.view * float4{pointW, 1.0f};
-        const float4 clipPosition = camera.proj * viewPosition;
-        if (!sycl::isfinite(clipPosition.w()) || sycl::fabs(clipPosition.w()) <= 1.0e-8f) {
-            return false;
-        }
-
-        const float inverseW = 1.0f / clipPosition.w();
-        const float ndcX = clipPosition.x() * inverseW;
-        const float ndcY = clipPosition.y() * inverseW;
-        if (!sycl::isfinite(ndcX) || !sycl::isfinite(ndcY)) {
-            return false;
-        }
-
-        pixelOut = float2{
-            (ndcX * 0.5f + 0.5f) * static_cast<float>(camera.width),
-            (0.5f - ndcY * 0.5f) * static_cast<float>(camera.height)
-        };
-        return true;
-    }
-
-    SYCL_EXTERNAL inline float worldToObjectLengthUpperBound(const Transform &transform) {
-        const float4x4 &m = transform.worldToObject;
-        const float squaredFrobenius =
-            m.row[0].x() * m.row[0].x() + m.row[0].y() * m.row[0].y() + m.row[0].z() * m.row[0].z() +
-            m.row[1].x() * m.row[1].x() + m.row[1].y() * m.row[1].y() + m.row[1].z() * m.row[1].z() +
-            m.row[2].x() * m.row[2].x() + m.row[2].y() * m.row[2].y() + m.row[2].z() * m.row[2].z();
-        return sycl::sqrt(sycl::fmax(squaredFrobenius, 1.0e-12f));
-    }
-
-    SYCL_EXTERNAL inline float minimumProjectedFootprintWorldSupportRadius(
-        const MinimumProjectedFootprintFilter &filter,
-        const float3 &pointW) {
-        if (!filter.enabled) {
-            return 0.0f;
-        }
-
-        const float depth = dot(pointW - filter.camera.pos, filter.camera.forward);
-        if (!(depth > 0.0f)) {
-            return 0.0f;
-        }
-
-        if (!(filter.supportRadiusPerUnitDepthWorld > 0.0f)) {
-            return 0.0f;
-        }
-
-        return filter.supportRadiusPerUnitDepthWorld * depth;
-    }
-
-    SYCL_EXTERNAL inline void expandObjectAabbForMinimumProjectedFootprint(
-        const Transform &transform,
-        const MinimumProjectedFootprintFilter &filter,
-        float worldToObjectLengthScale,
-        float3 &aabbMin,
-        float3 &aabbMax) {
-        if (!filter.enabled) {
-            return;
-        }
-
-        const float3 centerObject = (aabbMin + aabbMax) * 0.5f;
-        const float3 centerWorld = toWorldPoint(centerObject, transform);
-        const float worldRadius = minimumProjectedFootprintWorldSupportRadius(filter, centerWorld);
-        if (!(worldRadius > 0.0f)) {
-            return;
-        }
-
-        const float objectRadius = worldRadius * worldToObjectLengthScale;
-        const float3 expansion{objectRadius, objectRadius, objectRadius};
-        aabbMin -= expansion;
-        aabbMax += expansion;
-    }
-
-    SYCL_EXTERNAL inline bool opacityBetaWithMinimumProjectedFootprint(
-        const float2 &uv,
-        const float3 &hitPositionObject,
-        const SurfelTraversalData &traversalSurfel,
-        uint32_t primitiveIndex,
-        const Transform &transform,
-        const MinimumProjectedFootprintFilter &filter,
-        const GPUSceneBuffers &scene,
-        SurfelAlphaProfileEvaluation &outProfile) {
-        outProfile = SurfelAlphaProfileEvaluation{};
-        float objectOpacity = 0.0f;
-        const bool objectHit = opacityBeta(uv, traversalSurfel, &objectOpacity);
-        outProfile.objectAlphaGeom = objectOpacity;
-
-        if (!filter.enabled || primitiveIndex >= scene.pointCount) {
-            outProfile.alphaGeom = objectOpacity;
-            outProfile.alphaProfileBranch = kSurfelAlphaProfileObject;
-            return objectHit && objectOpacity > 0.0f;
-        }
-
-        const Point &surfel = scene.points[primitiveIndex];
-        const float3 centerW = toWorldPoint(surfel.position, transform);
-
-        float2 centerPx{};
-        if (!projectWorldPointToPixel(filter.camera, centerW, centerPx)) {
-            outProfile.alphaGeom = objectOpacity;
-            outProfile.alphaProfileBranch = kSurfelAlphaProfileObject;
-            return objectHit && objectOpacity > 0.0f;
-        }
-
-        float2 hitPx = filter.samplePixel;
-        if (filter.hasSamplePixel == 0u) {
-            const float3 hitW = toWorldPoint(hitPositionObject, transform);
-            if (!projectWorldPointToPixel(filter.camera, hitW, hitPx)) {
-                outProfile.alphaGeom = objectOpacity;
-                outProfile.alphaProfileBranch = kSurfelAlphaProfileObject;
-                return objectHit && objectOpacity > 0.0f;
-            }
-        }
-
-        const float2 screenDelta = hitPx - centerPx;
-        const float screenDistanceSquared = dot(screenDelta, screenDelta);
-        const float sigmaSquared = sycl::fmax(filter.sigmaPixels * filter.sigmaPixels, 1.0e-8f);
-        outProfile.lowPassDeltaPixels = screenDelta;
-        outProfile.lowPassSigmaPixels = filter.sigmaPixels;
-        constexpr float kScreenGaussianSupportSigma = 3.0f;
-        const float supportSquared =
-            kScreenGaussianSupportSigma * kScreenGaussianSupportSigma * sigmaSquared;
-        const float screenOpacity =
-            screenDistanceSquared <= supportSquared
-                ? sycl::exp(-0.5f * screenDistanceSquared / sigmaSquared)
-                : 0.0f;
-
-        outProfile.lowPassAlphaGeom = screenOpacity;
-        outProfile.alphaGeom = sycl::fmax(objectOpacity, screenOpacity);
-        if (screenOpacity > objectOpacity) {
-            outProfile.alphaProfileBranch = kSurfelAlphaProfileLowPass;
-            outProfile.useSurfelCenterHitPosition = !objectHit || objectOpacity <= 1.0e-8f;
-        } else {
-            outProfile.alphaProfileBranch = kSurfelAlphaProfileObject;
-        }
-        return outProfile.alphaGeom > 0.0f;
-    }
-
     SYCL_EXTERNAL inline bool pointQbvhChildValid(const PackedPointQBVHNode &node, uint32_t slot) {
         return node.childSourceNodeIndex[slot] != UINT32_MAX;
     }
@@ -964,8 +769,7 @@ namespace Pale {
         float tMaxWorld,
         LocalSurfelLayerHit *localHits,
         uint32_t maxLocalHitCount,
-        const GPUSceneBuffers &scene,
-        const MinimumProjectedFootprintFilter &minimumFootprintFilter) {
+        const GPUSceneBuffers &scene) {
         if (maxLocalHitCount == 0u) {
             return 0u;
         }
@@ -984,9 +788,6 @@ namespace Pale {
         const float infinity = std::numeric_limits<float>::infinity();
         const bool hasFiniteWorldTMax = tMaxWorld < infinity;
         float objectTMaxLimit = hasFiniteWorldTMax ? tMaxWorld * objectTPerWorldT : infinity;
-        const bool minimumFootprintEnabled = minimumFootprintFilter.enabled;
-        const float minimumFootprintWorldToObjectLengthScale =
-            minimumFootprintEnabled ? worldToObjectLengthUpperBound(transform) : 0.0f;
         uint32_t localHitCount = 0u;
         const bool profileEnabled = scene.profileCounters != nullptr;
         uint64_t profileNodeTests = 0u;
@@ -1022,43 +823,11 @@ namespace Pale {
                     const float2 uv = phiInverse(hitPositionObject, surfel);
                     float alphaGeom = 0.0f;
                     float3 hitPositionW{};
-                    float objectAlphaGeom = 0.0f;
-                    float lowPassAlphaGeom = 0.0f;
-                    float2 lowPassDeltaPixels{0.0f, 0.0f};
-                    float lowPassSigmaPixels = 0.0f;
-                    uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
-                    uint32_t usesSurfelCenterHitPosition = 0u;
                     if (profileEnabled) ++profileProfileTests;
-                    if (minimumFootprintEnabled) {
-                        SurfelAlphaProfileEvaluation alphaProfile{};
-                        if (!opacityBetaWithMinimumProjectedFootprint(
-                                uv,
-                                hitPositionObject,
-                                surfel,
-                                primitiveIndex,
-                                transform,
-                                minimumFootprintFilter,
-                                scene,
-                                alphaProfile) || alphaProfile.alphaGeom <= 0.0f) {
-                            continue;
-                        }
-                        alphaGeom = alphaProfile.alphaGeom;
-                        hitPositionW = alphaProfile.useSurfelCenterHitPosition
-                                           ? toWorldPoint(scene.points[primitiveIndex].position, transform)
-                                           : toWorldPoint(hitPositionObject, transform);
-                        objectAlphaGeom = alphaProfile.objectAlphaGeom;
-                        lowPassAlphaGeom = alphaProfile.lowPassAlphaGeom;
-                        lowPassDeltaPixels = alphaProfile.lowPassDeltaPixels;
-                        lowPassSigmaPixels = alphaProfile.lowPassSigmaPixels;
-                        alphaProfileBranch = alphaProfile.alphaProfileBranch;
-                        usesSurfelCenterHitPosition = alphaProfile.useSurfelCenterHitPosition ? 1u : 0u;
-                    } else {
-                        if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
-                            continue;
-                        }
-                        hitPositionW = toWorldPoint(hitPositionObject, transform);
-                        objectAlphaGeom = alphaGeom;
+                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
                     }
+                    hitPositionW = toWorldPoint(hitPositionObject, transform);
                     const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                     if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
                         continue;
@@ -1070,12 +839,6 @@ namespace Pale {
                     candidateHit.alphaGeom = alphaGeom;
                     candidateHit.hitPositionW = hitPositionW;
                     candidateHit.uv = uv;
-                    candidateHit.objectAlphaGeom = objectAlphaGeom;
-                    candidateHit.lowPassAlphaGeom = lowPassAlphaGeom;
-                    candidateHit.lowPassDeltaPixels = lowPassDeltaPixels;
-                    candidateHit.lowPassSigmaPixels = lowPassSigmaPixels;
-                    candidateHit.alphaProfileBranch = alphaProfileBranch;
-                    candidateHit.usesSurfelCenterHitPosition = usesSurfelCenterHitPosition;
                     if (profileEnabled) ++profileAcceptedHits;
                     insertLocalSurfelLayerHit(
                         localHits,
@@ -1127,14 +890,6 @@ namespace Pale {
                     float childTEntry = std::numeric_limits<float>::infinity();
                     float3 childAabbMin{node.minX[slot], node.minY[slot], node.minZ[slot]};
                     float3 childAabbMax{node.maxX[slot], node.maxY[slot], node.maxZ[slot]};
-                    if (minimumFootprintEnabled) {
-                        expandObjectAabbForMinimumProjectedFootprint(
-                            transform,
-                            minimumFootprintFilter,
-                            minimumFootprintWorldToObjectLengthScale,
-                            childAabbMin,
-                            childAabbMax);
-                    }
 
                     const bool hitChild = slabIntersectAABB(
                         rayObject,
@@ -1204,43 +959,11 @@ namespace Pale {
                     const float2 uv = phiInverse(hitPositionObject, surfel);
                     float alphaGeom = 0.0f;
                     float3 hitPositionW{};
-                    float objectAlphaGeom = 0.0f;
-                    float lowPassAlphaGeom = 0.0f;
-                    float2 lowPassDeltaPixels{0.0f, 0.0f};
-                    float lowPassSigmaPixels = 0.0f;
-                    uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
-                    uint32_t usesSurfelCenterHitPosition = 0u;
                     if (profileEnabled) ++profileProfileTests;
-                    if (minimumFootprintEnabled) {
-                        SurfelAlphaProfileEvaluation alphaProfile{};
-                        if (!opacityBetaWithMinimumProjectedFootprint(
-                                uv,
-                                hitPositionObject,
-                                surfel,
-                                primitiveIndex,
-                                transform,
-                                minimumFootprintFilter,
-                                scene,
-                                alphaProfile) || alphaProfile.alphaGeom <= 0.0f) {
-                            continue;
-                        }
-                        alphaGeom = alphaProfile.alphaGeom;
-                        hitPositionW = alphaProfile.useSurfelCenterHitPosition
-                                           ? toWorldPoint(scene.points[primitiveIndex].position, transform)
-                                           : toWorldPoint(hitPositionObject, transform);
-                        objectAlphaGeom = alphaProfile.objectAlphaGeom;
-                        lowPassAlphaGeom = alphaProfile.lowPassAlphaGeom;
-                        lowPassDeltaPixels = alphaProfile.lowPassDeltaPixels;
-                        lowPassSigmaPixels = alphaProfile.lowPassSigmaPixels;
-                        alphaProfileBranch = alphaProfile.alphaProfileBranch;
-                        usesSurfelCenterHitPosition = alphaProfile.useSurfelCenterHitPosition ? 1u : 0u;
-                    } else {
-                        if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
-                            continue;
-                        }
-                        hitPositionW = toWorldPoint(hitPositionObject, transform);
-                        objectAlphaGeom = alphaGeom;
+                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                        continue;
                     }
+                    hitPositionW = toWorldPoint(hitPositionObject, transform);
                     const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                     if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
                         continue;
@@ -1252,12 +975,6 @@ namespace Pale {
                     candidateHit.alphaGeom = alphaGeom;
                     candidateHit.hitPositionW = hitPositionW;
                     candidateHit.uv = uv;
-                    candidateHit.objectAlphaGeom = objectAlphaGeom;
-                    candidateHit.lowPassAlphaGeom = lowPassAlphaGeom;
-                    candidateHit.lowPassDeltaPixels = lowPassDeltaPixels;
-                    candidateHit.lowPassSigmaPixels = lowPassSigmaPixels;
-                    candidateHit.alphaProfileBranch = alphaProfileBranch;
-                    candidateHit.usesSurfelCenterHitPosition = usesSurfelCenterHitPosition;
                     if (profileEnabled) ++profileAcceptedHits;
                     insertLocalSurfelLayerHit(
                         localHits,
@@ -1296,35 +1013,12 @@ namespace Pale {
 
                 bool hitLeft = false;
                 bool hitRight = false;
-                if (minimumFootprintEnabled) {
-                    float3 leftAabbMin = node.leftAabbMin;
-                    float3 leftAabbMax = node.leftAabbMax;
-                    float3 rightAabbMin = node.rightAabbMin;
-                    float3 rightAabbMax = node.rightAabbMax;
-                    expandObjectAabbForMinimumProjectedFootprint(
-                        transform,
-                        minimumFootprintFilter,
-                        minimumFootprintWorldToObjectLengthScale,
-                        leftAabbMin,
-                        leftAabbMax);
-                    expandObjectAabbForMinimumProjectedFootprint(
-                        transform,
-                        minimumFootprintFilter,
-                        minimumFootprintWorldToObjectLengthScale,
-                        rightAabbMin,
-                        rightAabbMax);
-                    hitLeft = leftValid && slabIntersectAABB(
-                        rayObject, leftAabbMin, leftAabbMax, inverseDirectionObject, objectTMaxLimit, leftTEntry);
-                    hitRight = rightValid && slabIntersectAABB(
-                        rayObject, rightAabbMin, rightAabbMax, inverseDirectionObject, objectTMaxLimit, rightTEntry);
-                } else {
-                    hitLeft = leftValid && slabIntersectAABB(
-                        rayObject, node.leftAabbMin, node.leftAabbMax, inverseDirectionObject, objectTMaxLimit,
-                        leftTEntry);
-                    hitRight = rightValid && slabIntersectAABB(
-                        rayObject, node.rightAabbMin, node.rightAabbMax, inverseDirectionObject, objectTMaxLimit,
-                        rightTEntry);
-                }
+                hitLeft = leftValid && slabIntersectAABB(
+                    rayObject, node.leftAabbMin, node.leftAabbMax, inverseDirectionObject, objectTMaxLimit,
+                    leftTEntry);
+                hitRight = rightValid && slabIntersectAABB(
+                    rayObject, node.rightAabbMin, node.rightAabbMax, inverseDirectionObject, objectTMaxLimit,
+                    rightTEntry);
 
                 if (profileEnabled) {
                     profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
@@ -1363,30 +1057,12 @@ namespace Pale {
         float rootTEntry = 0.0f;
         if (profileEnabled) ++profileNodeTests;
         bool hitRoot = false;
-        if (minimumFootprintEnabled) {
-            float3 rootAabbMin = bvhNodes[0].aabbMin;
-            float3 rootAabbMax = bvhNodes[0].aabbMax;
-            expandObjectAabbForMinimumProjectedFootprint(
-                transform,
-                minimumFootprintFilter,
-                minimumFootprintWorldToObjectLengthScale,
-                rootAabbMin,
-                rootAabbMax);
-            hitRoot = slabIntersectAABB(
-                rayObject,
-                rootAabbMin,
-                rootAabbMax,
-                inverseDirectionObject,
-                objectTMaxLimit,
-                rootTEntry);
-        } else {
-            hitRoot = slabIntersectAABB(
-                rayObject,
-                bvhNodes[0],
-                inverseDirectionObject,
-                objectTMaxLimit,
-                rootTEntry);
-        }
+        hitRoot = slabIntersectAABB(
+            rayObject,
+            bvhNodes[0],
+            inverseDirectionObject,
+            objectTMaxLimit,
+            rootTEntry);
         if (hitRoot) {
             if (profileEnabled) ++profileNodeHits;
             traversalStack.push(0u, rootTEntry);
@@ -1406,33 +1082,10 @@ namespace Pale {
                 if (profileEnabled) profileNodeTests += 2u;
                 bool hitLeft = false;
                 bool hitRight = false;
-                if (minimumFootprintEnabled) {
-                    float3 leftAabbMin = bvhNodes[leftIndex].aabbMin;
-                    float3 leftAabbMax = bvhNodes[leftIndex].aabbMax;
-                    float3 rightAabbMin = bvhNodes[rightIndex].aabbMin;
-                    float3 rightAabbMax = bvhNodes[rightIndex].aabbMax;
-                    expandObjectAabbForMinimumProjectedFootprint(
-                        transform,
-                        minimumFootprintFilter,
-                        minimumFootprintWorldToObjectLengthScale,
-                        leftAabbMin,
-                        leftAabbMax);
-                    expandObjectAabbForMinimumProjectedFootprint(
-                        transform,
-                        minimumFootprintFilter,
-                        minimumFootprintWorldToObjectLengthScale,
-                        rightAabbMin,
-                        rightAabbMax);
-                    hitLeft = slabIntersectAABB(
-                        rayObject, leftAabbMin, leftAabbMax, inverseDirectionObject, objectTMaxLimit, leftTEntry);
-                    hitRight = slabIntersectAABB(
-                        rayObject, rightAabbMin, rightAabbMax, inverseDirectionObject, objectTMaxLimit, rightTEntry);
-                } else {
-                    hitLeft = slabIntersectAABB(
-                        rayObject, bvhNodes[leftIndex], inverseDirectionObject, objectTMaxLimit, leftTEntry);
-                    hitRight = slabIntersectAABB(
-                        rayObject, bvhNodes[rightIndex], inverseDirectionObject, objectTMaxLimit, rightTEntry);
-                }
+                hitLeft = slabIntersectAABB(
+                    rayObject, bvhNodes[leftIndex], inverseDirectionObject, objectTMaxLimit, leftTEntry);
+                hitRight = slabIntersectAABB(
+                    rayObject, bvhNodes[rightIndex], inverseDirectionObject, objectTMaxLimit, rightTEntry);
                 if (profileEnabled) {
                     profileNodeHits += static_cast<uint64_t>(hitLeft) + static_cast<uint64_t>(hitRight);
                 }
@@ -1467,43 +1120,11 @@ namespace Pale {
                 const float2 uv = phiInverse(hitPositionObject, surfel);
                 float alphaGeom = 0.0f;
                 float3 hitPositionW{};
-                float objectAlphaGeom = 0.0f;
-                float lowPassAlphaGeom = 0.0f;
-                float2 lowPassDeltaPixels{0.0f, 0.0f};
-                float lowPassSigmaPixels = 0.0f;
-                uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
-                uint32_t usesSurfelCenterHitPosition = 0u;
                 if (profileEnabled) ++profileProfileTests;
-                if (minimumFootprintEnabled) {
-                    SurfelAlphaProfileEvaluation alphaProfile{};
-                    if (!opacityBetaWithMinimumProjectedFootprint(
-                            uv,
-                            hitPositionObject,
-                            surfel,
-                            primitiveIndex,
-                            transform,
-                            minimumFootprintFilter,
-                            scene,
-                            alphaProfile) || alphaProfile.alphaGeom <= 0.0f) {
-                        continue;
-                    }
-                    alphaGeom = alphaProfile.alphaGeom;
-                    hitPositionW = alphaProfile.useSurfelCenterHitPosition
-                                       ? toWorldPoint(scene.points[primitiveIndex].position, transform)
-                                       : toWorldPoint(hitPositionObject, transform);
-                    objectAlphaGeom = alphaProfile.objectAlphaGeom;
-                    lowPassAlphaGeom = alphaProfile.lowPassAlphaGeom;
-                    lowPassDeltaPixels = alphaProfile.lowPassDeltaPixels;
-                    lowPassSigmaPixels = alphaProfile.lowPassSigmaPixels;
-                    alphaProfileBranch = alphaProfile.alphaProfileBranch;
-                    usesSurfelCenterHitPosition = alphaProfile.useSurfelCenterHitPosition ? 1u : 0u;
-                } else {
-                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
-                        continue;
-                    }
-                    hitPositionW = toWorldPoint(hitPositionObject, transform);
-                    objectAlphaGeom = alphaGeom;
+                if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                    continue;
                 }
+                hitPositionW = toWorldPoint(hitPositionObject, transform);
                 const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                 if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
                     continue;
@@ -1514,12 +1135,6 @@ namespace Pale {
                 candidateHit.alphaGeom = alphaGeom;
                 candidateHit.hitPositionW = hitPositionW;
                 candidateHit.uv = uv;
-                candidateHit.objectAlphaGeom = objectAlphaGeom;
-                candidateHit.lowPassAlphaGeom = lowPassAlphaGeom;
-                candidateHit.lowPassDeltaPixels = lowPassDeltaPixels;
-                candidateHit.lowPassSigmaPixels = lowPassSigmaPixels;
-                candidateHit.alphaProfileBranch = alphaProfileBranch;
-                candidateHit.usesSurfelCenterHitPosition = usesSurfelCenterHitPosition;
                 if (profileEnabled) ++profileAcceptedHits;
                 insertLocalSurfelLayerHit(
                     localHits,
@@ -1555,8 +1170,7 @@ namespace Pale {
         float tMaxWorld,
         LocalSurfelLayerHit *hits,
         uint32_t maxHitCount,
-        uint32_t &instanceIndexOut,
-        const MinimumProjectedFootprintFilter &minimumFootprintFilter) {
+        uint32_t &instanceIndexOut) {
         flushTlasProfile(scene, 1u, 0u, 0u, 0u);
         if (!tryGetSinglePointCloudInstance(scene, instanceIndexOut)) {
             return 0u;
@@ -1574,27 +1188,7 @@ namespace Pale {
             tMaxWorld,
             hits,
             maxHitCount,
-            scene,
-            minimumFootprintFilter);
-    }
-
-    SYCL_EXTERNAL static uint32_t collectScenePointHitsDirect(
-        const Ray &rayWorld,
-        const GPUSceneBuffers &scene,
-        float tMinWorld,
-        float tMaxWorld,
-        LocalSurfelLayerHit *hits,
-        uint32_t maxHitCount,
-        uint32_t &instanceIndexOut) {
-        return collectScenePointHitsDirect(
-            rayWorld,
-            scene,
-            tMinWorld,
-            tMaxWorld,
-            hits,
-            maxHitCount,
-            instanceIndexOut,
-            disabledMinimumProjectedFootprintFilter());
+            scene);
     }
 
     struct PointCloudLocalLayer {
@@ -1897,8 +1491,7 @@ namespace Pale {
         const GPUSceneBuffers &scene,
         float localLayerDepthEpsilon,
         uint32_t maxLocalSurfelHits,
-        float localLayerNormalCosineThreshold,
-        const MinimumProjectedFootprintFilter &minimumFootprintFilter) {
+        float localLayerNormalCosineThreshold) {
         if (maxLocalSurfelHits == 0u) {
             return PointCloudLocalLayer{};
         }
@@ -1929,8 +1522,7 @@ namespace Pale {
             localTMax,
             candidateHits,
             maxLocalSurfelHits,
-            scene,
-            minimumFootprintFilter);
+            scene);
 
         LocalSurfelLayerHit firstLocalHit{};
         firstLocalHit.tWorld = firstHit.t;
@@ -1938,12 +1530,6 @@ namespace Pale {
         firstLocalHit.alphaGeom = firstHit.alphaGeom;
         firstLocalHit.hitPositionW = firstHit.hitPositionW;
         firstLocalHit.uv = phiInverse(firstHit.hitPositionW, referenceSurfel);
-        firstLocalHit.objectAlphaGeom = firstHit.alphaGeom;
-        firstLocalHit.lowPassAlphaGeom = 0.0f;
-        firstLocalHit.lowPassDeltaPixels = float2{0.0f, 0.0f};
-        firstLocalHit.lowPassSigmaPixels = 0.0f;
-        firstLocalHit.alphaProfileBranch = kSurfelAlphaProfileObject;
-        firstLocalHit.usesSurfelCenterHitPosition = 0u;
 
         return buildPointCloudLocalLayerFromHits(
             rayWorld,
@@ -1954,25 +1540,6 @@ namespace Pale {
             localLayerDepthEpsilon,
             maxLocalSurfelHits,
             localLayerNormalCosineThreshold);
-    }
-
-    SYCL_EXTERNAL static PointCloudLocalLayer collectPointCloudLocalLayer(
-        const Ray &rayWorld,
-        const WorldHit &firstHit,
-        const InstanceRecord &instance,
-        const GPUSceneBuffers &scene,
-        float localLayerDepthEpsilon,
-        uint32_t maxLocalSurfelHits,
-        float localLayerNormalCosineThreshold) {
-        return collectPointCloudLocalLayer(
-            rayWorld,
-            firstHit,
-            instance,
-            scene,
-            localLayerDepthEpsilon,
-            maxLocalSurfelHits,
-            localLayerNormalCosineThreshold,
-            disabledMinimumProjectedFootprintFilter());
     }
 
     // Transmit and only attenuate the ray.
@@ -2635,8 +2202,7 @@ namespace Pale {
                         localTMax,
                         localHits,
                         maxLocalSurfelHits,
-                        scene,
-                        disabledMinimumProjectedFootprintFilter());
+                        scene);
 
             // Preserve the already-found closest hit if local collection fails.
             if (localHitCount == 0u) {
@@ -2645,12 +2211,6 @@ namespace Pale {
                 localHits[0].alphaGeom = shadowHit.alphaGeom;
                 localHits[0].hitPositionW = shadowHit.hitPositionW;
                 localHits[0].uv = phiInverse(shadowHit.hitPositionW, scene.points[shadowHit.primitiveIndex]);
-                localHits[0].objectAlphaGeom = shadowHit.alphaGeom;
-                localHits[0].lowPassAlphaGeom = 0.0f;
-                localHits[0].lowPassDeltaPixels = float2{0.0f, 0.0f};
-                localHits[0].lowPassSigmaPixels = 0.0f;
-                localHits[0].alphaProfileBranch = kSurfelAlphaProfileObject;
-                localHits[0].usesSurfelCenterHitPosition = 0u;
                 localHitCount = 1u;
             }
 

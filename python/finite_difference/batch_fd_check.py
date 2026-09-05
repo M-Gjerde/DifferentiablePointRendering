@@ -103,7 +103,6 @@ def main() -> int:
                 f"{index:02d} {case['stage']:<18} {case['name']:<42} "
                 f"{case['parameter']}[{case['index']}] "
                 f"shared={settings['share_local_layer_direct_lighting']} "
-                f"lowpass={settings['minimum_projected_footprint']} "
                 f"batch={settings.get('point_hit_batch_size', 'default')}"
             )
         return 0

@@ -51,6 +51,8 @@ export namespace Pale {
     private:
         void ensureRayCapacity(uint32_t requiredRayQueueCapacity);
 
+        void ensureMeasurementTwoPointEventCapacity(uint32_t cameraRayCount);
+
         void ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid &grid);
 
         void allocateIntermediates(uint32_t newCapacity);

@@ -25,8 +25,6 @@
       "adjoint_q_null": 0.0,
       "adjoint_q_reflect": 1.0,
       "share_local_layer_direct_lighting": false,
-      "minimum_projected_footprint": false,
-      "minimum_projected_footprint_pixels": 0.707,
       "local_layer_depth_epsilon": 0.02,
       "local_layer_normal_cosine_threshold": 0.5,
       "max_splat_events_per_ray": 8,
@@ -379,68 +377,6 @@
       "values": [0.58, 0.78],
       "settings": {
         "share_local_layer_direct_lighting": true
-      }
-    },
-
-    {
-      "name": "50_subpixel_lowpass_disabled_zero",
-      "stage": "minimum_footprint",
-      "ply": "subpixel_surfel",
-      "parameter": "albedo_r",
-      "index": 1,
-      "values": [0.42, 0.72],
-      "check": {
-        "minimum_signal": 1e-8,
-        "allow_zero_signal": true
-      }
-    },
-    {
-      "name": "51_subpixel_lowpass_enabled_albedo",
-      "stage": "minimum_footprint",
-      "ply": "subpixel_surfel",
-      "parameter": "albedo_r",
-      "index": 1,
-      "values": [0.42, 0.72],
-      "settings": {
-        "minimum_projected_footprint": true
-      },
-      "check": {
-        "relative_tolerance": 0.08,
-        "minimum_signal": 1e-8,
-        "fd_consistency_relative_tolerance": 0.12
-      }
-    },
-    {
-      "name": "52_subpixel_lowpass_enabled_opacity",
-      "stage": "minimum_footprint",
-      "ply": "subpixel_surfel",
-      "parameter": "opacity",
-      "index": 1,
-      "values": [0.42, 0.74],
-      "settings": {
-        "minimum_projected_footprint": true
-      },
-      "check": {
-        "relative_tolerance": 0.08,
-        "minimum_signal": 1e-8,
-        "fd_consistency_relative_tolerance": 0.12
-      }
-    },
-    {
-      "name": "53_subpixel_lowpass_enabled_translation",
-      "stage": "minimum_footprint",
-      "ply": "subpixel_surfel",
-      "parameter": "translation_x",
-      "index": 1,
-      "values": [0.006, 0.012],
-      "epsilons": [0.0003, 0.0001],
-      "settings": {
-        "minimum_projected_footprint": true
-      },
-      "check": {
-        "relative_tolerance": 0.12,
-        "minimum_signal": 1e-8,
-        "fd_consistency_relative_tolerance": 0.18
       }
     }
   ]

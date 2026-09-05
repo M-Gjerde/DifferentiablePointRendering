@@ -654,41 +654,15 @@ namespace Pale {
     }
 
 
-    inline float surfelBvhRadiusScaleBeta(
-        const Point &surfel,
-        const SceneBuild::BuildOptions &buildOptions) {
-        const float alphaMin = std::max(0.0f, buildOptions.pointBvhEffectiveAlphaMin);
-        if (!(alphaMin > 0.0f) || surfel.isEmissive()) {
-            return 1.0f;
-        }
-
-        const float opacity = std::clamp(surfel.opacity, 0.0f, 1.0f);
-        const float minRadiusScale = std::clamp(buildOptions.pointBvhMinRadiusScale, 0.0f, 1.0f);
-        if (!(opacity > alphaMin)) {
-            return minRadiusScale;
-        }
-
-        const float beta = std::clamp(surfel.beta, -20.0f, 20.0f);
-        const float betaExponent = std::max(4.0f * std::exp(beta), 1.0e-8f);
-        const float profileCutoff = std::clamp(alphaMin / opacity, 0.0f, 1.0f);
-        const float oneMinusRadiusSquared =
-            std::pow(profileCutoff, 1.0f / betaExponent);
-        const float radiusSquared =
-            std::clamp(1.0f - oneMinusRadiusSquared, 0.0f, 1.0f);
-        return std::clamp(std::sqrt(radiusSquared), minRadiusScale, 1.0f);
-    }
-
     inline AABB surfelObjectAabbBeta(const Point &surfel,
                                      const SceneBuild::BuildOptions &buildOptions) {
         const float3 tangentU = normalize(surfel.tanU);
         const float3 tangentV = normalize(surfel.tanV);
         const float3 normalDirection = normalize(cross(tangentU, tangentV));
 
-        // For the beta kernel with r^2 = u^2 + v^2 <= 1, the in-plane radii
-        // are scale.x() and scale.y(), optionally clamped by effective opacity.
-        const float supportRadiusScale = surfelBvhRadiusScaleBeta(surfel, buildOptions);
-        const float supportRadiusU = supportRadiusScale * surfel.scale.x();
-        const float supportRadiusV = supportRadiusScale * surfel.scale.y();
+        // Bound the complete compact support, independently of opacity and beta.
+        const float supportRadiusU = std::max(surfel.scale.x(), 0.0f);
+        const float supportRadiusV = std::max(surfel.scale.y(), 0.0f);
         const float normalExtent = std::max(0.0f, buildOptions.pointBvhNormalThickness);
 
         auto computeAxisExtent = [&](int axisIndex) -> float {

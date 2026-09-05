@@ -84,7 +84,6 @@ class CaseValidationTests(unittest.TestCase):
                 "adjoint_q_null": 0.0,
                 "adjoint_q_reflect": 1.0,
                 "share_local_layer_direct_lighting": False,
-                "minimum_projected_footprint": False,
             },
             "check": dict(CHECK),
         }
@@ -125,7 +124,6 @@ class DirectSuiteCoverageTests(unittest.TestCase):
                 "multiple_slabs",
                 "shadow_occlusion",
                 "slab_occlusion",
-                "minimum_footprint",
             },
             covered,
         )
@@ -133,7 +131,6 @@ class DirectSuiteCoverageTests(unittest.TestCase):
     def test_important_renderer_branches_are_both_covered(self) -> None:
         settings = [case["settings"] for case in self.cases]
         self.assertEqual({False, True}, {bool(value["share_local_layer_direct_lighting"]) for value in settings})
-        self.assertEqual({False, True}, {bool(value["minimum_projected_footprint"]) for value in settings})
         self.assertIn(1, {int(value["point_hit_batch_size"]) for value in settings})
         self.assertTrue(any(int(value["point_hit_batch_size"]) > 1 for value in settings))
         self.assertEqual({False, True}, {bool(value["point_hit_batch_lookahead"]) for value in settings})

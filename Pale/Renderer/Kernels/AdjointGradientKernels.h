@@ -196,95 +196,64 @@ namespace Pale {
         return normalization * dRawWiDAlphaK + rawWeights[contributionIndex] * dNormalizationDAlphaK;
     }
 
+    struct SlabWeightNormalization {
+        float rawWeights[kMaxLocalSurfelHits]{};
+        float rawWeightSum = 0.0f;
+        float layerOpacity = 0.0f;
+        float normalization = 0.0f;
+    };
+
+    SYCL_EXTERNAL inline SlabWeightNormalization computeSlabWeightNormalization(
+        const float *alpha, uint32_t count) {
+        SlabWeightNormalization result{};
+        float layerTransmission = 1.0f;
+        for (uint32_t i = 0u; i < count; ++i) {
+            result.rawWeights[i] = computeRawSlabWeight(alpha, count, i);
+            result.rawWeightSum += result.rawWeights[i];
+            layerTransmission *= sycl::fmax(0.0f, 1.0f - alpha[i]);
+        }
+        result.layerOpacity = 1.0f - layerTransmission;
+        if (result.rawWeightSum > 1.0e-8f) {
+            result.normalization = result.layerOpacity / result.rawWeightSum;
+        }
+        return result;
+    }
+
+    // All contributions in one derivative column share the same denominator
+    // and its derivative. Preserve the scalar routine's summation order while
+    // computing each raw derivative just once for this parameter.
+    SYCL_EXTERNAL inline void computeNormalizedSlabWeightDerivativeColumn(
+        const float *alpha, uint32_t count, uint32_t parameterIndex,
+        const SlabWeightNormalization &normalization, float *derivatives) {
+        if (normalization.rawWeightSum <= 1.0e-8f) {
+            for (uint32_t i = 0u; i < count; ++i) derivatives[i] = 0.0f;
+            return;
+        }
+        float dRawWeightSumDAlphaK = 0.0f;
+        for (uint32_t i = 0u; i < count; ++i) {
+            derivatives[i] = computeRawSlabWeightDerivativeWrtAlpha(alpha, count, i, parameterIndex);
+            dRawWeightSumDAlphaK += derivatives[i];
+        }
+        float dLayerOpacityDAlphaK = 1.0f;
+        for (uint32_t j = 0u; j < count; ++j) {
+            if (j != parameterIndex) dLayerOpacityDAlphaK *= sycl::fmax(0.0f, 1.0f - alpha[j]);
+        }
+        const float dNormalizationDAlphaK =
+            (dLayerOpacityDAlphaK * normalization.rawWeightSum -
+             normalization.layerOpacity * dRawWeightSumDAlphaK) /
+            (normalization.rawWeightSum * normalization.rawWeightSum);
+        for (uint32_t i = 0u; i < count; ++i) {
+            derivatives[i] = normalization.normalization * derivatives[i] +
+                             normalization.rawWeights[i] * dNormalizationDAlphaK;
+        }
+    }
+
 
     struct PointLightGeometry {
         float geometricTerm = 0.0f;
         float3 gradientWrtSurfacePosition{0.0f, 0.0f, 0.0f};
         float3 gradientWrtSurfaceNormal{0.0f, 0.0f, 0.0f};
     };
-
-    SYCL_EXTERNAL inline float2 cameraProjectionFocalPixels(const CameraGPU &camera) {
-        if (camera.hasPinholeIntrinsics != 0u && camera.fx > 0.0f && camera.fy > 0.0f) {
-            return float2{sycl::fabs(camera.fx), sycl::fabs(camera.fy)};
-        }
-
-        const float width = sycl::fmax(static_cast<float>(camera.width), 1.0f);
-        const float height = sycl::fmax(static_cast<float>(camera.height), 1.0f);
-        const float fy = 0.5f * height / sycl::tan(0.5f * glm::radians(camera.fovy));
-        const float fx = fy * (width / height);
-        return float2{fx, fy};
-    }
-
-    SYCL_EXTERNAL inline float3 accumulateProjectedCenterGradientToWorld(
-        const CameraGPU &camera,
-        const float3 &positionW,
-        const float2 &barCenterPixels) {
-        const float4 viewPosition = camera.view * float4{positionW, 1.0f};
-        const float zForward = -viewPosition.z();
-        if (!sycl::isfinite(zForward) || zForward <= 1.0e-8f) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        const float2 focal = cameraProjectionFocalPixels(camera);
-        if (!(focal.x() > 0.0f) || !(focal.y() > 0.0f)) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        const float inverseDepth = 1.0f / zForward;
-        const float inverseDepthSquared = inverseDepth * inverseDepth;
-        const float3 barCameraPosition{
-            barCenterPixels.x() * focal.x() * inverseDepth,
-            barCenterPixels.y() * (-focal.y() * inverseDepth),
-            barCenterPixels.x() * focal.x() * viewPosition.x() * inverseDepthSquared +
-            barCenterPixels.y() * (-focal.y() * viewPosition.y() * inverseDepthSquared)
-        };
-
-        return float3{
-            camera.view.row[0].x() * barCameraPosition.x() +
-            camera.view.row[1].x() * barCameraPosition.y() +
-            camera.view.row[2].x() * barCameraPosition.z(),
-            camera.view.row[0].y() * barCameraPosition.x() +
-            camera.view.row[1].y() * barCameraPosition.y() +
-            camera.view.row[2].y() * barCameraPosition.z(),
-            camera.view.row[0].z() * barCameraPosition.x() +
-            camera.view.row[1].z() * barCameraPosition.y() +
-            camera.view.row[2].z() * barCameraPosition.z()
-        };
-    }
-
-    SYCL_EXTERNAL inline float3 computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(
-        const Point &surfel,
-        const PointCloudSurfaceRecord &surface,
-        const CameraGPU &camera) {
-        if (surface.alphaProfileBranch != kSurfelAlphaProfileLowPass ||
-            surface.lowPassAlphaGeom <= 0.0f ||
-            surface.lowPassSigmaPixels <= 0.0f) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        const float sigmaSquared =
-                sycl::fmax(surface.lowPassSigmaPixels * surface.lowPassSigmaPixels, 1.0e-8f);
-        const float centerScale = surfel.opacity * surface.lowPassAlphaGeom / sigmaSquared;
-        const float2 barCenterPixels = surface.lowPassDeltaPixels * centerScale;
-        return accumulateProjectedCenterGradientToWorld(camera, surfel.position, barCenterPixels);
-    }
-
-    SYCL_EXTERNAL inline float3 computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(
-        const Point &surfel,
-        const LocalSurfelLayerHit &hit,
-        const CameraGPU &camera) {
-        if (hit.alphaProfileBranch != kSurfelAlphaProfileLowPass ||
-            hit.lowPassAlphaGeom <= 0.0f ||
-            hit.lowPassSigmaPixels <= 0.0f) {
-            return float3{0.0f, 0.0f, 0.0f};
-        }
-
-        const float sigmaSquared =
-                sycl::fmax(hit.lowPassSigmaPixels * hit.lowPassSigmaPixels, 1.0e-8f);
-        const float centerScale = surfel.opacity * hit.lowPassAlphaGeom / sigmaSquared;
-        const float2 barCenterPixels = hit.lowPassDeltaPixels * centerScale;
-        return accumulateProjectedCenterGradientToWorld(camera, surfel.position, barCenterPixels);
-    }
 
     SYCL_EXTERNAL inline bool computePointLightGeometry(
         const float3 &surfacePositionW,
@@ -332,9 +301,6 @@ namespace Pale {
         const PointCloudSurfaceRecord &surface,
         const ReconstructedSurfelState &state,
         const CameraGPU &camera) {
-        if (surface.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
-            return computeMinimumFootprintAlphaEffectiveGradientWrtTranslation(surfel, surface, camera);
-        }
 
         const float u = surface.uv.x();
         const float v = surface.uv.y();
@@ -369,9 +335,6 @@ namespace Pale {
 
     SYCL_EXTERNAL inline float2 computeAlphaEffectiveGradientWrtScale(const Point &surfel,
                                                                       const PointCloudSurfaceRecord &surface) {
-        if (surface.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
-            return float2{0.0f, 0.0f};
-        }
 
         const float u = surface.uv.x();
         const float v = surface.uv.y();
@@ -412,9 +375,6 @@ namespace Pale {
     SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtWorldRotation(
         const Point &surfel, const PointCloudSurfaceRecord &surface, const ReconstructedSurfelState &state,
         const float3 &rayOrigin) {
-        if (surface.alphaProfileBranch == kSurfelAlphaProfileLowPass) {
-            return float3{0.0f};
-        }
 
         const float u = surface.uv.x();
         const float v = surface.uv.y();
@@ -452,38 +412,6 @@ namespace Pale {
         return surfel.opacity * (dAlphaGeomDu * duDRotation + dAlphaGeomDv * dvDRotation);
     }
     
-
-    SYCL_EXTERNAL inline float3 computeAlphaEffectiveGradientWrtSegmentStart(
-        const Point &surfel, const LocalSurfelLayerHit &hit, const float3 &segmentStart, const float3 &segmentEnd) {
-        float3 normal = normalize(cross(surfel.tanU, surfel.tanV));
-        const float3 segment = segmentEnd - segmentStart;
-        if (dot(normal, -segment) < 0.0f) normal = -normal;
-
-        const float nDotSegment = dot(normal, segment);
-        const float scaleU = surfel.scale.x();
-        const float scaleV = surfel.scale.y();
-        if (sycl::fabs(nDotSegment) <= 1.0e-8f || scaleU <= 1.0e-12f || scaleV <= 1.0e-12f) return float3{0.0f};
-
-        const float2 uv = phiInverse(hit.hitPositionW, surfel);
-        const float u = uv.x();
-        const float v = uv.y();
-        const float oneMinusR2 = 1.0f - u * u - v * v;
-        if (oneMinusR2 <= 1.0e-8f) return float3{0.0f};
-
-        const float lambda = dot(normal, surfel.position - segmentStart) / nDotSegment;
-        const float oneMinusLambda = 1.0f - lambda;
-
-        const float3 duDStart = oneMinusLambda * (surfel.tanU - normal * dot(segment, surfel.tanU) / nDotSegment) /
-                                scaleU;
-        const float3 dvDStart = oneMinusLambda * (surfel.tanV - normal * dot(segment, surfel.tanV) / nDotSegment) /
-                                scaleV;
-
-        const float betaScale = 4.0f * sycl::exp(surfel.beta);
-        const float dAlphaGeomDu = -2.0f * betaScale * u * hit.alphaGeom / oneMinusR2;
-        const float dAlphaGeomDv = -2.0f * betaScale * v * hit.alphaGeom / oneMinusR2;
-
-        return surfel.opacity * (dAlphaGeomDu * duDStart + dAlphaGeomDv * dvDStart);
-    }
 
     inline float3 computeGeometricTermGradientWrtStartpoint(
         const float3 &xPosition,

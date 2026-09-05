@@ -639,23 +639,17 @@ namespace Pale {
         const float width = static_cast<float>(cam.width);
         const float height = static_cast<float>(cam.height);
 
-        const float u = (px + jx);
-        const float v = (py + jy);
-
-        // If your image origin is top-left, flip v:
-        // const float v_flipped = height - v;
-        const float v_flipped = height - v;
-
-        const float ndcX = (2.0f * u / width - 1.0f);
-        const float ndcY = (2.0f * v_flipped / height - 1.0f);
-
-        const float f_y = 0.5f * height / sycl::tan(0.5f * glm::radians(cam.fovy));
-        const float f_x = f_y * (width / height);
+        const bool useIntrinsics = cam.hasPinholeIntrinsics != 0u && cam.fx > 0.0f && cam.fy > 0.0f;
+        const float fallbackFocal = 0.5f * height / sycl::tan(0.5f * glm::radians(cam.fovy));
+        const float fx = useIntrinsics ? cam.fx : fallbackFocal;
+        const float fy = useIntrinsics ? cam.fy : fallbackFocal;
+        const float cx = useIntrinsics ? cam.cx : 0.5f * width;
+        const float cy = useIntrinsics ? cam.cy : 0.5f * height;
 
         // Camera looks down -Z (OpenGL-style view space)
         float3 dirCamera = normalize(float3{
-            ndcX * (0.5f * width) / f_x,
-            ndcY * (0.5f * height) / f_y,
+            (px + jx - cx) / fx,
+            (cy - py - jy) / fy,
             -1.0f
         });
 
@@ -806,12 +800,6 @@ namespace Pale {
         PointCloudSurfaceRecord surfaceRecord{};
         surfaceRecord.primitiveIndex = localHit.primitiveIndex;
         surfaceRecord.alphaGeom = localHit.alphaGeom;
-        surfaceRecord.objectAlphaGeom = localHit.objectAlphaGeom;
-        surfaceRecord.lowPassAlphaGeom = localHit.lowPassAlphaGeom;
-        surfaceRecord.lowPassDeltaPixels = localHit.lowPassDeltaPixels;
-        surfaceRecord.lowPassSigmaPixels = localHit.lowPassSigmaPixels;
-        surfaceRecord.alphaProfileBranch = localHit.alphaProfileBranch;
-        surfaceRecord.usesSurfelCenterHitPosition = localHit.usesSurfelCenterHitPosition;
         surfaceRecord.hitPositionW = localHit.hitPositionW;
         surfaceRecord.pathId = rayState.pathId;
         surfaceRecord.incomingDirection = rayState.ray.direction;
@@ -1221,9 +1209,6 @@ namespace Pale {
             sample.lightIndex = light_index;
             sample.surface.primitiveIndex = light.primitiveIndex;
             sample.surface.alphaGeom = alphaGeom;
-            sample.surface.objectAlphaGeom = alphaGeom;
-            sample.surface.lowPassAlphaGeom = 0.0f;
-            sample.surface.alphaProfileBranch = kSurfelAlphaProfileObject;
             sample.surface.uv = {localU, localV};
             sample.surface.hitPositionW = positionWorld;
         }
@@ -1302,9 +1287,6 @@ namespace Pale {
 
         sample.surface.primitiveIndex = light.primitiveIndex;
         sample.surface.alphaGeom = alphaGeom;
-        sample.surface.objectAlphaGeom = alphaGeom;
-        sample.surface.lowPassAlphaGeom = 0.0f;
-        sample.surface.alphaProfileBranch = kSurfelAlphaProfileObject;
         sample.surface.uv = {localU, localV};
         sample.surface.hitPositionW = positionWorld;
 

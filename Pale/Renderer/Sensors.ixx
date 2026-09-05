@@ -226,6 +226,8 @@ export namespace Pale {
 
                 out.cloneSignalRecordCountPerPrimitivePerCamera =
                         sycl::malloc_device<uint32_t>(primitiveCameraCount, queue);
+                out.cloneRadianceRmsSumPerPrimitivePerCamera =
+                        sycl::malloc_device<float>(primitiveCameraCount, queue);
             }
 
             if (!out.gradPosition || !out.cloneSignal || !out.gradRotation || !out.gradScale ||
@@ -236,7 +238,8 @@ export namespace Pale {
                 (cameraSlotCount > 0u && (!out.gradPositionPerPrimitivePerCamera ||
                                           !out.gradPositionRecordCountPerPrimitivePerCamera ||
                                           !out.cloneSignalPerPrimitivePerCamera ||
-                                          !out.cloneSignalRecordCountPerPrimitivePerCamera))) {
+                                          !out.cloneSignalRecordCountPerPrimitivePerCamera ||
+                                          !out.cloneRadianceRmsSumPerPrimitivePerCamera))) {
                 throw std::runtime_error("makeGradientsForScene: failed to allocate one or more gradient buffers");
             }
 
@@ -260,6 +263,7 @@ export namespace Pale {
                 queue.fill(out.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
                 queue.fill(out.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
                 queue.fill(out.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
+                queue.fill(out.cloneRadianceRmsSumPerPrimitivePerCamera, 0.0f, primitiveCameraCount);
             }
 
             Pale::Log::PA_INFO(
@@ -741,6 +745,7 @@ export namespace Pale {
         freeDevicePtr(gradients.gradPositionRecordCountPerPrimitivePerCamera);
         freeDevicePtr(gradients.cloneSignalPerPrimitivePerCamera);
         freeDevicePtr(gradients.cloneSignalRecordCountPerPrimitivePerCamera);
+        freeDevicePtr(gradients.cloneRadianceRmsSumPerPrimitivePerCamera);
 
         freeDevicePtr(gradients.cloneSignalMeanNorm);
         freeDevicePtr(gradients.cloneSignalStd);

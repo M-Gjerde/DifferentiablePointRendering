@@ -7,6 +7,7 @@ import argparse
 import csv
 import fcntl
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -75,6 +76,10 @@ def parse_args() -> argparse.Namespace:
         help="How often to inspect metrics.csv while main.py is running.",
     )
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument(
+        "--timeout-hours", type=float, default=None,
+        help="Search budget from its first launch, including time between restarts. Overrides the spec.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -153,6 +158,15 @@ def validate_spec(spec: dict[str, Any], check_paths: bool = True) -> None:
     missing = [name for name in required if name not in spec]
     if missing:
         raise KeyError(f"Adaptive-search spec is missing: {', '.join(missing)}")
+
+    for name in ("timeout_hours", "trial_timeout_minutes", "trial_no_progress_minutes",
+                 "min_free_disk_gib"):
+        value = spec.get(name)
+        if value is not None and (not math.isfinite(float(value)) or float(value) <= 0):
+            raise ValueError(f"{name} must be finite and positive.")
+    percentile = float(spec.get("pruner_percentile", 50.0))
+    if not 0.0 <= percentile <= 100.0:
+        raise ValueError("pruner_percentile must be in [0, 100].")
 
     if check_paths:
         dataset_path = resolve_path(spec["dataset_path"])
@@ -374,6 +388,113 @@ def read_json_object(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def verify_config_snapshot(spec: dict[str, Any]) -> None:
+    expected = spec.get("config_sha256")
+    if expected and hashlib.sha256((PROJECT_ROOT / "config.py").read_bytes()).hexdigest() != expected:
+        raise RuntimeError("config.py changed since this search was prepared. Generate a new study spec.")
+
+
+def require_free_disk(output_root: Path, spec: dict[str, Any]) -> None:
+    minimum = float(spec.get("min_free_disk_gib", 0.0))
+    if minimum and shutil.disk_usage(output_root).free < minimum * 1024 ** 3:
+        raise RuntimeError(f"Study stopped: less than {minimum:g} GiB free on {output_root}.")
+
+
+def trial_timeout_reason(spec: dict[str, Any], elapsed: float, idle: float) -> str | None:
+    for key, seconds, label in (
+        ("trial_timeout_minutes", elapsed, "total trial time"),
+        ("trial_no_progress_minutes", idle, "time without iteration progress"),
+    ):
+        limit = spec.get(key)
+        if limit is not None and seconds >= float(limit) * 60.0:
+            return f"Exceeded {float(limit):g} minutes of {label}."
+    return None
+
+
+def remaining_search_seconds(study_dir: Path, timeout_hours: float | None) -> float | None:
+    if timeout_hours is None:
+        return None
+    budget_path = study_dir / "wall_clock_budget.json"
+    budget = read_json_object(budget_path)
+    if budget is None:
+        budget = {"started_at": time.time()}
+        atomic_write_json(budget_path, budget)
+    return max(0.0, float(budget["started_at"]) + timeout_hours * 3600.0 - time.time())
+
+
+def enqueue_initial_trials(study: Any, spec: dict[str, Any]) -> None:
+    overrides = spec.get("initial_trial_overrides", [])
+    repeated = bool(spec.get("allow_repeated_initial_trials", False))
+    existing_indices = {t.user_attrs.get("initial_design_index") for t in study.trials}
+    for index, parameters in enumerate(spec.get("initial_trials", [])):
+        if repeated and index in existing_indices:
+            continue
+        attrs: dict[str, Any] = {"initial_design": True, "initial_design_index": index}
+        if index < len(overrides) and overrides[index]:
+            attrs["initial_parameter_overrides"] = dict(overrides[index])
+        study.enqueue_trial(dict(parameters), user_attrs=attrs, skip_if_exists=not repeated)
+
+
+def make_confirmation_spec(study: Any, spec: dict[str, Any]) -> dict[str, Any] | None:
+    """Re-run feasible finalists plus the baseline in fresh processes, without pruning."""
+    options = spec.get("confirmation", {})
+    top_k, repeats = int(options.get("top_k", 0)), int(options.get("repeats", 3))
+    if top_k <= 0 or repeats <= 0:
+        return None
+    eligible = [t for t in study.trials if t.user_attrs.get("outcome") == COMPLETED
+                and t.value is not None and math.isfinite(t.value)
+                and all(float(v) <= 0 for v in t.user_attrs.get("constraint_values", [0, 0]))]
+    eligible.sort(key=lambda t: t.value)
+    candidates: list[dict[str, Any]] = []
+    for trial in eligible:
+        params = dict(trial.params)
+        if params not in candidates:
+            candidates.append(params)
+        if len(candidates) >= top_k:
+            break
+    if not candidates:
+        return None
+    baseline = dict(spec["initial_trials"][0])
+    if baseline not in candidates:
+        candidates.append(baseline)
+    result = json.loads(json.dumps(spec))
+    result.pop("confirmation", None)
+    result.pop("initial_trial_overrides", None)
+    result["study_name"] = str(spec["study_name"]) + "_confirmation"
+    result["output_root"] = str(resolve_path(spec["output_root"]) / "confirmation")
+    result["timeout_hours"] = float(options.get("timeout_hours", 12.0))
+    result["confirmation_candidates"] = candidates
+    # Round-robin candidates so interruption does not give only the first setting repetitions.
+    result["initial_trials"] = [dict(p) for _ in range(repeats) for p in candidates]
+    result["max_trials"] = len(result["initial_trials"])
+    result["allow_repeated_initial_trials"] = True
+    result["pruner_warmup_iteration"] = int(result["base_args"]["iterations"])
+    result["enqueue_repairs"] = False
+    return result
+
+
+def export_confirmation_summary(study: Any, spec: dict[str, Any], study_dir: Path) -> None:
+    candidates = spec.get("confirmation_candidates", [])
+    if not candidates:
+        return
+    rows = []
+    for index, params in enumerate(candidates):
+        trials = [t for t in study.trials if t.params == params]
+        values = [float(t.value) for t in trials if t.user_attrs.get("outcome") == COMPLETED
+                  and t.value is not None and math.isfinite(t.value)]
+        expected = len(spec["initial_trials"]) // len(candidates)
+        values.sort()
+        middle = len(values) // 2
+        median = (values[middle] if len(values) % 2 else
+                  (values[middle - 1] + values[middle]) / 2) if values else None
+        rows.append({"candidate": index, "parameters": params, "cd_values": values,
+                     "median_cd": median, "complete_repetitions": len(values),
+                     "expected_repetitions": expected,
+                     "eligible": len(values) == expected and len(trials) == expected})
+    rows.sort(key=lambda r: (not r["eligible"], r["median_cd"] if r["median_cd"] is not None else math.inf))
+    atomic_write_json(study_dir / "confirmation_summary.json", {"candidates": rows})
+
+
 @contextmanager
 def exclusive_study_lock(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -476,6 +597,8 @@ def metrics_diagnostics(
 
 
 def point_count_is_stable(diagnostics: dict[str, Any], stability: dict[str, Any]) -> bool:
+    if not stability.get("enabled", True):
+        return True
     relative_growth = safe_float(diagnostics.get("point_growth_fraction"))
     absolute_growth = safe_float(diagnostics.get("point_growth"))
     if relative_growth is None or absolute_growth is None:
@@ -612,7 +735,10 @@ def enqueue_repaired_trial(
     sampled_parameters: dict[str, Any],
     search_space: dict[str, Any],
     reason: str,
+    enabled: bool = True,
 ) -> dict[str, Any] | None:
+    if not enabled:
+        return None
     repaired = repair_densification_parameters(sampled_parameters, search_space)
     if repaired is None:
         return None
@@ -687,6 +813,8 @@ def make_objective(
     study_dir = output_root / "_study"
 
     def objective(trial: Any) -> float:
+        verify_config_snapshot(spec)
+        require_free_disk(output_root, spec)
         sampled_parameters = suggest_parameters(trial, search_space)
         parameters = apply_initial_trial_overrides(
             apply_linked_parameters(
@@ -729,6 +857,9 @@ def make_objective(
         evaluation_failures: dict[int, int] = {}
         max_observed_points = 0
         latest_metrics_rows: list[dict[str, str]] = []
+        started_monotonic = time.monotonic()
+        last_progress_at = started_monotonic
+        last_progress_iteration = 0
 
         with log_path.open("w", encoding="utf-8") as log_file:
             process = subprocess.Popen(
@@ -747,6 +878,22 @@ def make_objective(
                     latest_metrics_rows = read_csv_dicts(metrics_path)
                     numeric_rows = finite_metric_rows(latest_metrics_rows)
                     latest_iteration = metric_iteration(numeric_rows[-1]) if numeric_rows else 0
+                    now = time.monotonic()
+                    if latest_iteration > last_progress_iteration:
+                        last_progress_iteration = latest_iteration
+                        last_progress_at = now
+                    timeout_reason = trial_timeout_reason(
+                        spec, now - started_monotonic, now - last_progress_at,
+                    )
+                    if timeout_reason and process.poll() is None:
+                        stop_trial_process(process)
+                        trial.set_user_attr("outcome", "FAILED_TIMEOUT")
+                        trial.set_user_attr("failure_iteration", latest_iteration)
+                        state.update(status="FAILED_TIMEOUT", failure_reason=timeout_reason,
+                                     failure_iteration=latest_iteration, ended_at=time.time())
+                        atomic_write_json(state_path, state)
+                        raise TrialRunError(timeout_reason)
+                    require_free_disk(output_root, spec)
 
                     for row in numeric_rows:
                         point_count = safe_float(row.get("num_points"))
@@ -765,6 +912,7 @@ def make_objective(
                             sampled_parameters,
                             search_space,
                             outcome,
+                            bool(spec.get("enqueue_repairs", True)),
                         )
                         penalty = trial_penalty(spec, max_observed_points)
                         trial.set_user_attr("outcome", outcome)
@@ -817,6 +965,7 @@ def make_objective(
                                 sampled_parameters,
                                 search_space,
                                 outcome,
+                                bool(spec.get("enqueue_repairs", True)),
                             )
                             penalty = trial_penalty(spec, max_observed_points)
                             relative_growth = float(
@@ -937,6 +1086,12 @@ def make_objective(
                             checkpoint_rows,
                         )
                         cd = float(geometry_row["cd"])
+                        if not math.isfinite(cd):
+                            trial.set_user_attr("outcome", FAILED_PROCESS)
+                            state.update(status=FAILED_PROCESS, failure_reason="non-finite geometry score",
+                                         ended_at=time.time())
+                            atomic_write_json(state_path, state)
+                            raise TrialRunError(f"Non-finite geometry score at iteration {iteration}.")
                         trial.report(cd, step=iteration)
                         trial.set_user_attr(f"cd_{iteration}", cd)
                         state["checkpoint_metrics"] = checkpoint_rows
@@ -966,6 +1121,11 @@ def make_objective(
                             )
                         break
                     time.sleep(max(0.1, poll_seconds))
+            except BaseException as exception:
+                if state["status"] == "RUNNING":
+                    state.update(status="INTERRUPTED", failure_reason=str(exception), ended_at=time.time())
+                    atomic_write_json(state_path, state)
+                raise
             finally:
                 if process.poll() is None:
                     stop_trial_process(process)
@@ -1011,6 +1171,7 @@ def make_objective(
                 sampled_parameters,
                 search_space,
                 outcome,
+                bool(spec.get("enqueue_repairs", True)),
             )
             penalty = trial_penalty(spec, max_observed_points)
             relative_growth = float(diagnostics.get("point_growth_fraction", math.inf))
@@ -1061,6 +1222,7 @@ def build_sampler(optuna: Any, spec: dict[str, Any]) -> Any:
         "seed": int(spec.get("seed", 0)),
         "n_startup_trials": int(spec.get("sampler_startup_trials", 3)),
         "multivariate": True,
+        "n_ei_candidates": int(spec.get("sampler_ei_candidates", 24)),
     }
 
     def constraints_func(frozen_trial: Any) -> tuple[float, ...]:
@@ -1275,6 +1437,13 @@ def import_baseline_run(
 
 
 def run_study(spec_path: Path, spec: dict[str, Any], args: argparse.Namespace) -> None:
+    study_dir = resolve_path(spec["output_root"]) / "_study"
+    with exclusive_study_lock(study_dir / "worker.lock"):
+        _run_study_locked(spec_path, spec, args)
+
+
+def _run_study_locked(spec_path: Path, spec: dict[str, Any], args: argparse.Namespace) -> None:
+    verify_config_snapshot(spec)
     optuna = require_optuna()
     output_root = resolve_path(spec["output_root"])
     dataset_path = resolve_path(spec["dataset_path"])
@@ -1299,16 +1468,22 @@ def run_study(spec_path: Path, spec: dict[str, Any], args: argparse.Namespace) -
 
     storage_path = study_dir / "study.sqlite3"
     storage_url = f"sqlite:///{storage_path}"
-    storage = optuna.storages.RDBStorage(
+    storage_options: dict[str, Any] = dict(
         url=storage_url,
         heartbeat_interval=60,
         grace_period=180,
-        heartbeat_stale_trial_callback=(
-            optuna.storages.RetryHeartbeatStaleTrialCallback(max_retry=1)
-        ),
     )
+    # The heartbeat callback names changed in Optuna 4.9.
+    if "heartbeat_stale_trial_callback" in inspect.signature(optuna.storages.RDBStorage).parameters:
+        storage_options["heartbeat_stale_trial_callback"] = (
+            optuna.storages.RetryHeartbeatStaleTrialCallback(max_retry=1)
+        )
+    else:
+        storage_options["failed_trial_callback"] = optuna.storages.RetryFailedTrialCallback(max_retry=1)
+    storage = optuna.storages.RDBStorage(**storage_options)
     sampler = build_sampler(optuna, spec)
-    pruner = optuna.pruners.MedianPruner(
+    pruner = optuna.pruners.PercentilePruner(
+        percentile=float(spec.get("pruner_percentile", 50.0)),
         n_startup_trials=int(spec.get("pruner_startup_trials", 3)),
         n_warmup_steps=int(spec.get("pruner_warmup_iteration", 2_000)),
         interval_steps=int(spec.get("pruner_interval_iterations", 1_000)),
@@ -1330,18 +1505,7 @@ def run_study(spec_path: Path, spec: dict[str, Any], args: argparse.Namespace) -
         output_root=output_root,
         ground_truth_path=ground_truth_path,
     )
-    initial_trial_overrides = spec.get("initial_trial_overrides", [])
-    for index, initial_parameters in enumerate(spec.get("initial_trials", [])):
-        user_attrs: dict[str, Any] = {"initial_design": True}
-        if index < len(initial_trial_overrides) and initial_trial_overrides[index]:
-            user_attrs["initial_parameter_overrides"] = dict(
-                initial_trial_overrides[index]
-            )
-        study.enqueue_trial(
-            dict(initial_parameters),
-            user_attrs=user_attrs,
-            skip_if_exists=True,
-        )
+    enqueue_initial_trials(study, spec)
 
     target_trials = int(args.max_trials or spec.get("max_trials", 18))
     terminal_states = {
@@ -1359,31 +1523,48 @@ def run_study(spec_path: Path, spec: dict[str, Any], args: argparse.Namespace) -
             summary_path,
             list(spec["search_space"].keys()),
         )
+        export_confirmation_summary(completed_study, spec, study_dir)
+        # Infrastructure failures should not consume the whole unattended budget.
+        limit = int(spec.get("max_consecutive_process_failures", 0))
+        trials = [t for t in completed_study.trials if t.state.is_finished()]
+        if limit and len(trials) >= limit and all(
+            t.state == optuna.trial.TrialState.FAIL for t in trials[-limit:]
+        ):
+            raise RuntimeError(f"Stopping study after {limit} consecutive failed processes; inspect trial logs.")
 
-    if remaining_trials == 0:
-        export_callback(study, None)
-        print(f"Study already has {terminal_count}/{target_trials} terminal trials.")
-        return
-
-    objective = make_objective(
-        optuna=optuna,
-        study=study,
-        spec=spec,
-        output_root=output_root,
-        dataset_path=dataset_path,
-        ground_truth_path=ground_truth_path,
-        poll_seconds=args.poll_seconds,
-    )
-    with exclusive_study_lock(study_dir / "worker.lock"):
+    timeout_hours = getattr(args, "timeout_hours", None)
+    if timeout_hours is None:
+        timeout_hours = spec.get("timeout_hours")
+    remaining_seconds = remaining_search_seconds(study_dir, timeout_hours)
+    if remaining_trials and (remaining_seconds is None or remaining_seconds > 0):
+        objective = make_objective(
+            optuna=optuna, study=study, spec=spec, output_root=output_root,
+            dataset_path=dataset_path, ground_truth_path=ground_truth_path,
+            poll_seconds=args.poll_seconds,
+        )
         study.optimize(
             objective,
             n_trials=remaining_trials,
+            timeout=remaining_seconds,
             catch=(TrialRunError,),
             callbacks=[export_callback],
             gc_after_trial=True,
         )
     export_callback(study, None)
     print(f"Study summary: {summary_path}")
+
+    # Freeze the finalists once so a restart resumes the same confirmation study.
+    confirmation_path = study_dir / "confirmation_spec.json"
+    confirmation_spec = read_json_object(confirmation_path)
+    if confirmation_spec is None:
+        confirmation_spec = make_confirmation_spec(study, spec)
+        if confirmation_spec is not None:
+            atomic_write_json(confirmation_path, confirmation_spec)
+    if confirmation_spec is not None:
+        validate_spec(confirmation_spec)
+        run_study(confirmation_path, confirmation_spec, argparse.Namespace(
+            max_trials=None, timeout_hours=None, poll_seconds=args.poll_seconds,
+        ))
 
 
 def main() -> None:
@@ -1392,8 +1573,11 @@ def main() -> None:
         raise SystemExit("--poll-seconds must be positive.")
     if args.max_trials is not None and args.max_trials <= 0:
         raise SystemExit("--max-trials must be positive.")
+    if args.timeout_hours is not None and (not math.isfinite(args.timeout_hours) or args.timeout_hours <= 0):
+        raise SystemExit("--timeout-hours must be finite and positive.")
     spec_path, spec = load_spec(args.spec)
     validate_spec(spec)
+    verify_config_snapshot(spec)
     print(f"Valid adaptive-search spec: {spec_path}")
     if args.validate_only:
         return

@@ -22,7 +22,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--tolerance", type=float, default=0.0)
     parser.add_argument("--shared-light", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--minimum-footprint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--new-instance", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
 
@@ -45,7 +44,6 @@ def main() -> int:
         "logging": 4,
         "seed": args.seed,
         "share_local_layer_direct_lighting": args.shared_light,
-        "minimum_projected_footprint": args.minimum_footprint,
     }
 
     renderer = pale.Renderer(str(assets_root), str(scene_xml), str(pointcloud_ply), settings)

@@ -252,7 +252,6 @@ namespace Pale {
         uint64_t forwardGatherLocalLayers = 0u;
         uint64_t forwardGatherLocalLayerHits = 0u;
         uint64_t forwardGatherObjectProfileHits = 0u;
-        uint64_t forwardGatherLowPassProfileHits = 0u;
         uint64_t forwardGatherRegularizerHits = 0u;
         uint64_t forwardGatherPhotonGatherCalls = 0u;
         uint64_t forwardGatherDirectLightCalls = 0u;
@@ -368,7 +367,6 @@ namespace Pale {
         uint32_t traversalIndex{0};
         float openSegmentProposalInverse = 1.0f;
         uint32_t pixelIndex = UINT32_MAX; // NEW: source pixel that launched this adjoint path
-        float2 cameraSamplePixel{FLT_MAX, FLT_MAX};
         uint32_t lightIndex = UINT32_MAX;
         uint32_t hasTrackedParameter = UINT32_MAX;
         uint32_t pathId;
@@ -376,8 +374,6 @@ namespace Pale {
 
     static_assert(std::is_trivially_copyable_v<RayState>);
 
-    constexpr uint32_t kSurfelAlphaProfileObject = 0u;
-    constexpr uint32_t kSurfelAlphaProfileLowPass = 1u;
 
     struct LocalSurfelLayerHit {
         float tWorld;
@@ -385,12 +381,6 @@ namespace Pale {
         float alphaGeom;
         float3 hitPositionW;
         float2 uv{0.0f, 0.0f};
-        float objectAlphaGeom = 0.0f;
-        float lowPassAlphaGeom = 0.0f;
-        float2 lowPassDeltaPixels{0.0f, 0.0f};
-        float lowPassSigmaPixels = 0.0f;
-        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
-        uint32_t usesSurfelCenterHitPosition = 0u;
     };
 
     struct SurfelEvent {
@@ -472,12 +462,6 @@ namespace Pale {
         uint32_t primitiveIndex = UINT32_MAX;
         float2 uv = float2{FLT_MAX, FLT_MAX};
         float alphaGeom = FLT_MAX;
-        float objectAlphaGeom = 0.0f;
-        float lowPassAlphaGeom = 0.0f;
-        float2 lowPassDeltaPixels{0.0f, 0.0f};
-        float lowPassSigmaPixels = 0.0f;
-        uint32_t alphaProfileBranch = kSurfelAlphaProfileObject;
-        uint32_t usesSurfelCenterHitPosition = 0u;
         float3 hitPositionW{FLT_MAX, FLT_MAX, FLT_MAX};
         int32_t sideSign = 1;
         float3 incomingDirection = float3{FLT_MAX, FLT_MAX, FLT_MAX};
@@ -706,6 +690,10 @@ namespace Pale {
         float cloneSignalY = 0.0f;
         float cloneSignalZ = 0.0f;
         uint32_t hasCloneSignal = 0u;
+        float cloneRadianceRms = 0.0f;
+        // Relative statistics can retain a contribution discarded by an
+        // absolute photometric threshold without changing optimizer gradients.
+        uint32_t accumulatePhotometric = 1u;
 
         float gradScaleU = FLT_MAX;
         float gradScaleV = FLT_MAX;
@@ -838,6 +826,8 @@ namespace Pale {
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
         float curvatureScaleRegularizerWeight = 0.0f;
+        // Request the curvature image even without a loss or densification consumer.
+        bool computeCurvatureDiagnostics = false;
         bool normalFromDepthUseMeanDepth = false;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
@@ -860,8 +850,6 @@ namespace Pale {
         uint32_t rendererDebugPointHitBatchSize = 6;
         bool rendererDebugPointHitBatchLookahead = true;
         bool rendererDebugShareLocalLayerDirectLighting = true;
-        bool rendererDebugMinimumProjectedFootprint = false;
-        float rendererDebugMinimumProjectedFootprintPixels = 0.707f;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {

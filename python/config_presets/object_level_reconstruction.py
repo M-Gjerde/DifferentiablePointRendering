@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 3
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -56,7 +56,7 @@ class OptimizationConfig:
 
     # Execution and optimizer
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 20_000
     optimizer_type: str = "adam"
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
@@ -76,19 +76,19 @@ class OptimizationConfig:
     position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 5.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 15_000
+    lr_decay_max_steps: int = 10_000
     use_device_training_step: bool = True
 
     # Objective and regularizers
     ssim_weight: float = 0.00
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
-    depth_distort_weight: float = 50.0
+    depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 0.0e-0
+    curvature_scale_weight: float = 0.0e-6
 
     # Rendering and camera sampling
     share_local_layer_direct_lighting: bool = True
@@ -98,44 +98,29 @@ class OptimizationConfig:
     scale_single_camera_gradients: bool = False
     normal_from_depth_use_mean_depth: bool = False
 
-    # Densification signal
-    # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
-    densification_relative_error: bool = True
-    densification_radiance_floor: float = 0.001  # linear RGB radiance units
-    densification_full_position: bool = True
-    densification_stats_skip_interval_start: bool = True
+    # Densification
+    densification_interval: int = 200
+    densify_after: int = 0
+    densification_stats_skip_interval_start: bool = False
     densification_downweight_normal_gradients: bool = False
     # When false, position-triggered densification may displace children along
     # the full 3D gradient, including the surfel normal direction.
     densification_tangent_only: bool = False
-    # Legacy albedo normalization; ignored when relative-error statistics are enabled.
-    densify_bsdf_floor: float = 0.01
-    densify_bsdf_gamma: float = 1.0
-
-    # Densification schedule
-    densification_interval: int = 200
-    densify_after: int = 0
-
-    # Densification candidate thresholds
-    densification_grad_quantile: float = 0.8
-    densification_grad_abs_min: float = 8.0e-5
-    densification_grad_abs_min_final: float = 8.0e-5
+    densification_grad_quantile: float = 0.0
+    densification_grad_abs_min: float = 7.0e-4
+    densification_grad_abs_min_final: float = 1.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 0
-    # Apply the gradient quantile independently in log2 rendered/target
-    # radiance bands. Values <= 1 disable radiance stratification.
-    densification_radiance_quantile_bins: int = 8
-    densification_radiance_quantile_min_bin_size: int = 16
+    densification_grad_abs_min_decay_end_iteration: int = 5_000
     # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = -1
+    curvature_violation_threshold: float = 35.0
     densification_scale_min: float = 6.0e-3
-    densification_exact_clone_percent_dense: float = 0.00
-    densification_scene_extent: float = 0.0
-
-    # Densification split and growth policy
     densification_split_offset_scale: float = 0.35
     densification_split_scale_factor: float = math.sqrt(2)
+    densification_exact_clone_percent_dense: float = 0.00
+    densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
+    densify_bsdf_floor: float = 0.01
+    densify_bsdf_gamma: float = 1.0
     densification_verbose: bool = False
 
     # Pruning and topology maintenance
@@ -152,7 +137,7 @@ class OptimizationConfig:
 
     # Output and monitoring
     log_interval: int = 25
-    save_interval: int = 100
+    save_interval: int = 50
     save_ply_files_interval: int = save_interval
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = False
@@ -164,7 +149,7 @@ class OptimizationConfig:
     enable_image_preview: bool = True
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 2_000
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
@@ -454,26 +439,7 @@ def parse_args() -> OptimizationConfig:
     )
 
     densification = parser.add_argument_group("densification")
-    _add_boolean_argument(
-        densification, "--densification-relative-error",
-        help="Use a frozen per-pixel relative-MSE source for densification and disable the albedo boost.",
-    )
-    _add_boolean_argument(
-        densification, "--densification-full-position",
-        help="Include all position derivatives in relative statistics; disable to retain the local footprint signal.",
-    )
-    densification.add_argument(
-        "--densification-radiance-floor", type=float,
-        help="Positive linear-RGB floor in the symmetric relative-error normalizer.",
-    )
-    _add_typed_fields(
-        densification,
-        int,
-        "densification_interval",
-        "densify_after",
-        "densification_radiance_quantile_bins",
-        "densification_radiance_quantile_min_bin_size",
-    )
+    _add_typed_fields(densification, int, "densification_interval", "densify_after")
     _add_typed_fields(
         densification,
         float,
@@ -627,13 +593,6 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
-
-    if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
-        parser.error("--densification-radiance-floor must be finite and positive")
-    if config.densification_radiance_quantile_bins < 1:
-        parser.error("--densification-radiance-quantile-bins must be at least 1")
-    if config.densification_radiance_quantile_min_bin_size < 1:
-        parser.error("--densification-radiance-quantile-min-bin-size must be at least 1")
 
     resolve_learning_rates(config)
 

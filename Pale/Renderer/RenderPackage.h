@@ -8,6 +8,11 @@ namespace Pale {
     struct SensorGPU {
         CameraGPU camera; // camera parameters
         float4 *framebuffer = nullptr; // RAW framebuffer
+        // During RGB adjoint transport only: framebuffer.w holds the frozen
+        // per-pixel multiplier for the auxiliary densification signal.
+        bool relativeDensification = false;
+        bool densificationFullPosition = true;
+        float densificationRadianceFloorSquared = 0.0f;
         uint32_t width{}, height{};
         uint32_t cameraSlotIndex; // original scene.xml camera index
 
@@ -60,6 +65,7 @@ namespace Pale {
         uint32_t *gradPositionRecordCountPerPrimitivePerCamera = nullptr;
         float3 *cloneSignalPerPrimitivePerCamera = nullptr;
         uint32_t *cloneSignalRecordCountPerPrimitivePerCamera = nullptr;
+        float *cloneRadianceRmsSumPerPrimitivePerCamera = nullptr;
 
         // Final per-primitive clone-signal stats.
         float *cloneSignalMeanNorm = nullptr;

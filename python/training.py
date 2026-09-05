@@ -357,6 +357,9 @@ def make_device_training_step_options(
         "ssim_window_size": int(config.ssim_window_size),
         "ssim_sigma": float(config.ssim_sigma),
         "return_gradient_stats": return_gradient_stats,
+        "densification_relative_error": bool(config.densification_relative_error and return_gradient_stats),
+        "densification_radiance_floor": float(config.densification_radiance_floor),
+        "densification_full_position": bool(config.densification_full_position),
         "include_depth_distortion": include_depth_distortion,
         "include_normal_consistency": include_normal_consistency,
         "include_opacity_prior": include_opacity_prior,
@@ -417,6 +420,9 @@ def compute_iteration_gradients(
         active_opacity_prior_weight: float,
         intra_slab_depth_weight: float,
         curvature_scale_weight: float,
+        densification_relative_error: bool = False,
+        densification_radiance_floor: float = 0.01,
+        densification_full_position: bool = True,
 ) -> IterationGradientResult:
     active_camera_name = active_camera_name_for_iteration(
         active_training_camera_ids,
@@ -428,6 +434,9 @@ def compute_iteration_gradients(
             "ssim_weight": ssim_weight,
             "ssim_window_size": ssim_window_size,
             "ssim_sigma": ssim_sigma,
+            "densification_relative_error": densification_relative_error,
+            "densification_radiance_floor": densification_radiance_floor,
+            "densification_full_position": densification_full_position,
         },
     )
     loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
@@ -782,15 +791,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
+    densify_radiance_rms_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     snapshot_densification_position_signal_np = np.zeros(
         (positions.shape[0],), dtype=np.float32,
     )
     snapshot_densification_position_sample_count_np = np.zeros(
         (positions.shape[0],), dtype=np.uint32,
     )
-    snapshot_densification_position_threshold = max(
-        densification_grad_abs_min,
-        float(np.finfo(np.float32).tiny),
+    snapshot_densification_position_threshold = np.full(
+        (positions.shape[0],),
+        max(densification_grad_abs_min, float(np.finfo(np.float32).tiny)),
+        dtype=np.float32,
     )
     # Stores local tangent coordinates (u, v, 0); converted to world space at clone time.
     densify_position_grad_vector_accum_np = np.zeros(tuple(positions.shape), dtype=np.float32)
@@ -1006,6 +1017,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         "clone_signal_record_count_per_camera",
                         None,
                     )
+                    clone_radiance_rms_sum_per_camera_np = photo_gradient_surfel_stats.get(
+                        "clone_radiance_rms_sum_per_camera",
+                        None,
+                    )
                     helpers.update_densification_statistics(
                         iteration=global_iteration,
                         densification_interval=densification_cycle_interval,
@@ -1014,6 +1029,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
                         densify_position_grad_denom_np=densify_position_grad_denom_np,
                         densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                        densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
                         rotations=rotations,
                         albedos=albedos,
                         trainable_surfel_mask=trainable_surfel_mask,
@@ -1021,8 +1037,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_bsdf_gamma=densify_bsdf_gamma,
                         densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                         densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
+                        densify_radiance_rms_sum_per_camera_np=clone_radiance_rms_sum_per_camera_np,
                         densification_downweight_normal_gradients=densification_downweight_normal_gradients,
                         densification_tangent_only=bool(config.densification_tangent_only),
+                        densification_relative_error=bool(config.densification_relative_error),
                     )
                     if use_curvature_densification:
                         helpers.update_curvature_densification_statistics(
@@ -1042,12 +1060,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         _,
                         snapshot_densification_position_threshold,
                         _,
+                        _,
                     ) = helpers.position_densification_snapshot_statistics(
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
                         densify_position_grad_denom_np=densify_position_grad_denom_np,
                         trainable_surfel_mask=trainable_surfel_mask,
                         densification_grad_quantile=densification_grad_quantile,
                         densification_grad_abs_min=active_densification_grad_abs_min,
+                        densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+                        densification_radiance_floor=float(config.densification_radiance_floor),
+                        densification_radiance_quantile_bins=int(config.densification_radiance_quantile_bins),
+                        densification_radiance_quantile_min_bin_size=int(
+                            config.densification_radiance_quantile_min_bin_size
+                        ),
                     )
 
                     scheduled_opacity_reset = (
@@ -1120,6 +1145,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densify_position_grad_accum_np=densify_position_grad_accum_np,
                                 densify_position_grad_denom_np=densify_position_grad_denom_np,
                                 densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                                densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
                                 densify_after=densify_after,
                                 densification_interval=densification_interval,
                                 densification_verbose=densification_verbose,
@@ -1227,6 +1253,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                             densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                             densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                            densify_radiance_rms_accum_np = densify_radiance_rms_accum_np[keep_mask_np]
                             densify_curvature_stats_accum = {
                                 key: values[keep_mask_np]
                                 for key, values in densify_curvature_stats_accum.items()
@@ -1257,6 +1284,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
                                 densify_position_grad_vector_accum_np = np.concatenate(
                                     [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)],
+                                    axis=0)
+                                densify_radiance_rms_accum_np = np.concatenate(
+                                    [densify_radiance_rms_accum_np, np.zeros((n_new, 1), dtype=np.float32)],
                                     axis=0)
                                 for key, values in densify_curvature_stats_accum.items():
                                     densify_curvature_stats_accum[key] = np.concatenate(
@@ -1302,6 +1332,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             raise RuntimeError(
                                 "Densification vector accumulator length mismatch after topology change: "
                                 f"{densify_position_grad_vector_accum_np.shape[0]} vs {positions.shape[0]}"
+                            )
+                        if densify_radiance_rms_accum_np.shape[0] != positions.shape[0]:
+                            raise RuntimeError(
+                                "Densification radiance accumulator length mismatch after topology change: "
+                                f"{densify_radiance_rms_accum_np.shape[0]} vs {positions.shape[0]}"
                             )
 
                         for key, values in densify_curvature_stats_accum.items():
@@ -1367,6 +1402,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     (
                         snapshot_densification_position_signal_np,
                         snapshot_densification_position_sample_count_np,
+                        snapshot_densification_position_threshold,
                         _,
                         _,
                     ) = helpers.position_densification_snapshot_statistics(
@@ -1375,12 +1411,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         trainable_surfel_mask=trainable_surfel_mask,
                         densification_grad_quantile=densification_grad_quantile,
                         densification_grad_abs_min=active_densification_grad_abs_min,
+                        densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+                        densification_radiance_floor=float(config.densification_radiance_floor),
+                        densification_radiance_quantile_bins=int(config.densification_radiance_quantile_bins),
+                        densification_radiance_quantile_min_bin_size=int(
+                            config.densification_radiance_quantile_min_bin_size
+                        ),
                     )
 
                     if densification_is_due:
                         densify_position_grad_accum_np[:] = 0.0
                         densify_position_grad_denom_np[:] = 0.0
                         densify_position_grad_vector_accum_np[:] = 0.0
+                        densify_radiance_rms_accum_np[:] = 0.0
                         for values in densify_curvature_stats_accum.values():
                             values[:] = 0
                         densification_cycle_start_iteration = global_iteration
@@ -1696,6 +1739,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     active_opacity_prior_weight=active_opacity_prior_weight,
                     intra_slab_depth_weight=intra_slab_depth_weight,
                     curvature_scale_weight=curvature_scale_weight,
+                    densification_relative_error=bool(config.densification_relative_error and densification_interval > 0),
+                    densification_radiance_floor=float(config.densification_radiance_floor),
+                    densification_full_position=bool(config.densification_full_position),
                 )
 
                 active_camera_name = iteration_gradients.active_camera_name
@@ -1784,6 +1830,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     "clone_signal_record_count_per_camera",
                     None,
                 )
+                clone_radiance_rms_sum_per_camera_np = photo_gradient_surfel_stats.get(
+                    "clone_radiance_rms_sum_per_camera",
+                    None,
+                )
                 helpers.update_densification_statistics(
                     iteration=global_iteration,
                     densification_interval=densification_cycle_interval,
@@ -1792,6 +1842,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                    densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
                     rotations=rotations,
                     albedos=albedos,
                     trainable_surfel_mask=trainable_surfel_mask,
@@ -1799,8 +1850,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densify_bsdf_gamma=densify_bsdf_gamma,
                     densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                     densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
+                    densify_radiance_rms_sum_per_camera_np=clone_radiance_rms_sum_per_camera_np,
                     densification_downweight_normal_gradients=densification_downweight_normal_gradients,
                     densification_tangent_only=bool(config.densification_tangent_only),
+                    densification_relative_error=bool(config.densification_relative_error),
                 )
                 if use_curvature_densification:
                     helpers.update_curvature_densification_statistics(
@@ -1820,12 +1873,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     _,
                     snapshot_densification_position_threshold,
                     _,
+                    _,
                 ) = helpers.position_densification_snapshot_statistics(
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     trainable_surfel_mask=trainable_surfel_mask,
                     densification_grad_quantile=densification_grad_quantile,
                     densification_grad_abs_min=active_densification_grad_abs_min,
+                    densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+                    densification_radiance_floor=float(config.densification_radiance_floor),
+                    densification_radiance_quantile_bins=int(config.densification_radiance_quantile_bins),
+                    densification_radiance_quantile_min_bin_size=int(
+                        config.densification_radiance_quantile_min_bin_size
+                    ),
                 )
 
                 optimizer.zero_grad(set_to_none=True)
@@ -1897,6 +1957,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densify_position_grad_accum_np=densify_position_grad_accum_np,
                             densify_position_grad_denom_np=densify_position_grad_denom_np,
                             densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                            densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
                             densify_after=densify_after,
                             densification_interval=densification_interval, densification_verbose=densification_verbose,
                             densification_grad_quantile=densification_grad_quantile,
@@ -1994,6 +2055,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_accum_np = densify_position_grad_accum_np[keep_mask_np]
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                         densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
+                        densify_radiance_rms_accum_np = densify_radiance_rms_accum_np[keep_mask_np]
                         densify_curvature_stats_accum = {
                             key: values[keep_mask_np]
                             for key, values in densify_curvature_stats_accum.items()
@@ -2024,6 +2086,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 [densify_position_grad_denom_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
                             densify_position_grad_vector_accum_np = np.concatenate(
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)], axis=0)
+                            densify_radiance_rms_accum_np = np.concatenate(
+                                [densify_radiance_rms_accum_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
                             for key, values in densify_curvature_stats_accum.items():
                                 densify_curvature_stats_accum[key] = np.concatenate(
                                     [values, np.zeros((n_new,), dtype=values.dtype)],
@@ -2068,6 +2132,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         raise RuntimeError(
                             "Densification vector accumulator length mismatch after topology change: "
                             f"{densify_position_grad_vector_accum_np.shape[0]} vs {positions.shape[0]}"
+                        )
+                    if densify_radiance_rms_accum_np.shape[0] != positions.shape[0]:
+                        raise RuntimeError(
+                            "Densification radiance accumulator length mismatch after topology change: "
+                            f"{densify_radiance_rms_accum_np.shape[0]} vs {positions.shape[0]}"
                         )
 
                     for key, values in densify_curvature_stats_accum.items():
@@ -2120,6 +2189,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 (
                     snapshot_densification_position_signal_np,
                     snapshot_densification_position_sample_count_np,
+                    snapshot_densification_position_threshold,
                     _,
                     _,
                 ) = helpers.position_densification_snapshot_statistics(
@@ -2128,12 +2198,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     trainable_surfel_mask=trainable_surfel_mask,
                     densification_grad_quantile=densification_grad_quantile,
                     densification_grad_abs_min=active_densification_grad_abs_min,
+                    densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+                    densification_radiance_floor=float(config.densification_radiance_floor),
+                    densification_radiance_quantile_bins=int(config.densification_radiance_quantile_bins),
+                    densification_radiance_quantile_min_bin_size=int(
+                        config.densification_radiance_quantile_min_bin_size
+                    ),
                 )
 
                 if densification_is_due:
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
+                    densify_radiance_rms_accum_np[:] = 0.0
                     for values in densify_curvature_stats_accum.values():
                         values[:] = 0
                     densification_cycle_start_iteration = global_iteration

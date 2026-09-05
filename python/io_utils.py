@@ -292,7 +292,7 @@ def save_gaussians_to_ply(
         primitive_ages: np.ndarray | None = None,
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
-        densification_position_threshold: float | None = None,
+        densification_position_threshold: float | np.ndarray | None = None,
 ) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -323,7 +323,7 @@ def save_gaussians_to_ply(
             )
     position_signal_values: np.ndarray | None = None
     position_sample_count_values: np.ndarray | None = None
-    position_threshold_value: float | None = None
+    position_threshold_values: np.ndarray | None = None
     position_metadata = (
         densification_position_signals is not None
         or densification_position_sample_counts is not None
@@ -354,11 +354,23 @@ def save_gaussians_to_ply(
                 "Expected densification_position_sample_counts to have one value per point, got "
                 f"{position_sample_count_values.shape[0]} for {num_points} points"
             )
-        position_threshold_value = float(densification_position_threshold)
-        if not np.isfinite(position_threshold_value) or position_threshold_value <= 0.0:
+        threshold_array = np.asarray(densification_position_threshold, dtype=np.float32)
+        if threshold_array.ndim == 0:
+            position_threshold_values = np.full(
+                (num_points,), float(threshold_array), dtype=np.float32
+            )
+        else:
+            position_threshold_values = threshold_array.reshape(-1)
+            if position_threshold_values.shape[0] != num_points:
+                raise ValueError(
+                    "Expected densification_position_threshold to be scalar or have "
+                    f"one value per point, got {position_threshold_values.shape[0]} "
+                    f"for {num_points} points"
+                )
+        if (not np.all(np.isfinite(position_threshold_values)) or
+                np.any(position_threshold_values <= 0.0)):
             raise ValueError(
-                "densification_position_threshold must be finite and positive, got "
-                f"{position_threshold_value}"
+                "densification_position_threshold values must be finite and positive"
             )
 
     if pos.ndim != 2 or pos.shape[1] != 3:
@@ -451,10 +463,10 @@ def save_gaussians_to_ply(
                 position_metadata_suffix = (
                     f" {position_signal_values[i]:.9g}"
                     f" {float(position_sample_count_values[i]):.9g}"
-                    f" {position_threshold_value:.9g}"
+                    f" {position_threshold_values[i]:.9g}"
                     if position_signal_values is not None
                     and position_sample_count_values is not None
-                    and position_threshold_value is not None
+                    and position_threshold_values is not None
                     else ""
                 )
                 f.write(

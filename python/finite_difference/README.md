@@ -7,8 +7,7 @@ adjoint in progressively more complicated scenes:
 2. two surfels in one selected depth slab;
 3. two separated visible slabs;
 4. a point-light shadow occluder;
-5. a slab and shadow occluder together;
-6. the minimum projected-footprint branch.
+5. a slab and shadow occluder together.
 
 Every case uses deterministic center rays and a central difference at two
 epsilon values. Most cases use a fixed, spatially varying signed image
@@ -70,7 +69,6 @@ difference preview. The batch runner writes a revision-stamped `summary.json`.
   connections and shadow traversals;
 - `share_local_layer_direct_lighting=true`: one detached consensus light
   connection per slab;
-- `minimum_projected_footprint=false/true`;
 - batched point-hit traversal and the scalar traversal (`point_hit_batch_size=1`);
 - lookahead enabled/disabled while gathering a visible slab;
 - deterministic first-slab selection and stochastic traversal of separated
@@ -78,3 +76,89 @@ difference preview. The batch runner writes a revision-stamped `summary.json`.
 
 The older sweep JSON files are retained as historical experiments, but they
 use the superseded schema and are not consumed by the new batch runner.
+
+## Renderer correctness regressions
+
+After rebuilding `pale`, run from the repository root with the training Python
+environment (including PyTorch and the image I/O dependencies):
+
+```bash
+PYTHONPATH="$PWD/cmake-build-pybind:$PWD/python" \
+  python -m unittest discover -s python/finite_difference -p 'test_*.py' -v
+```
+
+`test_renderer_correctness.py` creates temporary scenes and checks calibrated
+rectangular cameras against closed-form direct illumination, full beta-profile
+support across BVH rebuilds/refits, many-light opacity gradients, offset shadow
+ray position/rotation derivatives, stale forward buffers, and masked Adam state
+migration after pruning/cloning. Set `ACPP_VISIBILITY_MASK=omp` and a writable
+`ACPP_APPDB_DIR` to use AdaptiveCpp's CPU backend without a GPU.
+
+## Optional curvature work and profiling
+
+Curvature work is independent of relative-error densification. The camera
+curvature/slab-search pass runs only when `curvature_scale_weight` is nonzero,
+`enable_curvature_densification` is enabled, or the native renderer setting
+`compute_curvature_diagnostics` is true. Otherwise its image and active-slab
+count are reset to zero. The viewer requests it when displaying curvature or
+per-primitive diagnostics that use the selected slab's identity. Changing to
+one of these views triggers a fresh render.
+
+For performance measurements, collect GPU traversal counters separately from
+timings: the counters use global atomic additions. Python's debug logging
+(`logging=1`) also reports `Device optimizer: parameter update` and
+`Device optimizer: point BVH refit`; these costs are absent from viewer-only
+render timings. Their completion waits are enabled only while timing/logging.
+
+## Parallel refit and camera gather
+
+The native device optimizer refits after every parameter update. It now updates
+point-BVH leaves and their traversal cache in parallel, followed by parent
+levels, packed binary/four-way bounds, and the TLAS. The level schedule is
+cached until a full rebuild or topology change. All stages use the renderer's
+in-order queue, so each parent sees completed child bounds. Instanced BLAS
+ranges are scheduled only once. Full surfel support and the existing tree and
+primitive permutation are preserved; no opacity cutoff or additional culling
+is introduced.
+
+Pass `parallel_bvh_refit=False` in `pale.Renderer`'s settings dictionary to use
+the serial reference. `test_bvh_refit.py` compares both paths after identical
+position, rotation, scale, material, opacity, and beta changes, including
+pruning and addition. It also compares refit against a fresh rebuild after
+nonzero native Adam updates. The comparisons hold geometry fixed to avoid
+confounding refit with differences between independent floating-point Adam
+trajectories.
+
+RGB gather dispatches compiled variants for shared/individual lighting and
+enabled/disabled GPU counters. This removes unused branches and private
+counter state from each work item. Rendering equations, ray samples, slab
+membership, and traversal capacities are unchanged. Performance comparisons
+should use the same frozen checkpoint and camera, warm JIT caches, and avoid
+concurrent builds or test runs on the host.
+
+## Relative densification
+
+Training defaults to `densification_relative_error=True`. The auxiliary source
+is `(rendered - target) / (3 * pixel_count * B_squared)` in linear RGB, with
+`B_squared = stop_gradient((sum(rendered**2) + sum(target**2))/6 + radiance_floor**2)`.
+The floor defaults to `0.01` and is configurable with
+`--densification-radiance-floor`. It deliberately limits gain invariance near black.
+The optimizer retains its original RGB objective and regularizer gradients.
+
+With half-MSE, each pixel's existing gradient contributions are weighted before
+surfel/camera accumulation, so no additional adjoint traversal is needed. For
+an SSIM mixture, a separate relative-MSE adjoint supplies only densification
+statistics. Both modes bypass the mean-albedo boost. The scalar score retains
+its tangent projection and camera/iteration averaging; the split direction
+still respects `densification_tangent_only`.
+
+Relative mode uses all implemented position derivatives by default, including
+camera and shadow attenuation, while retaining the shared anchor's stop-gradient.
+`--no-densification-full-position` instead weights the existing local footprint
+signal. `--no-densification-relative-error` restores the albedo-compensated
+photometric statistic. Existing absolute split thresholds are not converted;
+they need calibration in the new statistic's units.
+
+`test_relative_densification.py` compares against an explicitly constructed,
+frozen relative source, tests common radiometric gains, checks optimizer
+isolation with and without SSIM, and verifies that albedo compensation is replaced.

@@ -79,8 +79,6 @@ export namespace Pale {
             uint32_t bvhMaxLeafTriangles = 2;
             uint32_t bvhMaxLeafPoints = 2;
             bool pointBvhUseBinnedSah = true;
-            float pointBvhEffectiveAlphaMin = 0.01f;
-            float pointBvhMinRadiusScale = 0.010f;
             float pointBvhNormalThickness = 0.0001f;
         };
 

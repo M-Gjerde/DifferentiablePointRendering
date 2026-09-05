@@ -1,5 +1,7 @@
 // SyclWarmup.cpp (no imports of your modules)
 #include <sycl/sycl.hpp>
+#include <stdexcept>
+#include <string>
 
 #include "PostprocessKernel.h"
 #include "Core/ScopedTimer.h"
@@ -195,6 +197,7 @@ namespace Pale {
             queue.fill(gradients.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
             queue.fill(gradients.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
             queue.fill(gradients.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
+            queue.fill(gradients.cloneRadianceRmsSumPerPrimitivePerCamera, 0.0f, primitiveCameraCount);
         }
     }
 
@@ -284,15 +287,22 @@ namespace Pale {
                         pkg.queue.memcpy(&materialStartEdgeEventCount, pkg.intermediates.countMaterialStartEdgeEvents,
                                          sizeof(uint32_t)).wait();
                     }
-                    measurementEventCount = std::min(measurementEventCount, pkg.intermediates.maxMeasurementEventCount);
-                    measurementTwoPointEventCount = std::min(measurementTwoPointEventCount,
-                                                             pkg.intermediates.maxMeasurementTwoPointEventCount);
-                    materialVertexEventCount = std::min(materialVertexEventCount,
-                                                        pkg.intermediates.maxMaterialVertexEventCount);
-                    materialEndEdgeEventCount = std::min(materialEndEdgeEventCount,
-                                                         pkg.intermediates.maxMaterialEndEdgeEventCount);
-                    materialStartEdgeEventCount = std::min(materialStartEdgeEventCount,
-                                                           pkg.intermediates.maxMaterialStartEdgeEventCount);
+                    const auto requireEventCapacity = [](uint32_t count, uint32_t capacity, const char *name) {
+                        if (count > capacity) {
+                            throw std::runtime_error(std::string(name) +
+                                " capacity exceeded; refusing an incomplete adjoint pass");
+                        }
+                    };
+                    requireEventCapacity(measurementEventCount, pkg.intermediates.maxMeasurementEventCount,
+                                         "Camera measurement events");
+                    requireEventCapacity(measurementTwoPointEventCount, pkg.intermediates.maxMeasurementTwoPointEventCount,
+                                         "Camera slab/light events");
+                    requireEventCapacity(materialVertexEventCount, pkg.intermediates.maxMaterialVertexEventCount,
+                                         "Material vertex events");
+                    requireEventCapacity(materialEndEdgeEventCount, pkg.intermediates.maxMaterialEndEdgeEventCount,
+                                         "Material end-edge events");
+                    requireEventCapacity(materialStartEdgeEventCount, pkg.intermediates.maxMaterialStartEdgeEventCount,
+                                         "Material start-edge events");
                     {
                         ScopedTimer timer(
                             "reduceFusedFirstBounceMeasurementGradientRecords",

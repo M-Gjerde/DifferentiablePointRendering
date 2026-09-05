@@ -87,8 +87,6 @@
     "curvature_scale_weight": 0.0,
     "opacity_prior_weight": 0.0,
     "share_local_layer_direct_lighting": true,
-    "minimum_projected_footprint": false,
-    "minimum_projected_footprint_pixels": 0.707,
     "densification_stats_skip_interval_start": false,
     "densification_downweight_normal_gradients": false,
     "densification_tangent_only": false,

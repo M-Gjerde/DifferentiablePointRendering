@@ -62,12 +62,16 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
         "--share-local-layer-direct-lighting",
         "--no-share-local-layer-direct-lighting",
     ),
-    "minimum_projected_footprint": (
-        "--minimum-projected-footprint",
-        "--no-minimum-projected-footprint",
-    ),
-    "minimum_projected_footprint_pixels": "--minimum-projected-footprint-pixels",
     "densification_interval": "--densification-interval",
+    "densification_relative_error": (
+        "--densification-relative-error", "--no-densification-relative-error",
+    ),
+    "densification_full_position": (
+        "--densification-full-position", "--no-densification-full-position",
+    ),
+    "densification_radiance_floor": "--densification-radiance-floor",
+    "densification_radiance_quantile_bins": "--densification-radiance-quantile-bins",
+    "densification_radiance_quantile_min_bin_size": "--densification-radiance-quantile-min-bin-size",
     "prune_interval": "--prune-interval",
     "densify_after": "--densify-after",
     "prune_after": "--prune-after",
