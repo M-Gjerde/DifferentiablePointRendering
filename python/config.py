@@ -65,17 +65,17 @@ class OptimizationConfig:
     # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.00011
-    learning_rate_albedo: float = 0.000088
-    learning_rate_opacity: float = 0.00011
-    learning_rate_beta: float = 0.00033
+    learning_rate_scale: float = 0.0001
+    learning_rate_albedo: float = 0.0005
+    learning_rate_opacity: float = 0.0002
+    learning_rate_beta: float = 0.0003
     # Multiplicative learning-rate decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.3
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 50.0
+    position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 10_000
@@ -87,7 +87,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
     depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.002
+    normal_consistency_weight: float = 0.01
     opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
@@ -103,7 +103,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification
-    densification_interval: int = 100
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = False
     densification_downweight_normal_gradients: bool = False
@@ -111,19 +111,19 @@ class OptimizationConfig:
     # the full 3D gradient, including the surfel normal direction.
     densification_tangent_only: bool = False
     densification_grad_quantile: float = 0.0
-    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min: float = 5.0e-4
     densification_grad_abs_min_final: float = 1.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 5_000
     # A non-positive value disables curvature-triggered densification.
     curvature_violation_threshold: float = 35.0
     densification_scale_min: float = 6.0e-3
-    densification_split_offset_scale: float = 0.2
+    densification_split_offset_scale: float = 0.5
     densification_split_scale_factor: float = math.sqrt(2)
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
     densification_max_new_fraction: float = 1.0
-    densify_bsdf_floor: float = 0.1
+    densify_bsdf_floor: float = 0.01
     densify_bsdf_gamma: float = 1.0
     densification_verbose: bool = False
 
@@ -155,7 +155,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None
