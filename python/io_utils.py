@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import math
 import os
 import tempfile
 from pathlib import Path
@@ -293,6 +294,8 @@ def save_gaussians_to_ply(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
+        densification_position_radiance_rms: np.ndarray | None = None,
+        densification_position_base_threshold: float | None = None,
 ) -> None:
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -324,10 +327,17 @@ def save_gaussians_to_ply(
     position_signal_values: np.ndarray | None = None
     position_sample_count_values: np.ndarray | None = None
     position_threshold_values: np.ndarray | None = None
+    position_radiance_rms_values: np.ndarray | None = None
+    position_base_threshold_values: np.ndarray | None = None
+    extended_position_metadata = (
+        densification_position_radiance_rms is not None
+        or densification_position_base_threshold is not None
+    )
     position_metadata = (
         densification_position_signals is not None
         or densification_position_sample_counts is not None
         or densification_position_threshold is not None
+        or extended_position_metadata
     )
     if position_metadata:
         if (
@@ -371,6 +381,33 @@ def save_gaussians_to_ply(
                 np.any(position_threshold_values <= 0.0)):
             raise ValueError(
                 "densification_position_threshold values must be finite and positive"
+            )
+
+        if extended_position_metadata:
+            if (densification_position_radiance_rms is None or
+                    densification_position_base_threshold is None):
+                raise ValueError(
+                    "Radiance-bias diagnostics require radiance RMS and base threshold"
+                )
+            position_radiance_rms_values = np.asarray(
+                densification_position_radiance_rms, dtype=np.float32,
+            ).reshape(-1)
+            if position_radiance_rms_values.shape[0] != num_points:
+                raise ValueError(
+                    "Expected densification_position_radiance_rms to have one value "
+                    f"per point, got {position_radiance_rms_values.shape[0]} for {num_points} points"
+                )
+            position_radiance_rms_values = np.nan_to_num(
+                position_radiance_rms_values, nan=0.0, posinf=0.0, neginf=0.0,
+            )
+            position_radiance_rms_values = np.maximum(position_radiance_rms_values, 0.0)
+            base_threshold = float(densification_position_base_threshold)
+            if not math.isfinite(base_threshold) or base_threshold <= 0.0:
+                raise ValueError(
+                    "densification_position_base_threshold must be finite and positive"
+                )
+            position_base_threshold_values = np.full(
+                (num_points,), base_threshold, dtype=np.float32,
             )
 
     if pos.ndim != 2 or pos.shape[1] != 3:
@@ -442,6 +479,9 @@ def save_gaussians_to_ply(
                 f.write("property float densification_position_signal\n")
                 f.write("property float densification_position_sample_count\n")
                 f.write("property float densification_position_threshold\n")
+                if position_radiance_rms_values is not None:
+                    f.write("property float densification_position_radiance_rms\n")
+                    f.write("property float densification_position_base_threshold\n")
             f.write("end_header\n")
 
             for i in range(num_points):
@@ -469,6 +509,12 @@ def save_gaussians_to_ply(
                     and position_threshold_values is not None
                     else ""
                 )
+                if (position_radiance_rms_values is not None and
+                        position_base_threshold_values is not None):
+                    position_metadata_suffix += (
+                        f" {position_radiance_rms_values[i]:.9g}"
+                        f" {position_base_threshold_values[i]:.9g}"
+                    )
                 f.write(
                     f"{x:.9g} {y:.9g} {z:.9g}  "
                     f"{qw:.9g} {qx:.9g} {qy:.9g} {qz:.9g}  "

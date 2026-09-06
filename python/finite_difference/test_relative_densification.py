@@ -22,6 +22,31 @@ def target_for(image):
 
 
 class RelativeDensificationTests(unittest.TestCase):
+    def test_regularizer_backward_preserves_relative_statistics(self):
+        from config import OptimizationConfig
+        from training import make_device_training_step_options
+
+        for ssim in (0., .3):
+            with self.subTest(ssim=ssim), renderer(scene_points(), bounces=0) as instance:
+                instance.upload_training_targets({'camera': target_for(rgb(instance))})
+                options = make_device_training_step_options(
+                    OptimizationConfig(ssim_weight=ssim, densification_relative_error=True,
+                                       densification_radiance_floor=.01),
+                    active_learning_rates={}, camera_batch_scale=1., return_gradient_stats=True)
+                _, reference = instance.render_rgb_loss_backward(['camera'], options)
+                instance.render_forward_surface_regularizer_loss_and_adjoint(
+                    ['camera'], {'use_depth_distortion': True, 'depth_distortion_weight': .1,
+                                 'use_normal_consistency': True, 'normal_consistency_weight': .01})
+                actual = instance.render_rgb_backward_from_current_forward(['camera'], options)
+                for key in ('clone_signal_per_camera', 'clone_radiance_rms_sum_per_camera'):
+                    np.testing.assert_allclose(actual['gradient_stats'][key],
+                                               reference['gradient_stats'][key],
+                                               rtol=4e-5, atol=2e-7)
+                counts = np.asarray(actual['gradient_stats']['clone_signal_record_count_per_camera'])
+                radiance = np.asarray(actual['gradient_stats']['clone_radiance_rms_sum_per_camera'])
+                self.assertTrue(np.any(counts > 0))
+                self.assertTrue(np.all(radiance[counts > 0] > 0))
+
     def test_matches_explicit_frozen_relative_source(self):
         for shared in (False, True):
             for ssim in (0., .3):

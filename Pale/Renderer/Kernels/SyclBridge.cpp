@@ -277,15 +277,16 @@ namespace Pale {
                     {
                         ScopedTimer timer("Adjoint read event counters", spdlog::level::debug);
                         pkg.queue.memcpy(&measurementEventCount, pkg.intermediates.countMeasurementEvents,
-                                         sizeof(uint32_t)).wait();
+                                         sizeof(uint32_t));
                         pkg.queue.memcpy(&measurementTwoPointEventCount, pkg.intermediates.countMeasurementTwoPointEvents,
-                                         sizeof(uint32_t)).wait();
+                                         sizeof(uint32_t));
                         pkg.queue.memcpy(&materialVertexEventCount, pkg.intermediates.countMaterialVertexEvents,
-                                         sizeof(uint32_t)).wait();
+                                         sizeof(uint32_t));
                         pkg.queue.memcpy(&materialEndEdgeEventCount, pkg.intermediates.countMaterialEndEdgeEvents,
-                                         sizeof(uint32_t)).wait();
+                                         sizeof(uint32_t));
                         pkg.queue.memcpy(&materialStartEdgeEventCount, pkg.intermediates.countMaterialStartEdgeEvents,
-                                         sizeof(uint32_t)).wait();
+                                         sizeof(uint32_t));
+                        pkg.queue.wait();
                     }
                     const auto requireEventCapacity = [](uint32_t count, uint32_t capacity, const char *name) {
                         if (count > capacity) {

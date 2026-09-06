@@ -31,7 +31,7 @@ namespace Pale {
         m_sessionSeed(settings.random.seed) {
     }
 
-    void PathTracer::setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp) {
+    void PathTracer::setScene(const GPUSceneBuffers &scene, const SceneBuild::BuildProducts &bp) {
         m_sceneGPU = scene;
 
         uint32_t requiredRayQueueCapacity = m_settings.photonsPerLaunch;

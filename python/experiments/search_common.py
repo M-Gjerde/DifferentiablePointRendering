@@ -54,6 +54,9 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
         "--no-normal-from-depth-use-mean-depth",
     ),
     "depth_distort_weight": "--depth-distort-weight",
+    "depth_distort_world_space": (
+        "--depth-distort-world-space", "--no-depth-distort-world-space",
+    ),
     "depth_distort_start_iteration": "--depth-distort-start-iteration",
     "opacity_prior_weight": "--opacity-prior-weight",
     "intra_slab_depth_weight": "--intra-slab-depth-weight",

@@ -94,7 +94,7 @@
     "enable_image_preview": false,
     "mesh_extraction_interval": 7500,
     "mesh_extraction_depth_key": "median_depth",
-    "mesh_extraction_mesh_res": 1024,
+    "mesh_extraction_mesh_res": 512,
     "mesh_extraction_num_cluster": 50,
     "save_final_mesh": true,
     "geometry_samples": 500000,

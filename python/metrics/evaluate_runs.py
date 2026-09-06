@@ -185,6 +185,23 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--save-error-heatmaps",
+        action="store_true",
+        help=(
+            "Save accuracy and completion point-to-surface error heatmaps as "
+            "colored PLY files for every evaluated checkpoint."
+        ),
+    )
+    parser.add_argument(
+        "--error-heatmap-max-distance",
+        type=float,
+        default=None,
+        help=(
+            "Distance mapped to the hottest heatmap color, in scaled metric units. "
+            "By default, use the larger directional p95 for each checkpoint."
+        ),
+    )
+    parser.add_argument(
         "--reconstruction-name",
         type=str,
         default="fuse_post.ply",
@@ -662,14 +679,14 @@ def lazy_chamfer_imports():
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     try:
-        from metrics.old.chamfer_ours import (
+        from metrics.chamfer_ours import (
             compute_paper_ready_point_to_triangle_distance,
             load_triangle_mesh_with_query_points,
             set_random_seed,
         )
     except ModuleNotFoundError as exception:
         raise RuntimeError(
-            "Geometry evaluation could not import metrics/old/chamfer_ours.py: "
+            "Geometry evaluation could not import metrics/chamfer_ours.py: "
             f"missing module {exception.name!r}. Loss-only evaluation works without it."
         ) from exception
 
@@ -678,6 +695,196 @@ def lazy_chamfer_imports():
         load_triangle_mesh_with_query_points,
         set_random_seed,
     )
+
+
+ERROR_HEATMAP_VERSION = 1
+ERROR_HEATMAP_COLORMAP = "turbo"
+
+
+def error_heatmap_paths(
+    output_root: Path,
+    iteration: int,
+) -> tuple[Path, Path, Path, Path]:
+    checkpoint_dir = output_root / f"iter_{int(iteration):05d}"
+    return (
+        checkpoint_dir / "accuracy_error.ply",
+        checkpoint_dir / "completion_error.ply",
+        checkpoint_dir / "color_scale.png",
+        checkpoint_dir / "metadata.json",
+    )
+
+
+def error_heatmap_outputs_are_compatible(
+    output_root: Path,
+    iteration: int,
+    requested_max_distance: float | None,
+) -> bool:
+    accuracy_path, completion_path, legend_path, metadata_path = error_heatmap_paths(
+        output_root,
+        iteration,
+    )
+    if not all(path.is_file() for path in (accuracy_path, completion_path, legend_path, metadata_path)):
+        return False
+    metadata = read_json_dict(metadata_path)
+    if metadata is None or metadata.get("version") != ERROR_HEATMAP_VERSION:
+        return False
+    stored_maximum = safe_float(metadata.get("requested_max_distance"))
+    if requested_max_distance is None:
+        return metadata.get("requested_max_distance") is None
+    return stored_maximum == float(requested_max_distance)
+
+
+def resolve_error_heatmap_max_distance(
+    accuracy_distances: np.ndarray,
+    completion_distances: np.ndarray,
+    requested_max_distance: float | None,
+) -> float:
+    if requested_max_distance is not None:
+        maximum = float(requested_max_distance)
+        if not math.isfinite(maximum) or maximum <= 0.0:
+            raise ValueError("--error-heatmap-max-distance must be finite and positive")
+        return maximum
+
+    directional_p95 = [
+        float(np.quantile(np.asarray(values, dtype=np.float64), 0.95))
+        for values in (accuracy_distances, completion_distances)
+        if np.asarray(values).size > 0
+    ]
+    maximum = max(directional_p95, default=0.0)
+    return max(maximum, float(np.finfo(np.float32).eps))
+
+
+def error_heatmap_colors(distances: np.ndarray, max_distance: float) -> np.ndarray:
+    values = np.asarray(distances, dtype=np.float32).reshape(-1)
+    if not np.isfinite(values).all() or np.any(values < 0.0):
+        raise ValueError("Error heatmap distances must be finite and non-negative")
+    maximum = float(max_distance)
+    if not math.isfinite(maximum) or maximum <= 0.0:
+        raise ValueError("Error heatmap maximum distance must be finite and positive")
+    normalized = np.clip(values / maximum, 0.0, 1.0)
+    return np.asarray(
+        matplotlib.colormaps[ERROR_HEATMAP_COLORMAP](normalized)[:, :3],
+        dtype=np.float64,
+    )
+
+
+def write_colored_geometry(
+    source_mesh: Any,
+    query_points: np.ndarray,
+    colors: np.ndarray,
+    use_vertices: bool,
+    output_path: Path,
+) -> None:
+    import open3d as o3d
+
+    points = np.asarray(query_points, dtype=np.float64)
+    colors = np.asarray(colors, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1] != 3 or colors.shape != points.shape:
+        raise ValueError(
+            f"Heatmap points/colors must have matching Nx3 shapes, got {points.shape} and {colors.shape}"
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if use_vertices:
+        triangles = np.asarray(source_mesh.triangles, dtype=np.int32)
+        if len(source_mesh.vertices) != len(points):
+            raise ValueError(
+                "Vertex heatmap query count does not match the source mesh vertex count: "
+                f"{len(points)} vs {len(source_mesh.vertices)}"
+            )
+        colored_mesh = o3d.geometry.TriangleMesh(
+            vertices=o3d.utility.Vector3dVector(points),
+            triangles=o3d.utility.Vector3iVector(triangles),
+        )
+        colored_mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
+        success = o3d.io.write_triangle_mesh(
+            str(output_path),
+            colored_mesh,
+            write_ascii=False,
+            compressed=False,
+            write_vertex_normals=False,
+            write_vertex_colors=True,
+        )
+    else:
+        colored_points = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points))
+        colored_points.colors = o3d.utility.Vector3dVector(colors)
+        success = o3d.io.write_point_cloud(
+            str(output_path),
+            colored_points,
+            write_ascii=False,
+            compressed=False,
+        )
+    if not success:
+        raise RuntimeError(f"Failed to write error heatmap: {output_path}")
+
+
+def write_error_heatmap_legend(max_distance: float, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure, axis = plt.subplots(figsize=(6.0, 1.25), dpi=150)
+    figure.subplots_adjust(bottom=0.48, left=0.08, right=0.96)
+    normalizer = matplotlib.colors.Normalize(vmin=0.0, vmax=float(max_distance))
+    colorbar = figure.colorbar(
+        matplotlib.cm.ScalarMappable(norm=normalizer, cmap=ERROR_HEATMAP_COLORMAP),
+        cax=axis,
+        orientation="horizontal",
+    )
+    colorbar.set_label("Unsigned point-to-surface distance (scaled units)")
+    figure.savefig(output_path, transparent=False)
+    plt.close(figure)
+
+
+def write_error_heatmaps(
+    output_root: Path,
+    iteration: int,
+    reconstruction_mesh: Any,
+    reconstruction_points: np.ndarray,
+    ground_truth_mesh: Any,
+    ground_truth_points: np.ndarray,
+    accuracy_distances: np.ndarray,
+    completion_distances: np.ndarray,
+    use_vertices: bool,
+    requested_max_distance: float | None,
+) -> tuple[Path, Path, float]:
+    accuracy_path, completion_path, legend_path, metadata_path = error_heatmap_paths(
+        output_root,
+        iteration,
+    )
+    maximum = resolve_error_heatmap_max_distance(
+        accuracy_distances,
+        completion_distances,
+        requested_max_distance,
+    )
+    write_colored_geometry(
+        reconstruction_mesh,
+        reconstruction_points,
+        error_heatmap_colors(accuracy_distances, maximum),
+        use_vertices,
+        accuracy_path,
+    )
+    write_colored_geometry(
+        ground_truth_mesh,
+        ground_truth_points,
+        error_heatmap_colors(completion_distances, maximum),
+        use_vertices,
+        completion_path,
+    )
+    write_error_heatmap_legend(maximum, legend_path)
+    write_json_dict(
+        metadata_path,
+        {
+            "version": ERROR_HEATMAP_VERSION,
+            "iteration": int(iteration),
+            "colormap": ERROR_HEATMAP_COLORMAP,
+            "minimum_distance": 0.0,
+            "maximum_distance": maximum,
+            "requested_max_distance": requested_max_distance,
+            "distance_units": "evaluation_scale * mesh_coordinate_units",
+            "accuracy": "reconstruction query points to ground-truth triangle surface",
+            "completion": "ground-truth query points to reconstruction triangle surface",
+            "geometry_type": "triangle_mesh" if use_vertices else "sampled_point_cloud",
+        },
+    )
+    return accuracy_path, completion_path, maximum
 
 
 def compute_geometry_rows(
@@ -690,6 +897,8 @@ def compute_geometry_rows(
     scale: float,
     use_vertices: bool,
     print_each_score: bool,
+    error_heatmap_output_root: Path | None = None,
+    error_heatmap_max_distance: float | None = None,
 ) -> list[dict[str, Any]]:
     if not checkpoints:
         return []
@@ -757,6 +966,7 @@ def compute_geometry_rows(
             ground_truth_points=ground_truth_points,
             ground_truth_mesh=ground_truth_mesh,
             scale=scale,
+            return_directional_distances=error_heatmap_output_root is not None,
         )
         reconstruction_stat = checkpoint.mesh_path.stat()
         row = {
@@ -784,6 +994,31 @@ def compute_geometry_rows(
             "evaluation_scale": float(scale),
             "evaluation_use_vertices": bool(use_vertices),
         }
+        if error_heatmap_output_root is not None:
+            accuracy_path, completion_path, heatmap_maximum = write_error_heatmaps(
+                output_root=error_heatmap_output_root,
+                iteration=checkpoint.iteration,
+                reconstruction_mesh=reconstruction_mesh,
+                reconstruction_points=reconstruction_points,
+                ground_truth_mesh=ground_truth_mesh,
+                ground_truth_points=ground_truth_points,
+                accuracy_distances=np.asarray(metrics["accuracy_distances"]),
+                completion_distances=np.asarray(metrics["completion_distances"]),
+                use_vertices=use_vertices,
+                requested_max_distance=error_heatmap_max_distance,
+            )
+            row.update(
+                {
+                    "accuracy_error_heatmap": str(accuracy_path),
+                    "completion_error_heatmap": str(completion_path),
+                    "error_heatmap_max_distance": heatmap_maximum,
+                    "error_heatmap_colormap": ERROR_HEATMAP_COLORMAP,
+                }
+            )
+            print(
+                f"Saved geometry error heatmaps: {accuracy_path.parent}",
+                flush=True,
+            )
         rows.append(row)
 
         if best_row is None or float(row["cd"]) < float(best_row["cd"]):
@@ -822,6 +1057,7 @@ def read_existing_geometry_rows(csv_path: Path) -> list[dict[str, Any]]:
             "median_gt_to_reconstruction",
             "p95_reconstruction_to_gt",
             "p95_gt_to_reconstruction",
+            "error_heatmap_max_distance",
             "reconstruction_points",
             "ground_truth_points",
             "reconstruction_size",
@@ -1113,6 +1349,13 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
     geometry_csv_path = evaluation_dir / f"mesh_checkpoint_metrics_{geometry_mode}.csv"
     geometry_plot_path = evaluation_dir / f"geometry_curve_{geometry_mode}.png"
     loss_geometry_plot_path = evaluation_dir / f"loss_geometry_curve_{geometry_mode}.png"
+    save_error_heatmaps = bool(getattr(args, "save_error_heatmaps", False))
+    error_heatmap_max_distance = getattr(args, "error_heatmap_max_distance", None)
+    error_heatmap_output_root = (
+        evaluation_dir / "error_heatmaps"
+        if save_error_heatmaps
+        else None
+    )
 
     if args.ground_truth is not None:
         resolved_ground_truth = resolve_path(args.ground_truth)
@@ -1160,7 +1403,18 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
         checkpoints_to_compute = [
             checkpoint
             for checkpoint in requested_checkpoints
-            if args.force or checkpoint.iteration not in cached_iterations
+            if (
+                args.force
+                or checkpoint.iteration not in cached_iterations
+                or (
+                    error_heatmap_output_root is not None
+                    and not error_heatmap_outputs_are_compatible(
+                        error_heatmap_output_root,
+                        checkpoint.iteration,
+                        error_heatmap_max_distance,
+                    )
+                )
+            )
         ]
         computed_rows = compute_geometry_rows(
             run_dir=run_dir,
@@ -1172,6 +1426,8 @@ def evaluate_run(run_dir: Path, args: argparse.Namespace) -> RunEvaluation:
             scale=args.scale,
             use_vertices=args.use_vertices,
             print_each_score=args.full,
+            error_heatmap_output_root=error_heatmap_output_root,
+            error_heatmap_max_distance=error_heatmap_max_distance,
         )
         geometry_rows = merge_geometry_rows(cached_rows, computed_rows)
         write_dict_csv(geometry_csv_path, geometry_rows)
@@ -1377,6 +1633,16 @@ def main() -> None:
         raise SystemExit("--checkpoint-iteration requires --full.")
     if args.checkpoint_iteration and args.ground_truth is None:
         raise SystemExit("--checkpoint-iteration requires --ground-truth/--gt.")
+    if args.save_error_heatmaps and args.ground_truth is None:
+        raise SystemExit("--save-error-heatmaps requires --ground-truth/--gt.")
+    if (
+        args.error_heatmap_max_distance is not None
+        and (
+            not math.isfinite(args.error_heatmap_max_distance)
+            or args.error_heatmap_max_distance <= 0.0
+        )
+    ):
+        raise SystemExit("--error-heatmap-max-distance must be finite and positive.")
     run_dirs = find_run_dirs(args.run_dir, args.run_root, args.recursive)
     if not run_dirs and not args.run_dir and not args.run_root:
         run_root = default_run_root()

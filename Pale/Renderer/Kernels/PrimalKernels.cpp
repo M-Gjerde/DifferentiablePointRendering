@@ -305,7 +305,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             }
             accumulatedCompositeWeight += compositeWeight;
 
-            const float ndcDepth = depthDistortionNdc01(depth);
+            const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
             if (profileEnabled) {
                 profileRegularizerHits += 1u;
                 profileDepthPairIterations += previousDepthDistortionHitCount;
@@ -1184,20 +1184,21 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
     const std::uint32_t imageWidth = sensor.camera.width;
     const std::uint32_t imageHeight = sensor.camera.height;
     const std::uint32_t pixelCount = imageWidth * imageHeight;
-    queue.fill(sensor.framebuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-    queue.fill(sensor.medianDepthBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.meanDepthBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.medianWorldPositionBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-    queue.fill(sensor.visibleNormalBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-    queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount).wait();
-    queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount).wait();
-    queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount).wait();
-    queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount).wait();
+    queue.fill(sensor.framebuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+    queue.fill(sensor.medianDepthBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.meanDepthBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.medianWorldPositionBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+    queue.fill(sensor.visibleNormalBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+    queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+    queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
+    queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
+    queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
+    queue.wait();
     // -------------------------------------------------------------------------
     // Pass 1:
     //   - RGB gather
@@ -1274,7 +1275,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                 medianNormalW = normalW;
             }
             accumulatedCompositeWeight += wi;
-            const float ndcDepth = depthDistortionNdc01(zi);
+            const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionWorldSpace);
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                 distortion += previousDepthDistortionWeights[previousIndex] * wi *
@@ -1569,7 +1570,7 @@ void launchPointSampledPathTracingCameraKernel(
                         medianNormalW = normalW;
                     }
                     accumulatedCompositeWeight += compositeWeight;
-                    const float normalizedDepth = depthDistortionNdc01(depth);
+                    const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
                     distortion += compositeWeight * (
                         normalizedDepth * normalizedDepth * prefixWeight +
                         prefixWeightDepthSquared -

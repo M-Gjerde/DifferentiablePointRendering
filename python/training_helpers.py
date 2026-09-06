@@ -1162,6 +1162,8 @@ def save_manual_snapshot(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
+        densification_position_radiance_rms: np.ndarray | None = None,
+        densification_position_base_threshold: float | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     renders_dir = renders_output_dir(output_dir)
@@ -1217,6 +1219,8 @@ def save_manual_snapshot(
         densification_position_signals=densification_position_signals,
         densification_position_sample_counts=densification_position_sample_counts,
         densification_position_threshold=densification_position_threshold,
+        densification_position_radiance_rms=densification_position_radiance_rms,
+        densification_position_base_threshold=densification_position_base_threshold,
     )
 
     print(
@@ -1226,6 +1230,45 @@ def save_manual_snapshot(
         f"normal_from_depth_final_<camera>.png, and points_final.ply"
     )
     return ply_path
+
+
+def should_save_point_cloud_snapshot(
+        iteration: int,
+        save_interval: int,
+        next_densification_iteration: int | None,
+        before_densification: bool,
+        first_iteration: bool = False,
+) -> bool:
+    if save_interval <= 0:
+        return False
+    if first_iteration:
+        return True
+    if before_densification:
+        return (
+            next_densification_iteration is not None
+            and iteration + 1 == next_densification_iteration
+        )
+    return iteration % save_interval == 0
+
+
+def should_save_image_snapshot(
+        iteration: int,
+        save_interval: int,
+        final_iteration: int,
+        next_densification_iteration: int | None,
+        first_iteration: bool = False,
+) -> bool:
+    if first_iteration:
+        return True
+    if save_interval <= 0:
+        return False
+    return (
+        iteration == final_iteration
+        or (
+            next_densification_iteration is not None
+            and iteration + 1 == next_densification_iteration
+        )
+    )
 
 
 def save_iteration_point_cloud_snapshot(
@@ -1243,6 +1286,8 @@ def save_iteration_point_cloud_snapshot(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
+        densification_position_radiance_rms: np.ndarray | None = None,
+        densification_position_base_threshold: float | None = None,
 ) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -1262,6 +1307,8 @@ def save_iteration_point_cloud_snapshot(
         densification_position_signals=densification_position_signals,
         densification_position_sample_counts=densification_position_sample_counts,
         densification_position_threshold=densification_position_threshold,
+        densification_position_radiance_rms=densification_position_radiance_rms,
+        densification_position_base_threshold=densification_position_base_threshold,
     )
     #print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
     return ply_path
@@ -2074,8 +2121,15 @@ def position_densification_snapshot_statistics(
         densification_radiance_floor: float = 1.0e-3,
         densification_radiance_quantile_bins: int = 1,
         densification_radiance_quantile_min_bin_size: int = 16,
+        densification_radiance_bias_strength: float = 0.0,
+        densification_radiance_bias_min_weight: float = 0.8,
+        densification_radiance_bias_max_weight: float = 1.5,
+        densification_threshold_mode: str = "quantile",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
-    """Return position signals and exact global/per-surfel selection thresholds."""
+    """Return signals and selection thresholds; unused quantile diagnostics are NaN."""
+    if densification_threshold_mode not in ("absolute", "quantile"):
+        raise ValueError(f"Unknown densification threshold mode: {densification_threshold_mode}")
+    use_quantiles = densification_threshold_mode == "quantile"
     accum = np.asarray(densify_position_grad_accum_np, dtype=np.float32).reshape(-1)
     denom = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
     trainable = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
@@ -2099,7 +2153,7 @@ def position_densification_snapshot_statistics(
         & finite_signal
         & trainable
     )
-    if np.any(quantile_population):
+    if use_quantiles and np.any(quantile_population):
         quantile_threshold = float(np.quantile(
             signal[quantile_population],
             float(densification_grad_quantile),
@@ -2119,9 +2173,10 @@ def position_densification_snapshot_statistics(
     threshold = float(np.float32(threshold))
     effective_thresholds = np.full(signal.shape, threshold, dtype=np.float32)
 
-    radiance_bin_count = max(1, int(densification_radiance_quantile_bins))
+    radiance_bin_count = max(1, int(densification_radiance_quantile_bins)) if use_quantiles else 1
     minimum_bin_size = max(1, int(densification_radiance_quantile_min_bin_size))
-    if densify_radiance_rms_accum_np is not None and radiance_bin_count > 1:
+    bias_strength = float(densification_radiance_bias_strength)
+    if densify_radiance_rms_accum_np is not None and (radiance_bin_count > 1 or bias_strength > 0.0):
         radiance_accum = np.asarray(
             densify_radiance_rms_accum_np, dtype=np.float32
         ).reshape(-1)
@@ -2132,6 +2187,7 @@ def position_densification_snapshot_statistics(
             )
         radiance_rms = np.zeros(signal.shape, dtype=np.float32)
         radiance_rms[valid] = radiance_accum[valid] / denom[valid]
+        observed_radiance = quantile_population & np.isfinite(radiance_rms) & (radiance_rms > 0.0)
         radiance_rms = np.nan_to_num(
             radiance_rms, nan=0.0, posinf=0.0, neginf=0.0
         )
@@ -2139,27 +2195,67 @@ def position_densification_snapshot_statistics(
             float(densification_radiance_floor),
             float(np.finfo(np.float32).tiny),
         )
-        radiance_ratio = np.maximum(radiance_rms, radiance_reference) / radiance_reference
-        radiance_bin_indices = np.floor(np.log2(radiance_ratio)).astype(np.int32)
-        radiance_bin_indices = np.clip(
-            radiance_bin_indices, 0, radiance_bin_count - 1
-        )
+        if radiance_bin_count > 1:
+            radiance_ratio = np.maximum(radiance_rms, radiance_reference) / radiance_reference
+            radiance_bin_indices = np.floor(np.log2(radiance_ratio)).astype(np.int32)
+            radiance_bin_indices = np.clip(
+                radiance_bin_indices, 0, radiance_bin_count - 1
+            )
 
-        for bin_index in range(radiance_bin_count):
-            bin_population = quantile_population & (radiance_bin_indices == bin_index)
-            if int(np.count_nonzero(bin_population)) < minimum_bin_size:
-                continue
-            bin_quantile_threshold = float(np.quantile(
-                signal[bin_population],
-                float(densification_grad_quantile),
+            for bin_index in range(radiance_bin_count):
+                bin_population = quantile_population & (radiance_bin_indices == bin_index)
+                if int(np.count_nonzero(bin_population)) < minimum_bin_size:
+                    continue
+                bin_quantile_threshold = float(np.quantile(
+                    signal[bin_population],
+                    float(densification_grad_quantile),
+                ))
+                bin_threshold = float(np.float32(max(
+                    absolute_minimum,
+                    bin_quantile_threshold,
+                )))
+                effective_thresholds[bin_population] = bin_threshold
+
+        if bias_strength > 0.0 and np.any(observed_radiance):
+            # Apply the preference AFTER quantiles: scaling each band's input
+            # scores first would largely cancel against its scaled quantile.
+            # Missing/invalid radiance stays neutral and cannot set the median.
+            brightness = np.maximum(
+                radiance_rms[observed_radiance].astype(np.float64), radiance_reference
+            )
+            median_brightness = float(np.median(brightness))
+            log_weights = bias_strength * (np.log(median_brightness) - np.log(brightness))
+            weights = np.exp(np.clip(
+                log_weights,
+                np.log(float(densification_radiance_bias_min_weight)),
+                np.log(float(densification_radiance_bias_max_weight)),
             ))
-            bin_threshold = float(np.float32(max(
-                absolute_minimum,
-                bin_quantile_threshold,
-            )))
-            effective_thresholds[bin_population] = bin_threshold
+            effective_thresholds[observed_radiance] = (
+                effective_thresholds[observed_radiance] / weights
+            ).astype(np.float32)
 
     return signal, sample_counts, effective_thresholds, threshold, quantile_threshold
+
+
+def position_densification_radiance_rms_snapshot(
+        densify_radiance_rms_accum_np: np.ndarray,
+        densify_position_grad_denom_np: np.ndarray,
+) -> np.ndarray:
+    """Return the per-surfel RMS radiance used by the brightness-bias rule."""
+    radiance_accum = np.asarray(densify_radiance_rms_accum_np, dtype=np.float32).reshape(-1)
+    denominator = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
+    if radiance_accum.shape != denominator.shape:
+        raise RuntimeError(
+            "Densification radiance snapshot arrays must have matching point counts: "
+            f"radiance={radiance_accum.shape}, denominator={denominator.shape}"
+        )
+    result = np.zeros(radiance_accum.shape, dtype=np.float32)
+    valid = np.isfinite(denominator) & (denominator > 0.0)
+    result[valid] = radiance_accum[valid] / denominator[valid]
+    return np.maximum(
+        np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0),
+        0.0,
+    ).astype(np.float32, copy=False)
 
 
 def maybe_make_densification_result(
@@ -2218,6 +2314,10 @@ def maybe_make_densification_result(
             densification_radiance_quantile_min_bin_size=int(
                 config.densification_radiance_quantile_min_bin_size
             ),
+            densification_radiance_bias_strength=float(config.densification_radiance_bias_strength),
+            densification_radiance_bias_min_weight=float(config.densification_radiance_bias_min_weight),
+            densification_radiance_bias_max_weight=float(config.densification_radiance_bias_max_weight),
+            densification_threshold_mode=config.densification_threshold_mode,
         )
         valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
         avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
@@ -2473,6 +2573,7 @@ def maybe_make_densification_result(
                 f"signal_p98={signal_p98:.3e}, "
                 f"signal_max={signal_max:.3e}, "
                 f"grad_q_thr={grad_quantile_threshold:.3e}, "
+                f"threshold_mode={config.densification_threshold_mode}, "
                 f"grad_thr={grad_threshold:.3e}, "
                 f"abs_thr={densification_grad_abs_min:.3e}, "
                 f"curvature_thr={curvature_violation_threshold:.3e}, "

@@ -822,6 +822,7 @@ namespace Pale {
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
+        bool depthDistortionWorldSpace = false;
         float normalConsistencyWeight = 0.0f;
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;

@@ -349,7 +349,8 @@ def compute_paper_ready_point_to_triangle_distance(
     ground_truth_points: np.ndarray,
     ground_truth_mesh: o3d.geometry.TriangleMesh,
     scale: float,
-) -> dict[str, float]:
+    return_directional_distances: bool = False,
+) -> dict[str, float | np.ndarray]:
     """Compute symmetric point-to-triangle accuracy, completion, and CD.
 
     Accuracy measures reconstruction query points against the continuous GT
@@ -370,7 +371,7 @@ def compute_paper_ready_point_to_triangle_distance(
     cd_raw = 0.5 * (accuracy_raw + completion_raw)
     scale = float(scale)
 
-    return {
+    result: dict[str, float | np.ndarray] = {
         "accuracy": accuracy_raw * scale,
         "completion": completion_raw * scale,
         "cd": cd_raw * scale,
@@ -388,6 +389,17 @@ def compute_paper_ready_point_to_triangle_distance(
             + np.mean(np.square(gt_to_reconstruction), dtype=np.float64)
         ),
     }
+    if return_directional_distances:
+        result["accuracy_distances"] = np.asarray(
+            reconstruction_to_gt * scale,
+            dtype=np.float32,
+        )
+        result["completion_distances"] = np.asarray(
+            gt_to_reconstruction * scale,
+            dtype=np.float32,
+        )
+
+    return result
 
 
 def set_random_seed(seed: int) -> None:

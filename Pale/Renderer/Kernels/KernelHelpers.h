@@ -1450,7 +1450,10 @@ namespace Pale {
         return ray.origin + ray.direction * t;
     }
 
-    SYCL_EXTERNAL inline float depthDistortionNdc01(float forwardDepth) {
+    // World-space mode keeps linear camera-forward depth in scene units.
+    // Its pairwise differences have no camera-distance attenuation.
+    SYCL_EXTERNAL inline float depthDistortionCoordinate(float forwardDepth, bool worldSpace) {
+        if (worldSpace) return forwardDepth;
         constexpr float nearPlane = 0.2f;
         constexpr float farPlane = 1000.0f;
 
@@ -1459,7 +1462,8 @@ namespace Pale {
                - (farPlane * nearPlane) / ((farPlane - nearPlane) * safeDepth);
     }
 
-    SYCL_EXTERNAL inline float depthDistortionDndc01Ddepth(float forwardDepth) {
+    SYCL_EXTERNAL inline float depthDistortionCoordinateDerivative(float forwardDepth, bool worldSpace) {
+        if (worldSpace) return 1.0f;
         constexpr float nearPlane = 0.2f;
         constexpr float farPlane = 1000.0f;
 

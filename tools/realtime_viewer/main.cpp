@@ -37,6 +37,7 @@
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/RenderPackage.h"
+#include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
 #include "spdlog/spdlog.h"
 
@@ -115,8 +116,8 @@ namespace {
         ViewImageMode::DepthNormal,
         ViewImageMode::IntraSlabDepth,
         ViewImageMode::CurvatureScale,
-        ViewImageMode::CurvaturePrimitiveScore,
         ViewImageMode::PositionPrimitiveScore,
+        ViewImageMode::CurvaturePrimitiveScore,
         ViewImageMode::DensificationOrigin,
         ViewImageMode::PrimitiveAge,
         ViewImageMode::DepthPositionGradient,
@@ -138,8 +139,8 @@ namespace {
         "6 Depth normal",
         "7 Intra-slab depth",
         "8 Curvature scale",
-        "9 Curvature primitive score",
-        "Position primitive score (saved)",
+        "9 Position primitive score (saved)",
+        "Curvature primitive score",
         "Densification split origin",
         "Primitive age",
         "Depth distortion |grad position|",
@@ -204,6 +205,8 @@ namespace {
         bool curvatureScaleValid = false;
         bool curvaturePrimitiveScoreValid = false;
         bool positionPrimitiveScoreValid = false;
+        bool positionPrimitiveRadianceBiasAvailable = false;
+        bool positionPrimitiveIndicesValid = false;
         bool densificationOriginValid = false;
         bool primitiveAgeValid = false;
         bool visiblePrimitiveIndicesValid = false;
@@ -222,6 +225,7 @@ namespace {
         std::vector<float> curvatureObservedPrimitiveScores;
         std::vector<float> positionPrimitiveScore;
         std::vector<float> positionObservedPrimitiveScores;
+        std::vector<uint32_t> positionPrimitiveIndices;
         std::vector<std::uint8_t> densificationOrigin;
         std::vector<std::uint32_t> primitiveAge;
         std::vector<uint32_t> visiblePrimitiveIndices;
@@ -236,6 +240,7 @@ namespace {
         std::size_t curvatureObservedPrimitiveCount = 0u;
         float curvaturePrimitiveScoreMax = 0.0f;
         std::size_t positionObservedPrimitiveCount = 0u;
+        std::size_t positionUnsampledPrimitiveCount = 0u;
         float positionPrimitiveScoreMax = 0.0f;
         float positionPrimitiveSplitThreshold = 0.0f;
         bool positionPrimitiveMetadataAvailable = false;
@@ -256,6 +261,8 @@ namespace {
             curvatureScaleValid = false;
             curvaturePrimitiveScoreValid = false;
             positionPrimitiveScoreValid = false;
+            positionPrimitiveRadianceBiasAvailable = false;
+            positionPrimitiveIndicesValid = false;
             densificationOriginValid = false;
             primitiveAgeValid = false;
             visiblePrimitiveIndicesValid = false;
@@ -274,6 +281,7 @@ namespace {
             curvatureObservedPrimitiveScores.clear();
             positionPrimitiveScore.clear();
             positionObservedPrimitiveScores.clear();
+            positionPrimitiveIndices.clear();
             densificationOrigin.clear();
             primitiveAge.clear();
             visiblePrimitiveIndices.clear();
@@ -288,6 +296,7 @@ namespace {
             curvatureObservedPrimitiveCount = 0u;
             curvaturePrimitiveScoreMax = 0.0f;
             positionObservedPrimitiveCount = 0u;
+            positionUnsampledPrimitiveCount = 0u;
             positionPrimitiveScoreMax = 0.0f;
             positionPrimitiveSplitThreshold = 0.0f;
             positionPrimitiveMetadataAvailable = false;
@@ -2385,6 +2394,7 @@ namespace {
         settings.adjointSamplesPerPixel = 0;
         settings.numGatherPasses = 1u;
         settings.renderDebugGradientImages = false;
+        settings.depthDistortionWorldSpace = true;
         settings.enableAdjointDirectLight = true;
         settings.pointGeometrySupportRadius = 0.00f;
         settings.pointGeometryReconstructionLength = 0.0f;
@@ -2820,7 +2830,8 @@ namespace {
         uint32_t renderHeight,
         float splitThreshold,
         ScalarColorMap colorMap,
-        std::vector<uint8_t>& displayPixels) {
+        std::vector<uint8_t>& displayPixels,
+        bool showMissingSamples = false) {
         const std::size_t pixelCount =
             static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
         displayPixels.assign(pixelCount * 4u, 0u);
@@ -2837,6 +2848,14 @@ namespace {
             const std::size_t baseIndex = pixelIndex * 4u;
             displayPixels[baseIndex + 3u] = 255u;
             const float value = values[pixelIndex];
+            if (showMissingSamples && value == -2.0f) {
+                // A visible primitive without interval samples is distinct
+                // from the background (-1) and a measured zero score (0).
+                displayPixels[baseIndex + 0u] = 128u;
+                displayPixels[baseIndex + 1u] = 128u;
+                displayPixels[baseIndex + 2u] = 128u;
+                continue;
+            }
             if (!std::isfinite(value) || value < 0.0f) {
                 continue;
             }
@@ -3079,6 +3098,10 @@ int main(int argc, char** argv) {
         float positionWhatIfDisplayThreshold = 0.0f;
         float positionWhatIfReferenceThreshold = 0.0f;
         std::filesystem::path positionWhatIfThresholdPointCloudPath;
+        float positionRadianceBiasStrength = 1.0f;
+        float positionRadianceBiasMinWeight = 0.5f;
+        float positionRadianceBiasMaxWeight = 10.0f;
+        constexpr float kPositionRadianceBiasFloor = 1.0e-3f;
         int primitiveAgeColdAfterIterations = 1000;
         // Viewer-only diagnostic default. Optimization keeps its renderer-side
         // debug allocations disabled unless explicitly requested there.
@@ -3726,6 +3749,45 @@ int main(int argc, char** argv) {
                 return true;
             };
 
+            const auto ensurePositionPrimitiveIndices = [&]() {
+                if (debugDisplayBuffers.positionPrimitiveIndicesValid) {
+                    return;
+                }
+                // The position score is defined per primitive, independently
+                // of neighboring depth/normal validity. Trace the frontmost
+                // surfel directly instead of borrowing the curvature map.
+                const auto camera = sensor.camera;
+                auto previewScene = sceneGpu;
+                previewScene.profileCounters = nullptr;
+                auto& hostIndices = debugDisplayBuffers.positionPrimitiveIndices;
+                hostIndices.resize(pixelCount);
+                uint32_t* output = sycl::malloc_device<uint32_t>(pixelCount, queue);
+                if (!output) {
+                    throw std::runtime_error("Failed to allocate position preview primitive indices");
+                }
+                try {
+                    queue.parallel_for(sycl::range<1>(pixelCount), [=](sycl::id<1> id) {
+                        const uint32_t pixel = static_cast<uint32_t>(id[0]);
+                        const auto ray = Pale::makePrimaryRayFromPixelJitteredFov(
+                            camera, static_cast<float>(pixel % camera.width),
+                            static_cast<float>(pixel / camera.width), 0.0f, 0.0f);
+                        Pale::WorldHit hit{};
+                        Pale::intersectScene(ray, &hit, previewScene, Pale::SurfelIntersectMode::FirstHit);
+                        output[id[0]] = hit.hit &&
+                            previewScene.instances[hit.instanceIndex].geometryType == Pale::GeometryType::PointCloud
+                            ? hit.primitiveIndex : UINT32_MAX;
+                    }).wait_and_throw();
+                    queue.memcpy(hostIndices.data(), output, pixelCount * sizeof(uint32_t)).wait_and_throw();
+                } catch (...) {
+                    // Complete any submitted work before releasing its storage.
+                    queue.wait();
+                    sycl::free(output, queue);
+                    throw;
+                }
+                sycl::free(output, queue);
+                debugDisplayBuffers.positionPrimitiveIndicesValid = true;
+            };
+
             const auto makePositionGradientMap = [&](const Pale::PointGradients& gradients) {
                 std::vector<float> map(pixelCount, -1.0f);
                 if (!ensureVisiblePrimitiveIndices() ||
@@ -3961,16 +4023,16 @@ int main(int argc, char** argv) {
                     return true;
                 case ViewImageMode::PositionPrimitiveScore:
                     if (!debugDisplayBuffers.positionPrimitiveScoreValid) {
-                        if (!ensureVisiblePrimitiveIndices()) {
-                            return false;
-                        }
+                        ensurePositionPrimitiveIndices();
 
                         debugDisplayBuffers.positionPrimitiveScore.assign(pixelCount, -1.0f);
                         debugDisplayBuffers.positionObservedPrimitiveScores.clear();
                         debugDisplayBuffers.positionObservedPrimitiveCount = 0u;
+                        debugDisplayBuffers.positionUnsampledPrimitiveCount = 0u;
                         debugDisplayBuffers.positionPrimitiveScoreMax = 0.0f;
                         debugDisplayBuffers.positionPrimitiveSplitThreshold = 0.0f;
                         debugDisplayBuffers.positionPrimitiveMetadataAvailable = false;
+                        debugDisplayBuffers.positionPrimitiveRadianceBiasAvailable = false;
 
                         const std::optional<Pale::AssetHandle> pointCloudHandle =
                             firstPointCloudHandle(scene);
@@ -3980,11 +4042,16 @@ int main(int argc, char** argv) {
                             std::vector<float> primitiveSignals;
                             std::vector<std::uint32_t> primitiveSampleCounts;
                             std::vector<float> primitiveThresholds;
+                            std::vector<float> primitiveRadianceRms;
+                            std::vector<float> primitiveBaseThresholds;
                             primitiveSignals.reserve(sceneGpu.pointCount);
                             primitiveSampleCounts.reserve(sceneGpu.pointCount);
                             primitiveThresholds.reserve(sceneGpu.pointCount);
+                            primitiveRadianceRms.reserve(sceneGpu.pointCount);
+                            primitiveBaseThresholds.reserve(sceneGpu.pointCount);
 
                             bool completeMetadata = true;
+                            bool completeRadianceBiasMetadata = true;
                             for (const Pale::PointGeometry& geometry : pointCloudAsset->points) {
                                 const std::size_t pointCount = geometry.positions.size();
                                 if (geometry.densificationPositionSignals.size() != pointCount ||
@@ -3992,6 +4059,10 @@ int main(int argc, char** argv) {
                                     geometry.densificationPositionThresholds.size() != pointCount) {
                                     completeMetadata = false;
                                     break;
+                                }
+                                if (geometry.densificationPositionRadianceRms.size() != pointCount ||
+                                    geometry.densificationPositionBaseThresholds.size() != pointCount) {
+                                    completeRadianceBiasMetadata = false;
                                 }
                                 primitiveSignals.insert(
                                     primitiveSignals.end(),
@@ -4005,21 +4076,41 @@ int main(int argc, char** argv) {
                                     primitiveThresholds.end(),
                                     geometry.densificationPositionThresholds.begin(),
                                     geometry.densificationPositionThresholds.end());
+                                if (completeRadianceBiasMetadata) {
+                                    primitiveRadianceRms.insert(
+                                        primitiveRadianceRms.end(),
+                                        geometry.densificationPositionRadianceRms.begin(),
+                                        geometry.densificationPositionRadianceRms.end());
+                                    primitiveBaseThresholds.insert(
+                                        primitiveBaseThresholds.end(),
+                                        geometry.densificationPositionBaseThresholds.begin(),
+                                        geometry.densificationPositionBaseThresholds.end());
+                                }
                             }
 
                             completeMetadata = completeMetadata &&
                                 primitiveSignals.size() == sceneGpu.pointCount;
                             if (completeMetadata && !primitiveThresholds.empty()) {
-                                const float savedThreshold = primitiveThresholds.front();
-                                completeMetadata = std::isfinite(savedThreshold) &&
-                                    savedThreshold > 0.0f &&
-                                    std::all_of(
-                                        primitiveThresholds.begin(),
-                                        primitiveThresholds.end(),
-                                        [&](float threshold) {
-                                            return threshold == savedThreshold;
+                                completeRadianceBiasMetadata = completeRadianceBiasMetadata &&
+                                    primitiveRadianceRms.size() == sceneGpu.pointCount &&
+                                    primitiveBaseThresholds.size() == sceneGpu.pointCount;
+                                const std::vector<float>& selectedThresholds =
+                                    completeRadianceBiasMetadata
+                                        ? primitiveBaseThresholds
+                                        : primitiveThresholds;
+                                completeMetadata = std::all_of(
+                                        selectedThresholds.begin(),
+                                        selectedThresholds.end(),
+                                        [](float threshold) {
+                                            return std::isfinite(threshold) && threshold > 0.0f;
                                         });
                                 if (completeMetadata) {
+                                    // Legacy PLYs can store per-primitive biased
+                                    // thresholds too. Preserve their ratios with
+                                    // a common reference for the display slider.
+                                    auto sortedThresholds = selectedThresholds;
+                                    std::sort(sortedThresholds.begin(), sortedThresholds.end());
+                                    const float savedThreshold = sortedThresholds[sortedThresholds.size() / 2u];
                                     debugDisplayBuffers.positionPrimitiveSplitThreshold =
                                         savedThreshold;
                                     debugDisplayBuffers.positionPrimitiveMetadataAvailable = true;
@@ -4035,15 +4126,60 @@ int main(int argc, char** argv) {
                                     }
                                     debugDisplayBuffers.positionObservedPrimitiveScores.reserve(
                                         primitiveSignals.size());
+                                    float medianRadiance = kPositionRadianceBiasFloor;
+                                    if (completeRadianceBiasMetadata) {
+                                        std::vector<float> observedRadiance;
+                                        observedRadiance.reserve(primitiveRadianceRms.size());
+                                        for (std::size_t primitiveIndex = 0u;
+                                             primitiveIndex < primitiveRadianceRms.size();
+                                             ++primitiveIndex) {
+                                            const float radiance = primitiveRadianceRms[primitiveIndex];
+                                            if (primitiveSampleCounts[primitiveIndex] > 0u &&
+                                                std::isfinite(radiance) && radiance > 0.0f) {
+                                                observedRadiance.push_back(std::max(
+                                                    radiance, kPositionRadianceBiasFloor));
+                                            }
+                                        }
+                                        if (!observedRadiance.empty()) {
+                                            debugDisplayBuffers.positionPrimitiveRadianceBiasAvailable = true;
+                                            std::sort(observedRadiance.begin(), observedRadiance.end());
+                                            const std::size_t middle = observedRadiance.size() / 2u;
+                                            medianRadiance = observedRadiance[middle];
+                                            if (observedRadiance.size() % 2u == 0u) {
+                                                medianRadiance = 0.5f * (
+                                                    observedRadiance[middle - 1u] +
+                                                    observedRadiance[middle]);
+                                            }
+                                        }
+                                    }
                                     for (std::size_t primitiveIndex = 0u;
                                          primitiveIndex < primitiveSignals.size();
                                          ++primitiveIndex) {
-                                        const float signal = primitiveSignals[primitiveIndex];
-                                        if (primitiveSampleCounts[primitiveIndex] == 0u ||
-                                            !std::isfinite(signal) || signal < 0.0f) {
+                                        float signal = primitiveSignals[primitiveIndex];
+                                        if (primitiveSampleCounts[primitiveIndex] == 0u) {
+                                            primitiveSignals[primitiveIndex] = -2.0f;
+                                            ++debugDisplayBuffers.positionUnsampledPrimitiveCount;
+                                            continue;
+                                        }
+                                        if (!std::isfinite(signal) || signal < 0.0f) {
                                             primitiveSignals[primitiveIndex] = -1.0f;
                                             continue;
                                         }
+                                        signal *= savedThreshold / selectedThresholds[primitiveIndex];
+                                        if (completeRadianceBiasMetadata &&
+                                            primitiveRadianceRms[primitiveIndex] > 0.0f) {
+                                            const float brightness = std::max(
+                                                primitiveRadianceRms[primitiveIndex],
+                                                kPositionRadianceBiasFloor);
+                                            const float weight = std::clamp(
+                                                std::pow(
+                                                    medianRadiance / brightness,
+                                                    positionRadianceBiasStrength),
+                                                positionRadianceBiasMinWeight,
+                                                positionRadianceBiasMaxWeight);
+                                            signal *= weight;
+                                        }
+                                        primitiveSignals[primitiveIndex] = signal;
                                         debugDisplayBuffers.positionObservedPrimitiveScores.push_back(
                                             signal);
                                         ++debugDisplayBuffers.positionObservedPrimitiveCount;
@@ -4054,7 +4190,7 @@ int main(int argc, char** argv) {
                                          pixelIndex < pixelCount;
                                          ++pixelIndex) {
                                         const uint32_t primitiveIndex =
-                                            debugDisplayBuffers.visiblePrimitiveIndices[pixelIndex];
+                                            debugDisplayBuffers.positionPrimitiveIndices[pixelIndex];
                                         if (primitiveIndex < primitiveSignals.size()) {
                                             debugDisplayBuffers.positionPrimitiveScore[pixelIndex] =
                                                 primitiveSignals[primitiveIndex];
@@ -4213,7 +4349,8 @@ int main(int argc, char** argv) {
                             displayedRenderHeight,
                             positionWhatIfDisplayThreshold,
                             scalarColorMap,
-                            pixels);
+                            pixels,
+                            true);
                         break;
                     case ViewImageMode::DensificationOrigin:
                         colorizeDensificationOrigins(
@@ -4914,6 +5051,18 @@ int main(int argc, char** argv) {
                 renderRequested = true;
             }
 
+            int distortionDepthMode = settings.depthDistortionWorldSpace ? 0 : 1;
+            const char* distortionDepthModes[] = {"World distance", "Normalized depth (legacy)"};
+            if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 2)) {
+                settings.depthDistortionWorldSpace = distortionDepthMode == 0;
+                renderRequested = true;
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Use the same depth mode as the training run. World distance preserves "
+                    "the contribution of distant surfaces in both loss and gradient previews.");
+            }
+
             int cameraSourceIndex = cameraSource == CameraSource::SceneXml ? 1 : 0;
             const char* cameraSources[] = {"Viewport camera", "scene.xml camera"};
             if (ImGui::Combo("Camera source", &cameraSourceIndex, cameraSources, 2)) {
@@ -4948,6 +5097,11 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndCombo();
                 }
+            }
+
+            if (viewImageMode == ViewImageMode::DepthDistortion ||
+                viewImageMode == ViewImageMode::DepthPositionGradient) {
+                ImGui::TextDisabled("Preview uses unit loss weight; colors rescale to each frame");
             }
 
             ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
@@ -5022,6 +5176,35 @@ int main(int argc, char** argv) {
                     debugDisplayBuffers.curvaturePrimitiveScoreMax);
             }
             if (viewImageMode == ViewImageMode::PositionPrimitiveScore) {
+                ImGui::SeparatorText("Densification radiance bias");
+                ImGui::BeginDisabled(!debugDisplayBuffers.positionPrimitiveRadianceBiasAvailable);
+                bool radianceBiasChanged = false;
+                radianceBiasChanged |= ImGui::SliderFloat(
+                    "Bias strength", &positionRadianceBiasStrength, 0.0f, 2.0f, "%.3f");
+                radianceBiasChanged |= ImGui::SliderFloat(
+                    "Minimum weight", &positionRadianceBiasMinWeight, 0.05f, 1.0f,
+                    "%.3f", ImGuiSliderFlags_Logarithmic);
+                radianceBiasChanged |= ImGui::SliderFloat(
+                    "Maximum weight", &positionRadianceBiasMaxWeight, 1.0f, 20.0f,
+                    "%.3f", ImGuiSliderFlags_Logarithmic);
+                ImGui::EndDisabled();
+                if (radianceBiasChanged) {
+                    positionRadianceBiasStrength = std::max(positionRadianceBiasStrength, 0.0f);
+                    positionRadianceBiasMinWeight = std::clamp(positionRadianceBiasMinWeight, 0.05f, 1.0f);
+                    positionRadianceBiasMaxWeight = std::max(positionRadianceBiasMaxWeight, 1.0f);
+                    debugDisplayBuffers.positionPrimitiveScoreValid = false;
+                    updateDisplayTexture();
+                }
+                if (debugDisplayBuffers.positionPrimitiveRadianceBiasAvailable) {
+                    ImGui::TextDisabled(
+                        "Preview only; radiance floor: %.4g", kPositionRadianceBiasFloor);
+                } else {
+                    ImGui::TextWrapped(
+                        "Bias adjustment is unavailable: saved radiance statistics are missing "
+                        "or contain no positive values for sampled surfels. "
+                        "Restart training with relative densification enabled and load a new snapshot. "
+                        "Increasing bias cannot recover missing radiance measurements.");
+                }
                 if (!debugDisplayBuffers.positionPrimitiveMetadataAvailable) {
                     ImGui::TextWrapped(
                         "This PLY does not contain saved position densification statistics. "
@@ -5029,7 +5212,11 @@ int main(int argc, char** argv) {
                 } else {
                     const float savedThreshold =
                         debugDisplayBuffers.positionPrimitiveSplitThreshold;
-                    ImGui::Text("Saved effective threshold: %.9g", savedThreshold);
+                    ImGui::Text(
+                        debugDisplayBuffers.positionPrimitiveRadianceBiasAvailable
+                            ? "Saved base threshold: %.9g"
+                            : "Saved effective threshold: %.9g",
+                        savedThreshold);
                     const float sliderMinimum = static_cast<float>(std::max(
                         static_cast<double>(std::numeric_limits<float>::min()),
                         static_cast<double>(savedThreshold) * 1.0e-3));
@@ -5054,7 +5241,9 @@ int main(int argc, char** argv) {
                         updateDisplayTexture();
                     }
                     ImGui::TextDisabled(
-                        "Below: saved G_i / selected threshold; magenta: at/above boundary");
+                        debugDisplayBuffers.positionPrimitiveRadianceBiasAvailable
+                            ? "Below: biased G_i / selected base threshold; magenta: at/above boundary"
+                            : "Below: saved G_i / selected threshold; magenta: at/above boundary");
 
                     const std::size_t splitCandidateCount = static_cast<std::size_t>(
                         std::count_if(
@@ -5070,6 +5259,12 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.positionPrimitiveScoreMax);
                     ImGui::TextDisabled(
                         "Values are the optimizer's saved interval-average statistics");
+                    ImGui::Text("Without interval samples: %zu (gray)",
+                        debugDisplayBuffers.positionUnsampledPrimitiveCount);
+                    ImGui::TextDisabled("Frontmost surfel per pixel; black: background");
+                    ImGui::TextWrapped(
+                        "New surfels and intervals with no accumulated position signal have no score yet. "
+                        "Training can skip the first half of each densification interval.");
                 }
             }
             if (viewImageMode == ViewImageMode::DensificationOrigin) {
