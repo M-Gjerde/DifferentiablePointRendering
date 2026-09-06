@@ -158,7 +158,7 @@ class OptimizationConfig:
     geometry_samples: int = 500_000
     geometry_seed: int = 0
     geometry_scale: float = 1.0
-    geometry_use_vertices: bool = True
+    geometry_use_vertices: bool = False
 
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False

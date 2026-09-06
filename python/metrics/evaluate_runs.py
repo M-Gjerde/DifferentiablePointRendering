@@ -165,7 +165,7 @@ def parse_args() -> argparse.Namespace:
         "--samples",
         type=int,
         default=500_000,
-        help="Uniform surface query samples used with --no-use-vertices.",
+        help="Uniform surface query samples used unless --use-vertices is passed.",
     )
     parser.add_argument(
         "--device",
@@ -178,10 +178,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-vertices",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "Use raw mesh vertices as point-to-triangle queries (default). "
-            "Pass --no-use-vertices to use uniform surface queries instead."
+            "Use raw mesh vertices as point-to-triangle queries. By default, "
+            "query points are sampled uniformly over both mesh surfaces."
         ),
     )
     parser.add_argument(

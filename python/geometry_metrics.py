@@ -96,7 +96,7 @@ class GeometryMetricsTrail:
             samples: int = 500_000,
             seed: int = 0,
             scale: float = 1.0,
-            use_vertices: bool = True,
+            use_vertices: bool = False,
     ) -> Mapping[str, Any] | None:
         if mesh_path is None or ground_truth_path is None:
             return None

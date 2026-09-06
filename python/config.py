@@ -74,7 +74,7 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = FalseK
+    use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.25
     use_position_lr_decay: bool = True
@@ -201,7 +201,7 @@ class OptimizationConfig:
     geometry_samples: int = 500_000
     geometry_seed: int = 0
     geometry_scale: float = 1.0
-    geometry_use_vertices: bool = True
+    geometry_use_vertices: bool = False
 
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False
@@ -679,7 +679,10 @@ def parse_args() -> OptimizationConfig:
     _add_boolean_argument(
         mesh,
         "--geometry-use-vertices",
-        help="Use reconstructed mesh vertices as point-to-triangle geometry queries.",
+        help=(
+            "Use raw mesh vertices as point-to-triangle geometry queries. "
+            "The default uniformly samples both mesh surfaces."
+        ),
     )
 
     args = parser.parse_args()

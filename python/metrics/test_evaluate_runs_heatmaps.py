@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import open3d as o3d
@@ -12,6 +13,7 @@ from metrics.evaluate_runs import (
     compute_geometry_rows,
     error_heatmap_colors,
     error_heatmap_outputs_are_compatible,
+    parse_args,
 )
 
 
@@ -32,6 +34,12 @@ def write_triangle(path: Path, z: float) -> None:
 
 
 class ErrorHeatmapTests(unittest.TestCase):
+    def test_surface_sampling_is_the_cli_default(self) -> None:
+        with mock.patch("sys.argv", ["evaluate_runs.py"]):
+            self.assertFalse(parse_args().use_vertices)
+        with mock.patch("sys.argv", ["evaluate_runs.py", "--use-vertices"]):
+            self.assertTrue(parse_args().use_vertices)
+
     def test_colors_clamp_at_the_requested_maximum(self) -> None:
         colors = error_heatmap_colors(
             np.asarray([0.0, 0.5, 1.0, 2.0], dtype=np.float32),
