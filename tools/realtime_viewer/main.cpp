@@ -39,6 +39,7 @@
 #include "Renderer/RenderPackage.h"
 #include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
+#include "SurfelDensity.h"
 #include "spdlog/spdlog.h"
 
 import Pale.Assets;
@@ -95,6 +96,7 @@ namespace {
         CurvatureScale,
         CurvaturePrimitiveScore,
         PositionPrimitiveScore,
+        SurfelDensity,
         DensificationOrigin,
         PrimitiveAge,
         DepthPositionGradient,
@@ -107,7 +109,7 @@ namespace {
         RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 20> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 21> kViewImageModeShortcutOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -117,6 +119,7 @@ namespace {
         ViewImageMode::IntraSlabDepth,
         ViewImageMode::CurvatureScale,
         ViewImageMode::PositionPrimitiveScore,
+        ViewImageMode::SurfelDensity,
         ViewImageMode::CurvaturePrimitiveScore,
         ViewImageMode::DensificationOrigin,
         ViewImageMode::PrimitiveAge,
@@ -130,7 +133,7 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 20> kViewImageModeLabels = {
+    constexpr std::array<const char*, 21> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -140,6 +143,7 @@ namespace {
         "7 Intra-slab depth",
         "8 Curvature scale",
         "9 Position primitive score (saved)",
+        "Surfel density (projected centers)",
         "Curvature primitive score",
         "Densification split origin",
         "Primitive age",
@@ -205,6 +209,8 @@ namespace {
         bool curvatureScaleValid = false;
         bool curvaturePrimitiveScoreValid = false;
         bool positionPrimitiveScoreValid = false;
+        bool surfelDensityValid = false;
+        viewer::SurfelDensity surfelDensity{64};
         bool positionPrimitiveRadianceBiasAvailable = false;
         bool positionPrimitiveIndicesValid = false;
         bool densificationOriginValid = false;
@@ -261,6 +267,7 @@ namespace {
             curvatureScaleValid = false;
             curvaturePrimitiveScoreValid = false;
             positionPrimitiveScoreValid = false;
+            surfelDensityValid = false;
             positionPrimitiveRadianceBiasAvailable = false;
             positionPrimitiveIndicesValid = false;
             densificationOriginValid = false;
@@ -3094,6 +3101,9 @@ int main(int argc, char** argv) {
         bool showViewportGrid = false;
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
+        int densityGridSize = 64;
+        float densityColorMaximum = 100.0f;
+        bool densityLogScale = true;
         float curvatureViolationDisplayThreshold = 5.0f;
         float positionWhatIfDisplayThreshold = 0.0f;
         float positionWhatIfReferenceThreshold = 0.0f;
@@ -3915,6 +3925,38 @@ int main(int argc, char** argv) {
             };
 
             switch (mode) {
+                case ViewImageMode::SurfelDensity:
+                    if (!debugDisplayBuffers.surfelDensityValid) {
+                        auto& density = debugDisplayBuffers.surfelDensity;
+                        density = viewer::SurfelDensity(densityGridSize);
+                        const auto& camera = sensor.camera;
+                        const bool intrinsics = camera.hasPinholeIntrinsics != 0u &&
+                            camera.fx > 0.0f && camera.fy > 0.0f;
+                        const float focal = 0.5f * camera.height /
+                            std::tan(0.5f * glm::radians(camera.fovy));
+                        const float fx = intrinsics ? camera.fx : focal;
+                        const float fy = intrinsics ? camera.fy : focal;
+                        const float cx = intrinsics ? camera.cx : 0.5f * camera.width;
+                        const float cy = intrinsics ? camera.cy : 0.5f * camera.height;
+                        // Scene rebuilds keep these host points and instance transforms
+                        // synchronized with viewer edits. Count each placed instance.
+                        for (const auto& instance : buildProducts.instances) {
+                            if (instance.geometryType != Pale::GeometryType::PointCloud) continue;
+                            const auto& range = buildProducts.pointCloudRanges.at(instance.geometryIndex);
+                            const auto& transform = buildProducts.transforms.at(instance.transformIndex);
+                            for (std::size_t i = range.firstPoint;
+                                 i < static_cast<std::size_t>(range.firstPoint) + range.pointCount; ++i) {
+                                const auto& point = buildProducts.points.at(i);
+                                if (point.isEmissive()) continue;
+                                const auto world = Pale::transformPoint(transform.objectToWorld, point.position);
+                                const auto local = Pale::transformPoint(camera.view, world);
+                                density.addCameraCenter(local.x(), local.y(), local.z(),
+                                                        fx, fy, cx, cy, camera.width, camera.height);
+                            }
+                        }
+                        debugDisplayBuffers.surfelDensityValid = true;
+                    }
+                    return true;
                 case ViewImageMode::MeanDepth:
                     if (!debugDisplayBuffers.meanDepthValid) {
                         debugDisplayBuffers.meanDepth =
@@ -4269,6 +4311,29 @@ int main(int argc, char** argv) {
                 }
 
                 switch (viewImageMode) {
+                    case ViewImageMode::SurfelDensity: {
+                        const auto& density = debugDisplayBuffers.surfelDensity;
+                        const std::size_t grid = static_cast<std::size_t>(density.gridSize);
+                        pixels.assign(static_cast<std::size_t>(displayedRenderWidth) * displayedRenderHeight * 4u, 0u);
+                        const float maximum = std::max(densityColorMaximum, 1.0f);
+                        for (std::size_t y = 0; y < displayedRenderHeight; ++y) {
+                            for (std::size_t x = 0; x < displayedRenderWidth; ++x) {
+                                const auto count = density.counts[(y * grid / displayedRenderHeight) * grid +
+                                                                  x * grid / displayedRenderWidth];
+                                const std::size_t offset = (y * displayedRenderWidth + x) * 4u;
+                                pixels[offset + 3u] = 255u;
+                                if (count == 0u) continue;
+                                const float value = densityLogScale
+                                    ? std::log1p(static_cast<float>(count)) / std::log1p(maximum)
+                                    : static_cast<float>(count) / maximum;
+                                const auto color = scalarColor(std::clamp(value, 0.0f, 1.0f), scalarColorMap);
+                                pixels[offset] = channelToByte(color.r);
+                                pixels[offset + 1u] = channelToByte(color.g);
+                                pixels[offset + 2u] = channelToByte(color.b);
+                            }
+                        }
+                        break;
+                    }
                     case ViewImageMode::MeanDepth:
                         colorizeScalarBuffer(
                             debugDisplayBuffers.meanDepth,
@@ -5128,6 +5193,7 @@ int main(int argc, char** argv) {
                 viewImageMode == ViewImageMode::CurvatureScale ||
                 viewImageMode == ViewImageMode::CurvaturePrimitiveScore ||
                 viewImageMode == ViewImageMode::PositionPrimitiveScore ||
+                viewImageMode == ViewImageMode::SurfelDensity ||
                 viewImageMode == ViewImageMode::DepthPositionGradient ||
                 viewImageMode == ViewImageMode::NormalPositionGradient ||
                 viewImageMode == ViewImageMode::IntraSlabPositionGradient ||
@@ -5145,6 +5211,34 @@ int main(int argc, char** argv) {
                     scalarColorMap = static_cast<ScalarColorMap>(scalarColorMapIndex);
                     updateDisplayTexture();
                 }
+            }
+            if (viewImageMode == ViewImageMode::SurfelDensity) {
+                if (ImGui::SliderInt("Density grid (cells per axis)", &densityGridSize, 8, 256)) {
+                    densityGridSize = std::clamp(densityGridSize, 8, 256);
+                    debugDisplayBuffers.surfelDensityValid = false;
+                    updateDisplayTexture();
+                }
+                bool recolorDensity = ImGui::SliderFloat(
+                    "Density color maximum (surfels/cell)", &densityColorMaximum,
+                    1.0f, 10000.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+                recolorDensity |= ImGui::Checkbox("Logarithmic density colors", &densityLogScale);
+                const auto& density = debugDisplayBuffers.surfelDensity;
+                if (ImGui::Button("Fit density colors to current peak")) {
+                    densityColorMaximum = static_cast<float>(std::max(density.peak, 1u));
+                    recolorDensity = true;
+                }
+                if (recolorDensity) {
+                    densityColorMaximum = std::max(densityColorMaximum, 1.0f);
+                    updateDisplayTexture();
+                }
+                ImGui::Text("Non-emissive surfels: %zu   centers in view: %zu", density.total, density.inView);
+                ImGui::Text("Peak: %u surfels/cell   grid: %d x %d", density.peak, density.gridSize, density.gridSize);
+                ImGui::TextWrapped(
+                    "Counts all projected centers, including hidden and transparent surfels; lights are excluded. "
+                    "Black means an empty cell. Colors saturate at the selected maximum.");
+                ImGui::TextWrapped(
+                    "Compare snapshots with the same camera, grid and color maximum. "
+                    "The scale stays fixed until you change it. This is screen-space concentration, not world-space density.");
             }
             if (viewImageMode == ViewImageMode::CurvaturePrimitiveScore) {
                 if (ImGui::SliderFloat(

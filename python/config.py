@@ -74,7 +74,7 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = False
+    use_global_lr_decay: bool = FalseK
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.25
     use_position_lr_decay: bool = True
