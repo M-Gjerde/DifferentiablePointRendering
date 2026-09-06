@@ -89,7 +89,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.01
+    depth_distort_weight: float = 0.02
     # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
@@ -127,8 +127,8 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 5.0e-5
-    densification_grad_abs_min_final: float = 5.0e-5
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -142,9 +142,9 @@ class OptimizationConfig:
     # Densification: radiance balancing (used in both threshold modes)
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
-    densification_radiance_bias_strength: float = 1.0
+    densification_radiance_bias_strength: float=  1.0
     densification_radiance_bias_min_weight: float = 0.25
-    densification_radiance_bias_max_weight: float = 10.0
+    densification_radiance_bias_max_weight: float = 2.0
 
     # Densification: curvature trigger and clone/split policy
     # A non-positive value disables curvature-triggered densification.
@@ -194,7 +194,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 2_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_mesh_res: int = 768
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None
