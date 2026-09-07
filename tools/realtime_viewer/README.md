@@ -60,3 +60,16 @@ Controls:
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
 - Left/right or down/up arrows: step through optimization point snapshots
+
+### Depth-distortion previews
+
+The viewer defaults to **World distance**, matching training with
+`depth_distort_world_space=True`. The loss and position-gradient previews both
+use linear camera-forward depth, so equal depth separations retain their
+contribution when moved farther from the camera (for equal compositing weights).
+Choose **Normalized depth (legacy)** in the **Depth distortion** selector to
+inspect runs trained with `depth_distort_world_space=False`.
+
+The loss image shows the raw per-pixel distortion; the position-gradient image
+uses the mean image loss with unit regularizer weight. Colors rescale separately
+for each frame, so equal colors across frames do not imply equal loss values.

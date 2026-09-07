@@ -100,6 +100,7 @@ def print_run_configuration(
         ("ssim_weight", config.ssim_weight),
         ("ssim_window/sigma", f"{config.ssim_window_size} / {config.ssim_sigma}"),
         ("depth_distort_weight", config.depth_distort_weight),
+        ("depth_distort_world_space", config.depth_distort_world_space),
         ("opacity_prior_weight", config.opacity_prior_weight),
         ("densification_interval", config.densification_interval),
         ("densification_relative_error", config.densification_relative_error),

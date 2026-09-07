@@ -2891,7 +2891,7 @@ namespace Pale {
                     if (depth <= 0.0f) {
                         return true;
                     }
-                    const float ndcDepth = depthDistortionNdc01(depth);
+                    const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
                     const float compositeWeight = transmittance * alphaEffective;
                     SurfaceRegularizerHitRecord &record = hits[hitCount];
                     record.primitiveIndex = primitiveIndex;
@@ -3026,7 +3026,7 @@ namespace Pale {
                     float barWeightDepth = 0.0f;
                     float barDepthDepth = 0.0f;
                     if (useDepthDistortion) {
-                        const float depthToNdcDerivative = depthDistortionDndc01Ddepth(hit.depth);
+                        const float depthToNdcDerivative = depthDistortionCoordinateDerivative(hit.depth, settings.depthDistortionWorldSpace);
                         for (uint32_t otherIndex = 0u; otherIndex < hitCount; ++otherIndex) {
                             if (otherIndex == hitIndex) { continue; }
 

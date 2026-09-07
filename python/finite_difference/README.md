@@ -162,3 +162,20 @@ they need calibration in the new statistic's units.
 `test_relative_densification.py` compares against an explicitly constructed,
 frozen relative source, tests common radiometric gains, checks optimizer
 isolation with and without SSIM, and verifies that albedo compensation is replaced.
+
+### World-space depth distortion
+
+`--depth-distort-world-space` (or `OptimizationConfig.depth_distort_world_space=True`)
+uses linear camera-forward depth in scene units in the pairwise distortion loss:
+`sum_{i<j} w_i*w_j*(z_i-z_j)^2`. Its depth-coordinate derivative is one, so the
+same layer separation is no longer attenuated with increasing camera distance.
+Compositing/visibility weights and their gradients remain active. This measures
+camera-forward separation, not Euclidean ray length for off-axis pixels.
+
+The default is `False`; `--no-depth-distort-world-space` retains the existing NDC
+inverse-depth loss. Direct renderer callers pass `depth_distort_world_space` in
+the constructor settings dictionary. Rebuild `pale` after changing the C++ code.
+The world-space loss has squared scene-distance units: retune
+`--depth-distort-weight` when switching rather than assuming the old weight is
+comparable. `test_world_space_distortion.py` checks both forward paths, distance
+invariance, the default mode, and position/opacity finite differences in both modes.

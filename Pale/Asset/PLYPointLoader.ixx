@@ -119,6 +119,10 @@ export namespace Pale {
                 vertexProps.contains("densification_position_sample_count");
             const bool hasPositionDensificationThreshold =
                 vertexProps.contains("densification_position_threshold");
+            const bool hasPositionDensificationRadianceRms =
+                vertexProps.contains("densification_position_radiance_rms");
+            const bool hasPositionDensificationBaseThreshold =
+                vertexProps.contains("densification_position_base_threshold");
             const bool hasPositionDensificationMetadata =
                 hasPositionDensificationSignal &&
                 hasPositionDensificationSampleCount &&
@@ -129,6 +133,16 @@ export namespace Pale {
                 !hasPositionDensificationMetadata) {
                 Log::PA_ERROR(
                     "PLYPointLoader: incomplete position densification metadata");
+                return {};
+            }
+            const bool hasPositionRadianceBiasMetadata =
+                hasPositionDensificationRadianceRms &&
+                hasPositionDensificationBaseThreshold;
+            if ((hasPositionDensificationRadianceRms ||
+                 hasPositionDensificationBaseThreshold) &&
+                (!hasPositionDensificationMetadata || !hasPositionRadianceBiasMetadata)) {
+                Log::PA_ERROR(
+                    "PLYPointLoader: incomplete position radiance-bias metadata");
                 return {};
             }
             if (!looksQuaternionSurfel) {
@@ -149,6 +163,8 @@ export namespace Pale {
             std::shared_ptr<tinyply::PlyData> positionDensificationSignalData;
             std::shared_ptr<tinyply::PlyData> positionDensificationSampleCountData;
             std::shared_ptr<tinyply::PlyData> positionDensificationThresholdData;
+            std::shared_ptr<tinyply::PlyData> positionDensificationRadianceRmsData;
+            std::shared_ptr<tinyply::PlyData> positionDensificationBaseThresholdData;
             if (hasDensificationOrigin) {
                 densificationOriginData =
                     plyFile.request_properties_from_element("vertex", {"densification_origin"});
@@ -164,6 +180,12 @@ export namespace Pale {
                     "vertex", {"densification_position_sample_count"});
                 positionDensificationThresholdData = plyFile.request_properties_from_element(
                     "vertex", {"densification_position_threshold"});
+            }
+            if (hasPositionRadianceBiasMetadata) {
+                positionDensificationRadianceRmsData = plyFile.request_properties_from_element(
+                    "vertex", {"densification_position_radiance_rms"});
+                positionDensificationBaseThresholdData = plyFile.request_properties_from_element(
+                    "vertex", {"densification_position_base_threshold"});
             }
 
             try { plyFile.read(inputFile); } catch (const std::exception &e) {
@@ -190,11 +212,16 @@ export namespace Pale {
                 !(sameCount("densification_position_signal", positionDensificationSignalData) &&
                   sameCount("densification_position_sample_count", positionDensificationSampleCountData) &&
                   sameCount("densification_position_threshold", positionDensificationThresholdData))) return {};
+            if (hasPositionRadianceBiasMetadata &&
+                !(sameCount("densification_position_radiance_rms", positionDensificationRadianceRmsData) &&
+                  sameCount("densification_position_base_threshold", positionDensificationBaseThresholdData))) return {};
 
             std::vector<float> posFloats, rotFloats, scaleFloats, colorFloats, opacityFloats,
                 betaFloats, shapeFloats, powerFloats, densificationOriginFloats,
                 primitiveAgeFloats, positionDensificationSignalFloats,
-                positionDensificationSampleCountFloats, positionDensificationThresholdFloats;
+                positionDensificationSampleCountFloats, positionDensificationThresholdFloats,
+                positionDensificationRadianceRmsFloats,
+                positionDensificationBaseThresholdFloats;
             bool ok = true;
             ok &= ply_detail::copyScalarsToFloatVector(*posData, posFloats, 3);
             ok &= ply_detail::copyScalarsToFloatVector(*rotData, rotFloats, 4);
@@ -224,6 +251,16 @@ export namespace Pale {
                     positionDensificationThresholdFloats,
                     1);
             }
+            if (hasPositionRadianceBiasMetadata) {
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *positionDensificationRadianceRmsData,
+                    positionDensificationRadianceRmsFloats,
+                    1);
+                ok &= ply_detail::copyScalarsToFloatVector(
+                    *positionDensificationBaseThresholdData,
+                    positionDensificationBaseThresholdFloats,
+                    1);
+            }
             if (!ok) {
                 Log::PA_ERROR("PLYPointLoader: failed to unpack quaternion surfel streams");
                 return {};
@@ -248,6 +285,10 @@ export namespace Pale {
                 geometry.densificationPositionSignals.resize(vertexCount, 0.0f);
                 geometry.densificationPositionSampleCounts.resize(vertexCount, 0u);
                 geometry.densificationPositionThresholds.resize(vertexCount, 0.0f);
+            }
+            if (hasPositionRadianceBiasMetadata) {
+                geometry.densificationPositionRadianceRms.resize(vertexCount, 0.0f);
+                geometry.densificationPositionBaseThresholds.resize(vertexCount, 0.0f);
             }
 
             for (std::size_t i = 0; i < vertexCount; ++i) {
@@ -289,6 +330,17 @@ export namespace Pale {
                         positionDensificationThresholdFloats[i] > 0.0f) {
                         geometry.densificationPositionThresholds[i] =
                             positionDensificationThresholdFloats[i];
+                    }
+                }
+                if (hasPositionRadianceBiasMetadata) {
+                    if (std::isfinite(positionDensificationRadianceRmsFloats[i])) {
+                        geometry.densificationPositionRadianceRms[i] =
+                            std::max(positionDensificationRadianceRmsFloats[i], 0.0f);
+                    }
+                    if (std::isfinite(positionDensificationBaseThresholdFloats[i]) &&
+                        positionDensificationBaseThresholdFloats[i] > 0.0f) {
+                        geometry.densificationPositionBaseThresholds[i] =
+                            positionDensificationBaseThresholdFloats[i];
                     }
                 }
             }

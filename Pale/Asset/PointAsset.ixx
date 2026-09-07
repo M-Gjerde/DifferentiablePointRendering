@@ -36,6 +36,10 @@ export namespace Pale {
         std::vector<float> densificationPositionSignals{};
         std::vector<std::uint32_t> densificationPositionSampleCounts{};
         std::vector<float> densificationPositionThresholds{};
+        // Optional inputs needed to recompute radiance-biased thresholds in
+        // diagnostic viewers. The base threshold is repeated per vertex in PLY.
+        std::vector<float> densificationPositionRadianceRms{};
+        std::vector<float> densificationPositionBaseThresholds{};
     };
 
 

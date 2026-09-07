@@ -18,7 +18,7 @@ export namespace Pale {
     public:
         explicit PathTracer(sycl::queue q, const PathTracerSettings &settings = {});
 
-        void setScene(const GPUSceneBuffers &scene, SceneBuild::BuildProducts bp);
+        void setScene(const GPUSceneBuffers &scene, const SceneBuild::BuildProducts &bp);
 
         void setCurvatureDensificationStats(CurvatureDensificationStats *stats) {
             m_curvatureDensificationStats = stats;

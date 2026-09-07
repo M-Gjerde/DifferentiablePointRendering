@@ -163,6 +163,12 @@ class PythonRenderer {
         Pale::float4 *derivativeCovariance = nullptr;
     };
 
+    struct SurfaceRegularizerScratch {
+        std::size_t cameraCapacity = 0;
+        float *sums = nullptr;
+        std::uint32_t *counts = nullptr;
+    };
+
     struct DeviceTrainingStepOptions {
         std::string optimizer = "adam";
         float learningRatePosition = 0.0f;
@@ -280,6 +286,8 @@ public:
                     get_f(settingsDict, "adjoint_q_reflect", m_settings.sampling.qReflect);
             m_settings.depthDistortionWeight =
                     get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
+            m_settings.depthDistortionWorldSpace =
+                    get_b(settingsDict, "depth_distort_world_space", m_settings.depthDistortionWorldSpace);
 
             m_settings.normalConsistencyWeight =
                     get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
@@ -346,7 +354,9 @@ public:
         //Pale::setBackgroundColor(deviceSelector->getQueue(), sensorsForward, color);
 
         debugImages.resize(sensorsForward.size());
-        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
+        gradients = Pale::makeGradientsForScene(
+            deviceSelector->getQueue(), buildProducts,
+            m_settings.renderDebugGradientImages ? debugImages.data() : nullptr);
         depthDistortionGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
@@ -432,6 +442,7 @@ public:
 
             Pale::freeDebugImagesForScene(queue, debugImages.data(), debugImages.size());
             freeTrainingTargets(queue);
+            freeSurfaceRegularizerScratch(queue);
             freeRgbSsimScratch(queue);
             freeDeviceTrainingState(queue);
             queue.wait();
@@ -962,50 +973,6 @@ public:
         std::vector<std::uint32_t> intraSlabDepthActiveSlabCounts(cameraCount, 0u);
         std::vector<std::uint32_t> curvatureScaleActiveSlabCounts(cameraCount, 0u);
 
-        float *depthDistortionSumsDevice = nullptr;
-        float *normalConsistencySumsDevice = nullptr;
-        float *visibilityWeightedOpacitySumsDevice = nullptr;
-        float *intraSlabDepthSumsDevice = nullptr;
-        float *curvatureScaleSumsDevice = nullptr;
-        std::uint32_t *normalConsistencyValidCountsDevice = nullptr;
-        std::uint32_t *intraSlabDepthActiveSlabCountsDevice = nullptr;
-        std::uint32_t *curvatureScaleActiveSlabCountsDevice = nullptr;
-
-        auto freeTempBuffers = [&]() {
-            if (depthDistortionSumsDevice) {
-                sycl::free(depthDistortionSumsDevice, syclQueue);
-                depthDistortionSumsDevice = nullptr;
-            }
-            if (normalConsistencySumsDevice) {
-                sycl::free(normalConsistencySumsDevice, syclQueue);
-                normalConsistencySumsDevice = nullptr;
-            }
-            if (visibilityWeightedOpacitySumsDevice) {
-                sycl::free(visibilityWeightedOpacitySumsDevice, syclQueue);
-                visibilityWeightedOpacitySumsDevice = nullptr;
-            }
-            if (intraSlabDepthSumsDevice) {
-                sycl::free(intraSlabDepthSumsDevice, syclQueue);
-                intraSlabDepthSumsDevice = nullptr;
-            }
-            if (curvatureScaleSumsDevice) {
-                sycl::free(curvatureScaleSumsDevice, syclQueue);
-                curvatureScaleSumsDevice = nullptr;
-            }
-            if (normalConsistencyValidCountsDevice) {
-                sycl::free(normalConsistencyValidCountsDevice, syclQueue);
-                normalConsistencyValidCountsDevice = nullptr;
-            }
-            if (intraSlabDepthActiveSlabCountsDevice) {
-                sycl::free(intraSlabDepthActiveSlabCountsDevice, syclQueue);
-                intraSlabDepthActiveSlabCountsDevice = nullptr;
-            }
-            if (curvatureScaleActiveSlabCountsDevice) {
-                sycl::free(curvatureScaleActiveSlabCountsDevice, syclQueue);
-                curvatureScaleActiveSlabCountsDevice = nullptr;
-            }
-        };
-
         try {
             py::gil_scoped_release release;
 
@@ -1023,28 +990,16 @@ public:
 
             pathTracer->renderForward(selectedBatch.sensors);
 
-            depthDistortionSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
-            normalConsistencySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
-            visibilityWeightedOpacitySumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
-            intraSlabDepthSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
-            curvatureScaleSumsDevice = sycl::malloc_device<float>(cameraCount, syclQueue);
-            normalConsistencyValidCountsDevice =
-                    sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
-            intraSlabDepthActiveSlabCountsDevice =
-                    sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
-            curvatureScaleActiveSlabCountsDevice =
-                    sycl::malloc_device<std::uint32_t>(cameraCount, syclQueue);
-            if (!depthDistortionSumsDevice ||
-                !normalConsistencySumsDevice ||
-                !visibilityWeightedOpacitySumsDevice ||
-                !intraSlabDepthSumsDevice ||
-                !curvatureScaleSumsDevice ||
-                !normalConsistencyValidCountsDevice ||
-                !intraSlabDepthActiveSlabCountsDevice ||
-                !curvatureScaleActiveSlabCountsDevice) {
-                throw std::runtime_error(
-                    "render_forward_surface_regularizer_loss_and_adjoint: failed to allocate temporary loss buffers");
-            }
+            ensureSurfaceRegularizerScratchCapacity(cameraCount, syclQueue);
+            const std::size_t capacity = surfaceRegularizerScratch.cameraCapacity;
+            float *depthDistortionSumsDevice = surfaceRegularizerScratch.sums;
+            float *normalConsistencySumsDevice = depthDistortionSumsDevice + capacity;
+            float *visibilityWeightedOpacitySumsDevice = normalConsistencySumsDevice + capacity;
+            float *intraSlabDepthSumsDevice = visibilityWeightedOpacitySumsDevice + capacity;
+            float *curvatureScaleSumsDevice = intraSlabDepthSumsDevice + capacity;
+            std::uint32_t *normalConsistencyValidCountsDevice = surfaceRegularizerScratch.counts;
+            std::uint32_t *intraSlabDepthActiveSlabCountsDevice = normalConsistencyValidCountsDevice + capacity;
+            std::uint32_t *curvatureScaleActiveSlabCountsDevice = intraSlabDepthActiveSlabCountsDevice + capacity;
 
             syclQueue.fill(depthDistortionSumsDevice, 0.0f, cameraCount);
             syclQueue.fill(normalConsistencySumsDevice, 0.0f, cameraCount);
@@ -1126,10 +1081,10 @@ public:
             }
             syclQueue.wait_and_throw();
         } catch (...) {
-            freeTempBuffers();
+            // Finish any downloads before the local host vectors are destroyed.
+            syclQueue.wait();
             throw;
         }
-        freeTempBuffers();
 
         py::dict result = makeZeroLossValuesDictionary();
         result["depth_distortion_grad_images"] = py::dict();
@@ -3595,7 +3550,9 @@ public:
         Pale::freeDebugImagesForScene(deviceSelector->getQueue(), debugImages.data(), debugImages.size());
         debugImages.clear();
         debugImages.resize(sensorsForward.size());
-        gradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
+        gradients = Pale::makeGradientsForScene(
+            deviceSelector->getQueue(), buildProducts,
+            m_settings.renderDebugGradientImages ? debugImages.data() : nullptr);
         depthDistortionGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         normalConsistencyGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
         visibilityOpacityGradients = Pale::makeGradientsForScene(deviceSelector->getQueue(), buildProducts, nullptr);
@@ -5536,6 +5493,35 @@ private:
         }
     }
 
+    void freeSurfaceRegularizerScratch(sycl::queue queue) {
+        if (surfaceRegularizerScratch.sums) sycl::free(surfaceRegularizerScratch.sums, queue);
+        if (surfaceRegularizerScratch.counts) sycl::free(surfaceRegularizerScratch.counts, queue);
+        surfaceRegularizerScratch = {};
+    }
+
+    void ensureSurfaceRegularizerScratchCapacity(std::size_t cameraCount, sycl::queue queue) {
+        if (cameraCount <= surfaceRegularizerScratch.cameraCapacity &&
+            surfaceRegularizerScratch.sums && surfaceRegularizerScratch.counts) return;
+
+        queue.wait_and_throw();
+        const std::size_t capacity = std::max<std::size_t>(cameraCount, 1u);
+        float *sums = nullptr;
+        std::uint32_t *counts = nullptr;
+        try {
+            sums = sycl::malloc_device<float>(5u * capacity, queue);
+            counts = sycl::malloc_device<std::uint32_t>(3u * capacity, queue);
+            if (!sums || !counts) {
+                throw std::runtime_error("Failed to allocate surface regularizer loss buffers");
+            }
+        } catch (...) {
+            if (sums) sycl::free(sums, queue);
+            if (counts) sycl::free(counts, queue);
+            throw;
+        }
+        freeSurfaceRegularizerScratch(queue);
+        surfaceRegularizerScratch = {capacity, sums, counts};
+    }
+
     void freeRgbSsimScratch(sycl::queue queue) {
         auto release = [&queue](Pale::float4 *&pointer) {
             if (pointer) {
@@ -5969,6 +5955,7 @@ private:
     bool curvatureDensificationEnabled{false};
     std::unordered_map<std::string, TrainingTargetDevice> trainingTargets{};
     RgbSsimScratch rgbSsimScratch{};
+    SurfaceRegularizerScratch surfaceRegularizerScratch{};
     DeviceAdamState deviceTrainingState{};
     bool devicePointParametersDirty{false};
     bool parallelBvhRefit{true};
