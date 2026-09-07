@@ -153,6 +153,17 @@ def dimension_contains(dimension: dict[str, Any], value: Any) -> bool:
     return True
 
 
+def effective_optimization_setting(
+    spec: dict[str, Any], name: str, default: Any = None
+) -> Any:
+    """Resolve validation-only settings without turning config defaults into CLI overrides."""
+    base_args = spec.get("base_args", {})
+    if name in base_args:
+        return base_args[name]
+    defaults = spec.get("defaults_snapshot", {}).get("optimization", {})
+    return defaults.get(name, default)
+
+
 def validate_spec(spec: dict[str, Any], check_paths: bool = True) -> None:
     required = ["dataset_path", "ground_truth", "output_root", "base_args", "search_space"]
     missing = [name for name in required if name not in spec]
@@ -188,14 +199,16 @@ def validate_spec(spec: dict[str, Any], check_paths: bool = True) -> None:
             raise ValueError(f"Parameter '{name}' occurs in both base_args and search_space.")
         validate_dimension(name, dimension)
 
-    iterations = int(base_args.get("iterations", 0))
-    mesh_interval = int(base_args.get("mesh_extraction_interval", 0))
+    iterations = int(effective_optimization_setting(spec, "iterations", 0))
+    mesh_interval = int(
+        effective_optimization_setting(spec, "mesh_extraction_interval", 0)
+    )
     rungs = [int(value) for value in spec.get("evaluation_iterations", [])]
     if iterations <= 0 or mesh_interval <= 0:
         raise ValueError("iterations and mesh_extraction_interval must be positive.")
     if not rungs or rungs != sorted(set(rungs)) or rungs[-1] != iterations:
         raise ValueError(
-            "evaluation_iterations must be unique, sorted, and end at base_args.iterations."
+            "evaluation_iterations must be unique, sorted, and end at the configured iterations."
         )
     if any(iteration <= 0 or iteration % mesh_interval != 0 for iteration in rungs):
         raise ValueError("Every evaluation iteration must be a positive mesh interval multiple.")
@@ -468,7 +481,9 @@ def make_confirmation_spec(study: Any, spec: dict[str, Any]) -> dict[str, Any] |
     result["initial_trials"] = [dict(p) for _ in range(repeats) for p in candidates]
     result["max_trials"] = len(result["initial_trials"])
     result["allow_repeated_initial_trials"] = True
-    result["pruner_warmup_iteration"] = int(result["base_args"]["iterations"])
+    result["pruner_warmup_iteration"] = int(
+        effective_optimization_setting(result, "iterations", 0)
+    )
     result["enqueue_repairs"] = False
     return result
 

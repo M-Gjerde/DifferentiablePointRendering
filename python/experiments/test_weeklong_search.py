@@ -32,7 +32,9 @@ class WeeklongSearchTests(unittest.TestCase):
     def test_spec_and_current_snapshot_are_valid(self):
         search.validate_spec(self.spec, check_paths=False)
         search.verify_config_snapshot(self.spec)
-        self.assertEqual(23, len(self.spec["search_space"]))
+        self.assertEqual(24, len(self.spec["search_space"]))
+        self.assertEqual({}, self.spec["base_args"])
+        self.assertEqual(180, self.spec["trial_timeout_minutes"])
 
     def test_baseline_reproduces_actual_learning_rate_functions(self):
         from optimizers import create_learning_rate_schedules
@@ -71,15 +73,20 @@ class WeeklongSearchTests(unittest.TestCase):
             cfg = self.parsed_parameters(dict(base, learning_rate=scale))
             self.assertAlmostEqual(0.0005 * scale, cfg.learning_rate_albedo)
 
-    def test_unattended_options_keep_training_budget_and_geometry(self):
+    def test_non_searched_settings_are_inherited_from_config(self):
         cfg = self.parsed_parameters(self.spec["initial_trials"][0])
-        self.assertEqual(30000, cfg.iterations)
-        self.assertFalse(cfg.enable_metrics)
-        self.assertFalse(cfg.enable_image_preview)
+        defaults = OptimizationConfig()
+        self.assertEqual(defaults.iterations, cfg.iterations)
+        self.assertEqual(defaults.log_interval, cfg.log_interval)
+        self.assertEqual(defaults.save_interval, cfg.save_interval)
+        self.assertEqual(defaults.save_ply_files_interval, cfg.save_ply_files_interval)
+        self.assertEqual(defaults.mesh_extraction_interval, cfg.mesh_extraction_interval)
+        self.assertTrue(cfg.enable_metrics)
+        self.assertTrue(cfg.enable_image_preview)
         self.assertTrue(cfg.densification_relative_error)
         for field in ("densification_radiance_floor", "densify_after"):
             self.assertNotIn(field, self.spec["search_space"])
-            self.assertEqual(getattr(OptimizationConfig(), field), getattr(cfg, field))
+            self.assertEqual(getattr(defaults, field), getattr(cfg, field))
         self.assertIsNone(cfg.checkpoint)
         self.assertTrue(search.point_count_is_stable({}, {"enabled": False}))
         self.assertFalse(search.point_count_is_stable({}, {}))
