@@ -4,17 +4,30 @@ import argparse
 import csv
 from pathlib import Path
 
-from chamfer_neus_batch import (
-    DatasetConfig,
-    resolve_ground_truth_path,
-    resolve_reconstruction_path,
-    selected_datasets,
-)
-from chamfer_ours import (
-    compute_paper_ready_point_to_triangle_distance,
-    load_triangle_mesh_with_query_points,
-    set_random_seed,
-)
+if __package__:
+    from .old.chamfer_neus_batch import (
+        DatasetConfig,
+        resolve_ground_truth_path,
+        resolve_reconstruction_path,
+        selected_datasets,
+    )
+    from .chamfer_ours import (
+        compute_paper_ready_point_to_triangle_distance,
+        load_triangle_mesh_with_query_points,
+        set_random_seed,
+    )
+else:  # Support direct execution: python metrics/evaluate_neus_point_to_triangle.py
+    from old.chamfer_neus_batch import (
+        DatasetConfig,
+        resolve_ground_truth_path,
+        resolve_reconstruction_path,
+        selected_datasets,
+    )
+    from chamfer_ours import (
+        compute_paper_ready_point_to_triangle_distance,
+        load_triangle_mesh_with_query_points,
+        set_random_seed,
+    )
 
 
 CSV_FIELDNAMES = [
@@ -198,17 +211,18 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--use-vertices",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
-            "Use raw mesh vertices as point-to-triangle queries (default). "
-            "Pass --no-use-vertices for uniform surface query samples."
+            "Use raw mesh vertices as point-to-triangle queries. By default, "
+            "query points are sampled uniformly over both mesh surfaces so the "
+            "metric is insensitive to tessellation density."
         ),
     )
     parser.add_argument(
         "--samples",
         type=int,
         default=500_000,
-        help="Uniform query samples per mesh when --no-use-vertices is selected.",
+        help="Uniform surface query samples per mesh (default: 500000).",
     )
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducible surface sampling.")
     parser.add_argument("--scale", type=float, default=1.0, help="Scale applied to reported metrics.")

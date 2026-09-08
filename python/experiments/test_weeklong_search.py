@@ -16,7 +16,7 @@ from experiments import run_adaptive_search as search
 from experiments.search_common import build_train_command
 
 
-SPEC_PATH = Path(__file__).with_name("horse_weeklong_search.json")
+SPEC_PATH = Path(__file__).with_name("horse_densification_regularizers_search.json")
 
 
 class WeeklongSearchTests(unittest.TestCase):
@@ -32,26 +32,33 @@ class WeeklongSearchTests(unittest.TestCase):
     def test_spec_and_current_snapshot_are_valid(self):
         search.validate_spec(self.spec, check_paths=False)
         search.verify_config_snapshot(self.spec)
-        self.assertEqual(24, len(self.spec["search_space"]))
-        self.assertEqual({}, self.spec["base_args"])
+        self.assertEqual(16, len(self.spec["search_space"]))
+        self.assertEqual(10, len(self.spec["base_args"]))
         self.assertEqual(180, self.spec["trial_timeout_minutes"])
 
-    def test_baseline_reproduces_actual_learning_rate_functions(self):
+    def test_trial_10_learning_rate_functions_are_fixed(self):
         from optimizers import create_learning_rate_schedules
 
-        baseline = OptimizationConfig()
         prepared = self.parsed_parameters(self.spec["initial_trials"][0])
-        a, b = map(create_learning_rate_schedules, (baseline, prepared))
-        for iteration in (0, 1, 7500, 15000, 22500, 30000):
-            for group in a["base_learning_rates"]:
-                def rate(schedule):
-                    local = schedule["parameter_lr_scale_funcs"].get(group, lambda _: 1.0)
-                    return (schedule["base_learning_rates"][group]
-                            * schedule["global_lr_scale_func"](iteration) * local(iteration))
-                self.assertAlmostEqual(rate(a), rate(b), places=15)
-        for key in self.spec["search_space"]:
-            if key != "global_lr_scale_final":
-                self.assertEqual(getattr(baseline, key), getattr(prepared, key))
+        multiplier = 0.8377351419332819
+        expected_component_rates = {
+            "learning_rate_position": 0.00014431133823532944,
+            "learning_rate_rotation": 0.008503949375439355,
+            "learning_rate_scale": 0.00022559770947601295,
+            "learning_rate_opacity": 0.00010297994257290886,
+            "learning_rate_beta": 0.0001512821544001604,
+        }
+        self.assertEqual(multiplier, prepared.learning_rate)
+        for name, unscaled_rate in expected_component_rates.items():
+            self.assertAlmostEqual(unscaled_rate * multiplier, getattr(prepared, name), places=15)
+        self.assertAlmostEqual(0.0005 * multiplier, prepared.learning_rate_albedo, places=15)
+
+        schedules = create_learning_rate_schedules(prepared)
+        self.assertAlmostEqual(1.0, schedules["global_lr_scale_func"](0))
+        self.assertAlmostEqual(0.3, schedules["global_lr_scale_func"](22500))
+        position_scale = schedules["parameter_lr_scale_funcs"]["position"]
+        self.assertAlmostEqual(10.0, position_scale(0))
+        self.assertAlmostEqual(1.0, position_scale(22500))
 
     def test_every_search_boundary_reaches_the_real_cli(self):
         for key, dimension in self.spec["search_space"].items():
