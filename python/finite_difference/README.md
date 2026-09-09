@@ -84,7 +84,7 @@ environment (including PyTorch and the image I/O dependencies):
 
 ```bash
 PYTHONPATH="$PWD/cmake-build-pybind:$PWD/python" \
-  python -m unittest discover -s python/finite_difference -p 'test_*.py' -v
+  python -m unittest discover -s python/test -p 'test_*.py' -v
 ```
 
 `test_renderer_correctness.py` creates temporary scenes and checks calibrated

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,9 +22,13 @@ else:  # Support direct execution: python metrics/evaluate_2dgs_point_to_triangl
     )
 
 
-DEFAULT_OUTPUT_ROOT = Path("/home/magnus/projects/2D-GS-Viser-Viewer/output")
+DEFAULT_OUTPUT_ROOT = Path("/home/magnus/projects/2D-GS-Viser-Viewer/output/run1")
 DEFAULT_GROUND_TRUTH_ROOT = Path("/home/magnus/phd/models")
 DEFAULT_DATASETS = ("dragon", "horse", "lego", "plant", "teapot")
+RUNTIME_DEFINITION = (
+    "Cumulative wall-clock seconds from scene training setup through checkpoint "
+    "saving, including evaluation and any GUI waits; 30000 includes 7000."
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,51 @@ def require_file(path: Path, description: str) -> Path:
     if not resolved_path.is_file():
         raise FileNotFoundError(f"Could not find {description}: {resolved_path}")
     return resolved_path
+
+
+def safe_number(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def load_training_statistics(dataset_root: Path) -> dict[int, dict[str, float]]:
+    stats_path = dataset_root / "training_stats.json"
+    if not stats_path.is_file():
+        return {}
+
+    try:
+        payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exception:
+        raise RuntimeError(f"Could not read 2DGS training statistics: {stats_path}") from exception
+
+    raw_iterations = payload.get("iterations", {}) if isinstance(payload, dict) else {}
+    if not isinstance(raw_iterations, dict):
+        raise RuntimeError(f"Expected an 'iterations' object in {stats_path}")
+
+    statistics: dict[int, dict[str, float]] = {}
+    for iteration_text, raw_stats in raw_iterations.items():
+        if not isinstance(raw_stats, dict):
+            continue
+        try:
+            iteration = int(iteration_text)
+        except (TypeError, ValueError):
+            continue
+        runtime_seconds = safe_number(raw_stats.get("runtime_seconds"))
+        point_count = safe_number(raw_stats.get("point_count"))
+        statistics[iteration] = {
+            key: value
+            for key, value in (
+                ("runtime_seconds", runtime_seconds),
+                ("point_count", point_count),
+            )
+            if value is not None
+        }
+    return statistics
 
 
 def discover_reconstructions(
@@ -79,9 +130,37 @@ def discover_reconstructions(
     return reconstructions
 
 
-def selected_dataset_names(dataset_filter: str | None) -> list[str]:
+def dataset_names_from_run_summary(output_root: Path, view_count: int | None) -> list[str]:
+    summary_path = output_root / "summary.json"
+    if not summary_path.is_file():
+        return []
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    scenes = payload.get("scenes", {}) if isinstance(payload, dict) else {}
+    if not isinstance(scenes, dict):
+        return []
+
+    names: list[str] = []
+    for scene in scenes.values():
+        if not isinstance(scene, dict) or not isinstance(scene.get("dataset"), str):
+            continue
+        scene_views = scene.get("views")
+        if view_count is not None and scene_views != view_count:
+            continue
+        names.append(scene["dataset"])
+    return list(dict.fromkeys(names))
+
+
+def selected_dataset_names(
+    dataset_filter: str | None,
+    output_root: Path,
+    view_count: int | None,
+) -> list[str]:
     if dataset_filter is None:
-        return list(DEFAULT_DATASETS)
+        summary_names = dataset_names_from_run_summary(output_root, view_count)
+        return summary_names or list(DEFAULT_DATASETS)
 
     selected = [name.strip() for name in dataset_filter.split(",") if name.strip()]
     if not selected:
@@ -94,7 +173,7 @@ def resolve_datasets(args: argparse.Namespace) -> list[Dataset]:
     ground_truth_root = args.ground_truth_root.expanduser().resolve()
 
     datasets: list[Dataset] = []
-    for name in selected_dataset_names(args.datasets):
+    for name in selected_dataset_names(args.datasets, output_root, args.view_count):
         view_count_suffix = f"_{args.view_count}" if args.view_count is not None else ""
         dataset_root = output_root / f"2dgs_{name}{view_count_suffix}"
         if not dataset_root.is_dir():
@@ -115,6 +194,7 @@ def resolve_datasets(args: argparse.Namespace) -> list[Dataset]:
 def evaluate_reconstructions(args: argparse.Namespace) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for dataset in resolve_datasets(args):
+        training_statistics = load_training_statistics(dataset.root)
         reconstructions = discover_reconstructions(
             dataset=dataset.name,
             dataset_root=dataset.root,
@@ -149,6 +229,12 @@ def evaluate_reconstructions(args: argparse.Namespace) -> list[dict[str, object]
                 ground_truth_mesh=ground_truth_mesh,
                 scale=args.scale,
             )
+            checkpoint_statistics = training_statistics.get(reconstruction.iteration, {})
+            if not checkpoint_statistics:
+                print(
+                    "  Warning: no matching runtime/point-count entry in "
+                    f"{dataset.root / 'training_stats.json'}"
+                )
 
             rows.append(
                 {
@@ -164,6 +250,8 @@ def evaluate_reconstructions(args: argparse.Namespace) -> list[dict[str, object]
                     "p95_gt_to_reconstruction": metrics["p95_gt_to_reconstruction"],
                     "max_reconstruction_to_gt": metrics["max_reconstruction_to_gt"],
                     "max_gt_to_reconstruction": metrics["max_gt_to_reconstruction"],
+                    "runtime_seconds": checkpoint_statistics.get("runtime_seconds", ""),
+                    "point_count": checkpoint_statistics.get("point_count", ""),
                     "reconstruction_query_points": len(reconstruction_points),
                     "ground_truth_query_points": len(ground_truth_points),
                     "reconstruction_query_mode": reconstruction_sampling,
@@ -192,18 +280,104 @@ def write_csv(csv_path: Path, rows: list[dict[str, object]]) -> Path:
     return resolved_path
 
 
+def summarize_iterations(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    rows_by_iteration: dict[int, list[dict[str, object]]] = {}
+    for row in rows:
+        rows_by_iteration.setdefault(int(row["iteration"]), []).append(row)
+
+    summaries: list[dict[str, object]] = []
+    for iteration, iteration_rows in sorted(rows_by_iteration.items()):
+        runtimes = [
+            value
+            for row in iteration_rows
+            if (value := safe_number(row.get("runtime_seconds"))) is not None
+        ]
+        point_counts = [
+            value
+            for row in iteration_rows
+            if (value := safe_number(row.get("point_count"))) is not None
+        ]
+        summaries.append(
+            {
+                "iteration": iteration,
+                "scene_count": len(iteration_rows),
+                "runtime_scene_count": len(runtimes),
+                "point_count_scene_count": len(point_counts),
+                "mean_cd": sum(float(row["cd"]) for row in iteration_rows) / len(iteration_rows),
+                "mean_accuracy": (
+                    sum(float(row["accuracy"]) for row in iteration_rows) / len(iteration_rows)
+                ),
+                "mean_completion": (
+                    sum(float(row["completion"]) for row in iteration_rows) / len(iteration_rows)
+                ),
+                "total_runtime_seconds": sum(runtimes) if runtimes else "",
+                "average_runtime_seconds": sum(runtimes) / len(runtimes) if runtimes else "",
+                "average_point_count": sum(point_counts) / len(point_counts) if point_counts else "",
+            }
+        )
+    return summaries
+
+
+def write_summary_files(
+    results_csv_path: Path,
+    summaries: list[dict[str, object]],
+) -> tuple[Path, Path]:
+    summary_csv_path = results_csv_path.with_name(f"{results_csv_path.stem}_summary.csv")
+    summary_json_path = results_csv_path.with_name(f"{results_csv_path.stem}_summary.json")
+
+    if summaries:
+        with summary_csv_path.open("w", encoding="utf-8", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=list(summaries[0].keys()))
+            writer.writeheader()
+            writer.writerows(summaries)
+    else:
+        summary_csv_path.write_text("", encoding="utf-8")
+    summary_json_path.write_text(
+        json.dumps(
+            {
+                "runtime_definition": RUNTIME_DEFINITION,
+                "iterations": summaries,
+            },
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return summary_csv_path, summary_json_path
+
+
 def print_markdown_table(rows: list[dict[str, object]], digits: int) -> None:
     print()
-    print("| Dataset | Method | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ |")
-    print("|---|---|---:|---:|---:|---:|")
+    print("| Dataset | Method | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ | Runtime (s) ↓ | Points ↓ |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|")
     for row in rows:
+        runtime = safe_number(row.get("runtime_seconds"))
+        point_count = safe_number(row.get("point_count"))
+        runtime_text = f"{runtime:.2f}" if runtime is not None else ""
+        point_count_text = f"{point_count:.0f}" if point_count is not None else ""
         print(
             f"| {row['dataset']} "
             f"| {row['method']} "
             f"| {int(row['iteration'])} "
             f"| {float(row['cd']):.{digits}f} "
             f"| {float(row['accuracy']):.{digits}f} "
-            f"| {float(row['completion']):.{digits}f} |"
+            f"| {float(row['completion']):.{digits}f} "
+            f"| {runtime_text} "
+            f"| {point_count_text} |"
+        )
+
+    for summary in summarize_iterations(rows):
+        runtime = safe_number(summary["average_runtime_seconds"])
+        point_count = safe_number(summary["average_point_count"])
+        runtime_text = f"{runtime:.2f}" if runtime is not None else ""
+        point_count_text = f"{point_count:.0f}" if point_count is not None else ""
+        print(
+            f"| **Mean @ {int(summary['iteration'])}** "
+            f"|  | {int(summary['iteration'])} "
+            f"| **{float(summary['mean_cd']):.{digits}f}** "
+            f"| **{float(summary['mean_accuracy']):.{digits}f}** "
+            f"| **{float(summary['mean_completion']):.{digits}f}** "
+            f"| **{runtime_text}** "
+            f"| **{point_count_text}** |"
         )
 
 
@@ -229,10 +403,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--view-count",
         type=int,
-        default=None,
+        default=10,
         help=(
-            "Optional 2DGS dataset suffix. By default, evaluate 2dgs_<dataset>; "
-            "pass N to evaluate 2dgs_<dataset>_N."
+            "2DGS dataset suffix (default: 10), selecting "
+            "2dgs_<dataset>_<view-count>."
         ),
     )
     parser.add_argument(
@@ -240,8 +414,8 @@ def parse_arguments() -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "Optional comma-separated dataset names; defaults to "
-            "dragon,horse,lego,plant,teapot."
+            "Optional comma-separated dataset names. By default, use the scenes "
+            "listed in <output-root>/summary.json, falling back to the standard suite."
         ),
     )
     parser.add_argument(
@@ -263,7 +437,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--samples",
         type=int,
-        default=500_000,
+        default=5000_000,
         help="Uniform surface query samples per mesh (default: 500000).",
     )
     parser.add_argument("--seed", type=int, default=0)
@@ -281,9 +455,12 @@ def main() -> None:
     args = parse_arguments()
     rows = evaluate_reconstructions(args)
     csv_path = write_csv(args.csv_output, rows)
+    summary_csv_path, summary_json_path = write_summary_files(csv_path, summarize_iterations(rows))
     print_markdown_table(rows, args.digits)
     print()
     print(f"Saved CSV: {csv_path}")
+    print(f"Saved summary CSV: {summary_csv_path}")
+    print(f"Saved summary JSON: {summary_json_path}")
 
 
 if __name__ == "__main__":

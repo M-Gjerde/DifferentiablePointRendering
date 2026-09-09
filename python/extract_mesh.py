@@ -423,28 +423,76 @@ def load_renderer(run_dir: Path, points_path: Path):
     ), run_config
 
 
-def load_point_radius(points_path: Path) -> float:
-    # The tensor reader preserves the custom PLY power attribute, which the
-    # legacy point-cloud reader discards. Match SceneBuild's emitter predicate.
-    point_cloud = o3d.t.io.read_point_cloud(str(points_path))
+def estimate_2dgs_camera_radius(
+    cameras: dict[str, Open3DCamera],
+    camera_names: list[str],
+) -> tuple[np.ndarray, float]:
+    """Match 2DGS's focus-point and bounded-TSDF radius calculation.
 
-    if point_cloud.is_empty():
-        raise RuntimeError(f"No points found in {points_path}")
-    if "power" not in point_cloud.point:
-        raise ValueError(f"Missing vertex power property in {points_path}; cannot exclude lights from TSDF scale.")
+    2DGS finds the least-squares intersection of the training cameras' optical
+    axes, then uses the minimum camera-center distance to that focus point.
+    Flipping an optical-axis direction does not affect the line projection, so
+    the OpenCV camera convention used here is equivalent to 2DGS's OpenGL pose.
+    """
+    if not camera_names:
+        raise ValueError("Cannot estimate the 2DGS camera radius without cameras.")
 
-    points = point_cloud.point.positions.numpy().astype(np.float64)
-    powers = point_cloud.point.power.numpy().reshape(-1)
-    is_emitter = powers > 0.0
-    points = points[~is_emitter]
+    camera_to_worlds: list[np.ndarray] = []
+    for camera_name in camera_names:
+        if camera_name not in cameras:
+            raise KeyError(f"Missing camera metadata for radius estimate: {camera_name}")
+        camera_to_world = np.linalg.inv(cameras[camera_name].world_to_camera)
+        camera_to_worlds.append(camera_to_world)
 
-    if points.size == 0:
-        raise RuntimeError(f"No non-emissive points found in {points_path} for TSDF scale.")
+    poses = np.stack(camera_to_worlds, axis=0)[:, :3, :]
+    directions = poses[:, :3, 2:3]
+    origins = poses[:, :3, 3:4]
+    line_projectors = np.eye(3, dtype=np.float64) - (
+        directions * np.transpose(directions, (0, 2, 1))
+    )
+    normal_matrices = np.transpose(line_projectors, (0, 2, 1)) @ line_projectors
+    mean_normal_matrix = normal_matrices.mean(axis=0)
+    mean_projected_origin = (normal_matrices @ origins).mean(axis=0)[:, 0]
 
-    print(f"TSDF scale: using {len(points)} non-emissive points, excluding {np.count_nonzero(is_emitter)} lights")
+    try:
+        focus_point = np.linalg.solve(mean_normal_matrix, mean_projected_origin)
+    except np.linalg.LinAlgError as exception:
+        raise RuntimeError(
+            "Could not estimate the 2DGS camera focus point from the selected cameras."
+        ) from exception
 
-    center = np.mean(points, axis=0)
-    return float(np.linalg.norm(points - center, axis=1).max())
+    camera_centers = poses[:, :3, 3]
+    radius = float(np.linalg.norm(camera_centers - focus_point, axis=1).min())
+    if not np.isfinite(focus_point).all() or not np.isfinite(radius) or radius <= 0.0:
+        raise RuntimeError(
+            f"Invalid 2DGS camera radius estimate: focus={focus_point}, radius={radius}"
+        )
+    return focus_point, radius
+
+
+def resolve_2dgs_tsdf_settings(
+    radius: float,
+    mesh_res: int,
+    requested_depth_trunc: float,
+    requested_voxel_size: float,
+    requested_sdf_trunc: float,
+) -> tuple[float, float, float]:
+    """Resolve bounded-TSDF defaults with the same formulas as 2DGS render.py."""
+    if mesh_res <= 0:
+        raise ValueError(f"mesh_res must be positive, got {mesh_res}")
+
+    depth_trunc = 2.0 * radius if requested_depth_trunc < 0.0 else requested_depth_trunc
+    voxel_size = depth_trunc / mesh_res if requested_voxel_size < 0.0 else requested_voxel_size
+    sdf_trunc = 5.0 * voxel_size if requested_sdf_trunc < 0.0 else requested_sdf_trunc
+
+    for name, value in (
+        ("depth_trunc", depth_trunc),
+        ("voxel_size", voxel_size),
+        ("sdf_trunc", sdf_trunc),
+    ):
+        if not np.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive, got {value}")
+    return depth_trunc, voxel_size, sdf_trunc
 
 
 def get_camera_names(renderer, args: argparse.Namespace) -> list[str]:
@@ -691,7 +739,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-trunc", default=-1.0, type=float)
     parser.add_argument("--sdf-trunc", default=-1.0, type=float)
     parser.add_argument("--num-cluster", default=50, type=int)
-    parser.add_argument("--mesh-res", default=1024, type=int)
+    parser.add_argument("--mesh-res", default=2048, type=int)
 
     parser.add_argument("--depth-key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
     parser.add_argument(
@@ -756,7 +804,11 @@ if __name__ == "__main__":
     #print(f"Using cameras {args.cameras_xml}")
     print(f"Rendering {len(camera_names)} cameras")
 
-    radius = load_point_radius(points_path)
+    focus_point, radius = estimate_2dgs_camera_radius(cameras, camera_names)
+    print(
+        "2DGS TSDF scale: "
+        f"focus={np.array2string(focus_point, precision=6)}, camera_radius={radius:.6g}"
+    )
 
     pale_extractor = PaleExtractor(
         renderer=renderer,
@@ -771,9 +823,13 @@ if __name__ == "__main__":
 
         pale_extractor.reconstruction()
 
-        depth_trunc = pale_extractor.infer_depth_trunc() if args.depth_trunc < 0 else args.depth_trunc
-        voxel_size = (2.0 * pale_extractor.radius) / args.mesh_res if args.voxel_size < 0 else args.voxel_size
-        sdf_trunc = 10.0 * voxel_size if args.sdf_trunc < 0 else args.sdf_trunc
+        depth_trunc, voxel_size, sdf_trunc = resolve_2dgs_tsdf_settings(
+            radius=pale_extractor.radius,
+            mesh_res=args.mesh_res,
+            requested_depth_trunc=args.depth_trunc,
+            requested_voxel_size=args.voxel_size,
+            requested_sdf_trunc=args.sdf_trunc,
+        )
         print(
             f"TSDF settings: depth_trunc={depth_trunc:.6g}, "
             f"voxel_size={voxel_size:.6g}, sdf_trunc={sdf_trunc:.6g}"

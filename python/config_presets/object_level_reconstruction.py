@@ -151,7 +151,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_mesh_res: int = 512
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None

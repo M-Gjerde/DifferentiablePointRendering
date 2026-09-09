@@ -27,6 +27,7 @@ LEGEND_KWARGS = {
 @dataclass
 class GeometryEvaluationState:
     run_dir: Path | None = None
+    metrics_path: Path | None = None
     rows: list[dict[str, Any]] = field(default_factory=list)
     file_state: tuple[float, int] | None = None
 
@@ -86,7 +87,11 @@ def parse_args() -> argparse.Namespace:
         "--geometry-metrics-name",
         type=str,
         default="geometry_metrics.csv",
-        help="Geometry trail written by main.py inside the run directory.",
+        help=(
+            "Geometry trail written by main.py inside the run directory. With "
+            "the default name, adaptive-search and evaluate_runs.py trails are "
+            "also discovered automatically."
+        ),
     )
     parser.add_argument(
         "--geometry-every",
@@ -294,8 +299,9 @@ def update_geometry_metrics_state(
         run_dir: Path,
         geometry_metrics_path: Path,
 ) -> bool:
-    if state.run_dir != run_dir:
+    if state.run_dir != run_dir or state.metrics_path != geometry_metrics_path:
         state.run_dir = run_dir
+        state.metrics_path = geometry_metrics_path
         state.rows = []
         state.file_state = None
 
@@ -324,6 +330,23 @@ def update_geometry_metrics_state(
     state.rows = dataframe.to_dict(orient="records")
     state.file_state = file_state
     return True
+
+
+def resolve_geometry_metrics_path(
+        run_dir: Path,
+        geometry_metrics_name: str,
+) -> Path:
+    """Find the live geometry trail produced by any supported run workflow."""
+    configured_path = run_dir / geometry_metrics_name
+    if geometry_metrics_name != "geometry_metrics.csv":
+        return configured_path
+
+    candidates = (
+        configured_path,
+        run_dir / "evaluation" / "adaptive_checkpoint_metrics.csv",
+        run_dir / "evaluation" / "mesh_checkpoint_metrics_full.csv",
+    )
+    return next((path for path in candidates if path.is_file()), configured_path)
 
 
 def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -1534,7 +1557,10 @@ def main() -> None:
         while plt.fignum_exists(figure.number):
             run_dir = resolve_run_dir(args)
             metrics_csv_path = run_dir / args.metrics_name
-            geometry_metrics_path = run_dir / args.geometry_metrics_name
+            geometry_metrics_path = resolve_geometry_metrics_path(
+                run_dir,
+                args.geometry_metrics_name,
+            )
 
             if previous_run_dir != run_dir:
                 previous_run_dir = run_dir

@@ -3,6 +3,7 @@
 //
 #include "Renderer/Kernels/AdjointKernels.h"
 #include "AdjointGradientKernels.h"
+#include "CurvatureRegularizer.h"
 #include "Core/ScopedTimer.h"
 #include "IntersectionKernels.h"
 #include "Renderer/Kernels/KernelHelpers.h"
@@ -3409,160 +3410,84 @@ namespace Pale {
                 // =============================================================
                 // CURVATURE-AWARE SCALE BOUND
                 //
-                // kappa and slab selection are stop-gradient quantities.  For
-                // the selected slab, only the two surfel scales receive
-                //
-                //   v_i = kappa * (s_u^2+s_v^2)/2 / (2 gamma h) - 1
-                //   L_Q = mean_i(max(0,v_i)^2).
+                // Curvature, frame and slab selection are stop-gradient.
+                // Differentiate the ellipse's maximum absolute quadratic
+                // departure with respect to its two scales only.
                 // =============================================================
-                if (useCurvatureScale &&
-                    pixelX + 1u < imageWidth && pixelY + 1u < imageHeight &&
-                    localLayerDepthEpsilon > 0.0f) {
-                    constexpr float kVisibleNormalLengthSquaredEpsilon = 1.0e-12f;
-                    const uint32_t rightPixelIndex = pixelY * imageWidth + pixelX + 1u;
-                    const uint32_t downPixelIndex = (pixelY + 1u) * imageWidth + pixelX;
-                    const float4 centerVisibleNormal = sensor.visibleNormalBuffer[pixelIndex];
-                    const float4 rightVisibleNormal = sensor.visibleNormalBuffer[rightPixelIndex];
-                    const float4 downVisibleNormal = sensor.visibleNormalBuffer[downPixelIndex];
+                if (useCurvatureScale && localLayerDepthEpsilon > 0.0f) {
+                    const float centerDepth = normalFromDepthUseMeanDepth
+                        ? sensor.meanDepthBuffer[pixelIndex] : sensor.medianDepthBuffer[pixelIndex];
+                    if (sycl::isfinite(centerDepth) && centerDepth > 0.0f) {
+                        Ray scaleRay = originalRay;
+                        PointCloudLocalLayer selectedLayer{};
+                        float closestDepthDifference = std::numeric_limits<float>::infinity();
+                        bool foundLayer = false;
+                        uint32_t selectedTransformIndex = UINT32_MAX;
+                        for (uint32_t traversalIndex = 0u;
+                             traversalIndex < maxSurfaceHits;
+                             ++traversalIndex) {
+                            WorldHit worldHit{};
+                            intersectScene(scaleRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                            if (!worldHit.hit) { break; }
+                            buildIntersectionNormal(scene, worldHit);
+                            const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
+                            if (instance.geometryType != GeometryType::PointCloud) { break; }
 
-                    if (centerVisibleNormal.w() > 0.0f && rightVisibleNormal.w() > 0.0f &&
-                        downVisibleNormal.w() > 0.0f) {
-                        const float3 centerNormalRaw{
-                            centerVisibleNormal.x(), centerVisibleNormal.y(), centerVisibleNormal.z()
-                        };
-                        const float3 rightNormalRaw{
-                            rightVisibleNormal.x(), rightVisibleNormal.y(), rightVisibleNormal.z()
-                        };
-                        const float3 downNormalRaw{
-                            downVisibleNormal.x(), downVisibleNormal.y(), downVisibleNormal.z()
-                        };
-                        const float centerNormalLengthSquared = dot(centerNormalRaw, centerNormalRaw);
-                        const float rightNormalLengthSquared = dot(rightNormalRaw, rightNormalRaw);
-                        const float downNormalLengthSquared = dot(downNormalRaw, downNormalRaw);
+                            const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(
+                                scaleRay,
+                                worldHit,
+                                instance,
+                                scene,
+                                localLayerDepthEpsilon,
+                                maxLocalSurfelHits,
+                                localLayerNormalCosineThreshold);
+                            if (localLayer.hitCount == 0u) { break; }
 
-                        if (centerNormalLengthSquared > kVisibleNormalLengthSquaredEpsilon &&
-                            rightNormalLengthSquared > kVisibleNormalLengthSquaredEpsilon &&
-                            downNormalLengthSquared > kVisibleNormalLengthSquaredEpsilon) {
-                            const float3 centerNormal = centerNormalRaw / sycl::sqrt(centerNormalLengthSquared);
-                            float3 rightNormal = rightNormalRaw / sycl::sqrt(rightNormalLengthSquared);
-                            float3 downNormal = downNormalRaw / sycl::sqrt(downNormalLengthSquared);
-                            if (dot(centerNormal, rightNormal) < 0.0f) { rightNormal = -rightNormal; }
-                            if (dot(centerNormal, downNormal) < 0.0f) { downNormal = -downNormal; }
+                            const float anchorDepth = dot(
+                                localLayer.hits[0].hitPositionW - sensor.camera.pos,
+                                sensor.camera.forward);
+                            const float depthDifference = sycl::fabs(anchorDepth - centerDepth);
+                            if (depthDifference < closestDepthDifference) {
+                                selectedLayer = localLayer;
+                                selectedTransformIndex = instance.transformIndex;
+                                closestDepthDifference = depthDifference;
+                                foundLayer = true;
+                            }
+                            scaleRay.origin += scaleRay.direction *
+                                               (localLayer.furthestT + RayEpsilon);
+                        }
 
-                            const float centerDepth = normalFromDepthUseMeanDepth
-                                ? sensor.meanDepthBuffer[pixelIndex]
-                                : sensor.medianDepthBuffer[pixelIndex];
-                            const float rightDepth = normalFromDepthUseMeanDepth
-                                ? sensor.meanDepthBuffer[rightPixelIndex]
-                                : sensor.medianDepthBuffer[rightPixelIndex];
-                            const float downDepth = normalFromDepthUseMeanDepth
-                                ? sensor.meanDepthBuffer[downPixelIndex]
-                                : sensor.medianDepthBuffer[downPixelIndex];
-
-                            if (centerDepth > 0.0f && rightDepth > 0.0f && downDepth > 0.0f) {
-                                const float3 centerPosition = reconstructWorldPositionFromDepthCenter(
-                                    sensor.camera, pixelX, pixelY, centerDepth);
-                                const float3 rightPosition = reconstructWorldPositionFromDepthCenter(
-                                    sensor.camera, pixelX + 1u, pixelY, rightDepth);
-                                const float3 downPosition = reconstructWorldPositionFromDepthCenter(
-                                    sensor.camera, pixelX, pixelY + 1u, downDepth);
-                                const float3 rightNormalDifference = rightNormal - centerNormal;
-                                const float3 downNormalDifference = downNormal - centerNormal;
-                                const float3 rightPositionDifference = rightPosition - centerPosition;
-                                const float3 downPositionDifference = downPosition - centerPosition;
-                                const float curvatureX =
-                                    sycl::sqrt(dot(rightNormalDifference, rightNormalDifference)) /
-                                    (sycl::sqrt(dot(rightPositionDifference, rightPositionDifference)) +
-                                     CurvatureRegularizerDistanceEpsilon);
-                                const float curvatureY =
-                                    sycl::sqrt(dot(downNormalDifference, downNormalDifference)) /
-                                    (sycl::sqrt(dot(downPositionDifference, downPositionDifference)) +
-                                     CurvatureRegularizerDistanceEpsilon);
-                                const float curvature = sycl::fmax(curvatureX, curvatureY);
-
-                                Ray scaleRay = originalRay;
-                                PointCloudLocalLayer selectedLayer{};
-                                float closestDepthDifference = std::numeric_limits<float>::infinity();
-                                bool foundLayer = false;
-                                for (uint32_t traversalIndex = 0u;
-                                     traversalIndex < maxSurfaceHits;
-                                     ++traversalIndex) {
-                                    WorldHit worldHit{};
-                                    intersectScene(scaleRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
-                                    if (!worldHit.hit) { break; }
-                                    buildIntersectionNormal(scene, worldHit);
-                                    const InstanceRecord &instance = scene.instances[worldHit.instanceIndex];
-                                    if (instance.geometryType != GeometryType::PointCloud) { break; }
-
-                                    const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(
-                                        scaleRay,
-                                        worldHit,
-                                        instance,
-                                        scene,
-                                        localLayerDepthEpsilon,
-                                        maxLocalSurfelHits,
-                                        localLayerNormalCosineThreshold);
-                                    if (localLayer.hitCount == 0u) { break; }
-
-                                    const float anchorDepth = dot(
-                                        localLayer.hits[0].hitPositionW - sensor.camera.pos,
-                                        sensor.camera.forward);
-                                    const float depthDifference = sycl::fabs(anchorDepth - centerDepth);
-                                    if (depthDifference < closestDepthDifference) {
-                                        selectedLayer = localLayer;
-                                        closestDepthDifference = depthDifference;
-                                        foundLayer = true;
-                                    }
-                                    scaleRay.origin += scaleRay.direction *
-                                                       (localLayer.furthestT + RayEpsilon);
-                                }
-
-                                if (foundLayer && selectedLayer.hitCount > 0u) {
-                                    const float inverseMemberCount =
-                                        1.0f / static_cast<float>(selectedLayer.hitCount);
-                                    const float violationDenominator =
-                                        2.0f * CurvatureScaleRegularizerGamma * localLayerDepthEpsilon;
-                                    for (uint32_t localHitIndex = 0u;
-                                         localHitIndex < selectedLayer.hitCount;
-                                         ++localHitIndex) {
-                                        const uint32_t primitiveIndex =
-                                            selectedLayer.hits[localHitIndex].primitiveIndex;
-                                        if (primitiveIndex == kInvalidIndex || primitiveIndex >= pointCount) {
-                                            continue;
-                                        }
-                                        const Point &surfel = scene.points[primitiveIndex];
-                                        const float scaleU = surfel.scale.x();
-                                        const float scaleV = surfel.scale.y();
-                                        const float radiusSquared =
-                                            0.5f * (scaleU * scaleU + scaleV * scaleV);
-                                        const float violation =
-                                            curvature * radiusSquared / violationDenominator - 1.0f;
-                                        if (violation <= 0.0f) { continue; }
-
-                                        const float commonDerivative =
-                                            curvatureScaleAdjoint * inverseMemberCount *
-                                            2.0f * violation * curvature / violationDenominator;
-                                        const float2 scaleGradient{
-                                            commonDerivative * scaleU,
-                                            commonDerivative * scaleV
-                                        };
-                                        atomicAddFloat2(
-                                            curvatureScaleGradients.gradScale[primitiveIndex],
-                                            scaleGradient);
-
-                                        if (writeDebugImages) {
-                                            SurfelGradientRecord debugRecord{};
-                                            debugRecord.primitiveIndex = primitiveIndex;
-                                            debugRecord.gradScaleU = scaleGradient.x();
-                                            debugRecord.gradScaleV = scaleGradient.y();
-                                            accumulateDebugGradientIfSelected(
-                                                debugImage,
-                                                settings.renderDebugGradientImages,
-                                                settings.surfelIndexForDebugImages,
-                                                pixelIndex,
-                                                debugRecord);
-                                        }
-                                    }
+                        if (foundLayer && selectedLayer.hitCount > 0u) {
+                            float2 memberGradients[kMaxLocalSurfelHits];
+                            uint32_t observedMemberCount = 0u;
+                            for (uint32_t i = 0u; i < selectedLayer.hitCount; ++i) {
+                                memberGradients[i] = float2{0.0f};
+                                const Point &surfel = scene.points[selectedLayer.hits[i].primitiveIndex];
+                                CurvatureTensor tensor{};
+                                if (!estimateSurfelCurvature(surfel, selectedLayer,
+                                        scene.transforms[selectedTransformIndex], scene, localLayerDepthEpsilon,
+                                        localLayerNormalCosineThreshold, tensor)) { continue; }
+                                ++observedMemberCount;
+                                memberGradients[i] = evaluateCurvatureFootprint(
+                                    tensor, surfel.scale.x(), surfel.scale.y(), localLayerDepthEpsilon).lossScaleGradient;
+                            }
+                            const float normalization = curvatureScaleAdjoint /
+                                static_cast<float>(sycl::max(observedMemberCount, 1u));
+                            for (uint32_t i = 0u; i < selectedLayer.hitCount; ++i) {
+                                const uint32_t primitiveIndex = selectedLayer.hits[i].primitiveIndex;
+                                const float2 scaleGradient = normalization * memberGradients[i];
+                                atomicAddFloat2(curvatureScaleGradients.gradScale[primitiveIndex], scaleGradient);
+                                if (writeDebugImages) {
+                                    SurfelGradientRecord debugRecord{};
+                                    debugRecord.primitiveIndex = primitiveIndex;
+                                    debugRecord.gradScaleU = scaleGradient.x();
+                                    debugRecord.gradScaleV = scaleGradient.y();
+                                    accumulateDebugGradientIfSelected(
+                                        debugImage,
+                                        settings.renderDebugGradientImages,
+                                        settings.surfelIndexForDebugImages,
+                                        pixelIndex,
+                                        debugRecord);
                                 }
                             }
                         }

@@ -1303,6 +1303,7 @@ def make_summary(
         "final_iteration": last_numeric_value(loss_rows, "iteration"),
         "final_loss_total": last_numeric_value(loss_rows, "loss_total_mean"),
         "final_loss_rgb": last_numeric_value(loss_rows, "loss_rgb_mean"),
+        "final_runtime_seconds": last_numeric_value(loss_rows, "total_time_sec"),
         "final_num_points": last_numeric_value(loss_rows, "num_points"),
         "mesh_checkpoint_count": len(geometry_rows),
         "final_psnr_3dgs": sum(psnr_values) / len(psnr_values) if psnr_values else "",
@@ -1536,46 +1537,100 @@ def representative_geometry_row(evaluation: RunEvaluation) -> dict[str, Any] | N
     return rows[-1]
 
 
+def training_statistics_at_iteration(
+    evaluation: RunEvaluation,
+    iteration: int,
+) -> tuple[float | None, float | None]:
+    """Return cumulative runtime and point count at or immediately before an iteration."""
+    matching_rows: list[tuple[float, dict[str, str]]] = []
+    for loss_row in evaluation.loss_rows:
+        row_iteration = safe_float(loss_row.get("iteration"))
+        if row_iteration is not None and row_iteration <= float(iteration):
+            matching_rows.append((row_iteration, loss_row))
+    if not matching_rows:
+        return None, None
+
+    _, row = max(matching_rows, key=lambda item: item[0])
+    return safe_float(row.get("total_time_sec")), safe_float(row.get("num_points"))
+
+
+def final_geometry_mean_summary(evaluations: list[RunEvaluation]) -> dict[str, Any] | None:
+    final_rows = [
+        row
+        for evaluation in evaluations
+        if (row := representative_geometry_row(evaluation)) is not None
+    ]
+    if not final_rows:
+        return None
+
+    def mean_field(field: str) -> float | str:
+        values = [value for row in final_rows if (value := safe_float(row.get(field))) is not None]
+        return sum(values) / len(values) if values else ""
+
+    final_training_statistics = [
+        training_statistics_at_iteration(evaluation, int(row["iteration"]))
+        for evaluation in evaluations
+        if (row := representative_geometry_row(evaluation)) is not None
+    ]
+    runtimes = [runtime for runtime, _ in final_training_statistics if runtime is not None]
+    point_counts = [point_count for _, point_count in final_training_statistics if point_count is not None]
+    return {
+        "run_name": "MEAN",
+        "final_cd": mean_field("cd"),
+        "final_accuracy": mean_field("accuracy"),
+        "final_completion": mean_field("completion"),
+        "final_runtime_seconds": sum(runtimes) / len(runtimes) if runtimes else "",
+        "final_num_points": sum(point_counts) / len(point_counts) if point_counts else "",
+        "mesh_checkpoint_count": len(final_rows),
+    }
+
+
 def print_geometry_table(evaluations: list[RunEvaluation], full: bool) -> None:
     geometry_evaluations = [evaluation for evaluation in evaluations if evaluation.geometry_rows]
     if not geometry_evaluations:
         return
 
     print()
-    print("| Run | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ |")
-    print("|---|---:|---:|---:|---:|")
+    print("| Run | Iteration | CD ↓ | Accuracy ↓ | Completion ↓ | Runtime (s) ↓ | Points ↓ |")
+    print("|---|---:|---:|---:|---:|---:|---:|")
 
-    table_rows: list[tuple[str, dict[str, Any]]] = []
+    table_rows: list[tuple[RunEvaluation, dict[str, Any]]] = []
 
     if full:
         for evaluation in sorted(geometry_evaluations, key=summary_sort_key):
             for row in sorted(evaluation.geometry_rows, key=lambda item: int(item["iteration"])):
-                table_rows.append((evaluation.run_dir.name, row))
+                table_rows.append((evaluation, row))
     else:
         for evaluation in sorted(geometry_evaluations, key=summary_sort_key):
             row = representative_geometry_row(evaluation)
             if row is not None:
-                table_rows.append((evaluation.run_dir.name, row))
+                table_rows.append((evaluation, row))
 
-    for run_name, row in table_rows:
+    for evaluation, row in table_rows:
+        runtime_seconds, point_count = training_statistics_at_iteration(
+            evaluation,
+            int(row["iteration"]),
+        )
         print(
-            f"| {run_name} "
+            f"| {evaluation.run_dir.name} "
             f"| {int(row['iteration'])} "
             f"| {format_metric(row['cd'])} "
             f"| {format_metric(row['accuracy'])} "
-            f"| {format_metric(row['completion'])} |"
+            f"| {format_metric(row['completion'])} "
+            f"| {format_metric(runtime_seconds, digits=2)} "
+            f"| {format_metric(point_count, digits=0)} |"
         )
 
-    if table_rows and not full:
-        mean_cd = sum(float(row["cd"]) for _, row in table_rows) / len(table_rows)
-        mean_accuracy = sum(float(row["accuracy"]) for _, row in table_rows) / len(table_rows)
-        mean_completion = sum(float(row["completion"]) for _, row in table_rows) / len(table_rows)
+    final_mean = final_geometry_mean_summary(geometry_evaluations)
+    if final_mean is not None:
         print(
-            f"| **Mean** "
+            f"| **Final mean** "
             f"|  "
-            f"| **{format_metric(mean_cd)}** "
-            f"| **{format_metric(mean_accuracy)}** "
-            f"| **{format_metric(mean_completion)}** |"
+            f"| **{format_metric(final_mean['final_cd'])}** "
+            f"| **{format_metric(final_mean['final_accuracy'])}** "
+            f"| **{format_metric(final_mean['final_completion'])}** "
+            f"| **{format_metric(final_mean['final_runtime_seconds'], digits=2)}** "
+            f"| **{format_metric(final_mean['final_num_points'], digits=0)}** |"
         )
 
     best_evaluation = min(geometry_evaluations, key=summary_sort_key)
@@ -1669,6 +1724,9 @@ def main() -> None:
     aggregate_dir.mkdir(parents=True, exist_ok=True)
 
     summary_rows = [evaluation.summary for evaluation in sorted(evaluations, key=summary_sort_key)]
+    final_mean_summary = final_geometry_mean_summary(evaluations)
+    if final_mean_summary is not None:
+        summary_rows.append(final_mean_summary)
     summary_fields = [
         "run_name",
         "best_cd",
@@ -1680,12 +1738,20 @@ def main() -> None:
         "psnr_camera_count",
         "final_loss_total",
         "final_loss_rgb",
+        "final_runtime_seconds",
         "final_num_points",
         "mesh_checkpoint_count",
         *RUN_CONFIG_PARAMETERS,
         "run_dir",
     ]
     write_dict_csv(aggregate_dir / "summary.csv", summary_rows, fieldnames=summary_fields)
+    write_json_dict(
+        aggregate_dir / "summary.json",
+        {
+            "runs": [evaluation.summary for evaluation in sorted(evaluations, key=summary_sort_key)],
+            "final_mean": final_mean_summary,
+        },
+    )
     plot_geometry_comparison(evaluations, aggregate_dir / "geometry_comparison.png", args.max_summary_runs)
     plot_loss_comparison(evaluations, aggregate_dir / "loss_comparison.png", args.max_summary_runs)
     print_geometry_table(evaluations, full=args.full)

@@ -2,6 +2,7 @@
 // Created by magnus on 9/12/25.
 //
 #include "PrimalKernels.h"
+#include "CurvatureRegularizer.h"
 #include "IntersectionKernels.h"
 #include "KernelHelpers.h"
 #include "Core/ScopedTimer.h"
@@ -836,23 +837,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
     // -------------------------------------------------------------------------
     // Pass 3: curvature-aware surfel-scale regularizer.
     //
-    // Curvature is measured from the visibility-weighted surfel normal field.
-    // The stored visibleNormalBuffer is not assumed to be unit length, so each
-    // sample is normalized before finite differencing. World-space positions
-    // still come from the same mean/median pseudo-surface depth used elsewhere.
-    //
-    // The loss is evaluated only on the slab closest to that pseudo-surface:
-    //
-    //   r_i^2 = 0.5 * (s_u^2 + s_v^2)
-    //   v_i   = kappa * r_i^2 / (2 * gamma * h) - 1
-    //   e_i   = max(0, v_i)
-    //   L_Q   = mean_i(e_i^2)
-    //
-    // Curvature and the selected slab are treated as stop-gradient quantities
-    // by the adjoint pass.  Store the exact loss in a dedicated buffer so RGB
-    // rendering is never replaced by a diagnostic visualization.
-    // -------------------------------------------------------------------------
-    constexpr float visibleNormalLengthSquaredEpsilon = 1.0e-12f;
+    // Fit a signed curvature tensor from coherent surfel centers/normals in
+    // the selected slab. For D = diag(s_u, s_v), the tangent-plane departure
+    // is rho(D B D)/2 and the loss is mean(max(0, rho/(2 gamma h)-1)^2).
+    // The fit, frame and slab selection are detached in the adjoint pass.
     const float slabThickness = rendererDebugLocalLayerDepthEpsilon(settings);
     const CurvatureDensificationStats curvatureDensificationStats =
         pkg.curvatureDensificationStats;
@@ -873,82 +861,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             const uint32_t pixelX = pixelIndex % imageWidth;
             const uint32_t pixelY = pixelIndex / imageWidth;
 
-            // N(x+1,y) and N(x,y+1) must exist. Their validity flag also rejects
-            // the border invalidated by SurfaceDepthNormalKernel.
-            if (pixelX + 1u >= imageWidth || pixelY + 1u >= imageHeight || slabThickness <= 0.0f) {
-                return;
-            }
-
-            const uint32_t rightPixelIndex = pixelY * imageWidth + (pixelX + 1u);
-            const uint32_t downPixelIndex = (pixelY + 1u) * imageWidth + pixelX;
-            const float4 centerVisibleNormal = sensor.visibleNormalBuffer[pixelIndex];
-            const float4 rightVisibleNormal = sensor.visibleNormalBuffer[rightPixelIndex];
-            const float4 downVisibleNormal = sensor.visibleNormalBuffer[downPixelIndex];
-
-            if (centerVisibleNormal.w() <= 0.0f || rightVisibleNormal.w() <= 0.0f || downVisibleNormal.w() <= 0.0f) {
-                return;
-            }
-
-            const float3 centerVisibleNormalRaw{
-                centerVisibleNormal.x(),
-                centerVisibleNormal.y(),
-                centerVisibleNormal.z()
-            };
-            const float3 rightVisibleNormalRaw{
-                rightVisibleNormal.x(),
-                rightVisibleNormal.y(),
-                rightVisibleNormal.z()
-            };
-            const float3 downVisibleNormalRaw{
-                downVisibleNormal.x(),
-                downVisibleNormal.y(),
-                downVisibleNormal.z()
-            };
-
-            const float centerVisibleNormalLengthSquared = dot(centerVisibleNormalRaw, centerVisibleNormalRaw);
-            const float rightVisibleNormalLengthSquared = dot(rightVisibleNormalRaw, rightVisibleNormalRaw);
-            const float downVisibleNormalLengthSquared = dot(downVisibleNormalRaw, downVisibleNormalRaw);
-
-            if (centerVisibleNormalLengthSquared <= visibleNormalLengthSquaredEpsilon ||
-                rightVisibleNormalLengthSquared <= visibleNormalLengthSquaredEpsilon ||
-                downVisibleNormalLengthSquared <= visibleNormalLengthSquaredEpsilon) {
-                return;
-            }
-
-            const float3 centerNormalW = centerVisibleNormalRaw / sycl::sqrt(centerVisibleNormalLengthSquared);
-            float3 rightNormalW = rightVisibleNormalRaw / sycl::sqrt(rightVisibleNormalLengthSquared);
-            float3 downNormalW = downVisibleNormalRaw / sycl::sqrt(downVisibleNormalLengthSquared);
-
-            const bool useMeanDepth = settings.normalFromDepthUseMeanDepth;
-            const float centerDepth = useMeanDepth ? sensor.meanDepthBuffer[pixelIndex] : sensor.medianDepthBuffer[pixelIndex];
-            const float rightDepth = useMeanDepth ? sensor.meanDepthBuffer[rightPixelIndex] : sensor.medianDepthBuffer[rightPixelIndex];
-            const float downDepth = useMeanDepth ? sensor.meanDepthBuffer[downPixelIndex] : sensor.medianDepthBuffer[downPixelIndex];
-            if (centerDepth <= 0.0f || rightDepth <= 0.0f || downDepth <= 0.0f) {
-                return;
-            }
-
-            const float3 centerPositionW = reconstructWorldPositionFromDepthCenter(sensor.camera, pixelX, pixelY, centerDepth);
-            const float3 rightPositionW = reconstructWorldPositionFromDepthCenter(sensor.camera, pixelX + 1u, pixelY, rightDepth);
-            const float3 downPositionW = reconstructWorldPositionFromDepthCenter(sensor.camera, pixelX, pixelY + 1u, downDepth);
-
-            // Curvature is orientation-independent. Avoid artificial spikes if a
-            // neighboring visible surfel normal happens to have opposite sign.
-            if (dot(centerNormalW, rightNormalW) < 0.0f) { rightNormalW = -rightNormalW; }
-            if (dot(centerNormalW, downNormalW) < 0.0f) { downNormalW = -downNormalW; }
-
-            const float3 rightNormalDifference = rightNormalW - centerNormalW;
-            const float3 downNormalDifference = downNormalW - centerNormalW;
-            const float3 rightPositionDifference = rightPositionW - centerPositionW;
-            const float3 downPositionDifference = downPositionW - centerPositionW;
-            const float rightNormalDifferenceLength = sycl::sqrt(dot(rightNormalDifference, rightNormalDifference));
-            const float downNormalDifferenceLength = sycl::sqrt(dot(downNormalDifference, downNormalDifference));
-            const float rightPositionDifferenceLength = sycl::sqrt(dot(rightPositionDifference, rightPositionDifference));
-            const float downPositionDifferenceLength = sycl::sqrt(dot(downPositionDifference, downPositionDifference));
-            const float curvatureX = rightNormalDifferenceLength /
-                                     (rightPositionDifferenceLength + CurvatureRegularizerDistanceEpsilon);
-            const float curvatureY = downNormalDifferenceLength /
-                                     (downPositionDifferenceLength + CurvatureRegularizerDistanceEpsilon);
-            const float curvature = sycl::fmax(curvatureX, curvatureY);
+            if (slabThickness <= 0.0f) { return; }
+            const float centerDepth = settings.normalFromDepthUseMeanDepth
+                ? sensor.meanDepthBuffer[pixelIndex] : sensor.medianDepthBuffer[pixelIndex];
+            if (!sycl::isfinite(centerDepth) || centerDepth <= 0.0f) { return; }
 
             // Locate the local slab corresponding to the visible pseudo surface.
             // Retrace the ray and select the slab closest to the pseudo-surface.
@@ -1012,6 +928,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             }
 
             float accumulatedScaleLoss = 0.0f;
+            uint32_t observedMemberCount = 0u;
             const bool accumulateDensificationStats =
                 curvatureDensificationStats.numPoints == scene.pointCount &&
                 curvatureDensificationStats.violationSum != nullptr &&
@@ -1026,12 +943,14 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                  ++localHitIndex) {
                 const LocalSurfelLayerHit &localHit = selectedLayer.hits[localHitIndex];
                 const Point &surfel = scene.points[localHit.primitiveIndex];
-                const float scaleU = surfel.scale.x();
-                const float scaleV = surfel.scale.y();
-                const float radiusSquared = 0.5f * (scaleU * scaleU + scaleV * scaleV);
-                const float normalizedViolation = curvature * radiusSquared /
-                    (2.0f * CurvatureScaleRegularizerGamma * slabThickness) - 1.0f;
-                const float residual = sycl::fmax(0.0f, normalizedViolation);
+                CurvatureTensor tensor{};
+                if (!estimateSurfelCurvature(surfel, selectedLayer,
+                        scene.transforms[selectedTransformIndex], scene, slabThickness,
+                        localLayerNormalCosineThreshold, tensor)) { continue; }
+                ++observedMemberCount;
+                const CurvatureFootprint footprint = evaluateCurvatureFootprint(
+                    tensor, surfel.scale.x(), surfel.scale.y(), slabThickness);
+                const float residual = footprint.residual;
                 accumulatedScaleLoss += residual * residual;
 
                 // These are forward-only structural statistics. They use the
@@ -1039,7 +958,6 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 // curvature regularizer loss weight.
                 if (!accumulateDensificationStats ||
                     localHit.primitiveIndex >= curvatureDensificationStats.numPoints ||
-                    !sycl::isfinite(radiusSquared) ||
                     !sycl::isfinite(residual)) {
                     continue;
                 }
@@ -1058,92 +976,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     curvatureDensificationStats.violationCount[primitiveIndex]
                 ).fetch_add(1u);
 
-                const float directionalViolationX = sycl::fmax(
-                    0.0f,
-                    curvatureX * radiusSquared /
-                        (2.0f * CurvatureScaleRegularizerGamma * slabThickness) - 1.0f);
-                const float directionalViolationY = sycl::fmax(
-                    0.0f,
-                    curvatureY * radiusSquared /
-                        (2.0f * CurvatureScaleRegularizerGamma * slabThickness) - 1.0f);
-                if (directionalViolationX <= 0.0f && directionalViolationY <= 0.0f) {
-                    continue;
-                }
-
-                const Transform &transform = scene.transforms[selectedTransformIndex];
-                float3 tangentU = transformDirection(transform.objectToWorld, surfel.tanU);
-                float3 tangentV = transformDirection(transform.objectToWorld, surfel.tanV);
-                const float tangentULengthSquared = dot(tangentU, tangentU);
-                tangentV -= tangentU * dot(tangentU, tangentV);
-                const float tangentVLengthSquared = dot(tangentV, tangentV);
-                const bool finiteFrame =
-                    sycl::isfinite(tangentU.x()) && sycl::isfinite(tangentU.y()) &&
-                    sycl::isfinite(tangentU.z()) && sycl::isfinite(tangentV.x()) &&
-                    sycl::isfinite(tangentV.y()) && sycl::isfinite(tangentV.z());
-                if (!finiteFrame || tangentULengthSquared <= 1.0e-12f ||
-                    tangentVLengthSquared <= 1.0e-12f) {
-                    continue;
-                }
-                tangentU = tangentU / sycl::sqrt(tangentULengthSquared);
-                tangentV = tangentV / sycl::sqrt(tangentVLengthSquared);
-                float3 surfelNormal = cross(tangentU, tangentV);
-                const float surfelNormalLengthSquared = dot(surfelNormal, surfelNormal);
-                if (!sycl::isfinite(surfelNormalLengthSquared) ||
-                    surfelNormalLengthSquared <= 1.0e-12f) {
-                    continue;
-                }
-                surfelNormal = surfelNormal / sycl::sqrt(surfelNormalLengthSquared);
-
-                float tensorUu = 0.0f;
-                float tensorUv = 0.0f;
-                float tensorVv = 0.0f;
-
-                const float3 projectedDirectionX = rightPositionDifference -
-                    surfelNormal * dot(surfelNormal, rightPositionDifference);
-                const float projectedDirectionXLengthSquared =
-                    dot(projectedDirectionX, projectedDirectionX);
-                if (directionalViolationX > 0.0f &&
-                    sycl::isfinite(projectedDirectionXLengthSquared) &&
-                    projectedDirectionXLengthSquared > 1.0e-12f) {
-                    const float3 directionX = projectedDirectionX /
-                        sycl::sqrt(projectedDirectionXLengthSquared);
-                    float axisU = dot(directionX, tangentU);
-                    float axisV = dot(directionX, tangentV);
-                    const float axisLengthSquared = axisU * axisU + axisV * axisV;
-                    if (sycl::isfinite(axisLengthSquared) && axisLengthSquared > 1.0e-12f) {
-                        const float inverseAxisLength = sycl::rsqrt(axisLengthSquared);
-                        axisU *= inverseAxisLength;
-                        axisV *= inverseAxisLength;
-                        tensorUu += directionalViolationX * axisU * axisU;
-                        tensorUv += directionalViolationX * axisU * axisV;
-                        tensorVv += directionalViolationX * axisV * axisV;
-                    }
-                }
-
-                const float3 projectedDirectionY = downPositionDifference -
-                    surfelNormal * dot(surfelNormal, downPositionDifference);
-                const float projectedDirectionYLengthSquared =
-                    dot(projectedDirectionY, projectedDirectionY);
-                if (directionalViolationY > 0.0f &&
-                    sycl::isfinite(projectedDirectionYLengthSquared) &&
-                    projectedDirectionYLengthSquared > 1.0e-12f) {
-                    const float3 directionY = projectedDirectionY /
-                        sycl::sqrt(projectedDirectionYLengthSquared);
-                    float axisU = dot(directionY, tangentU);
-                    float axisV = dot(directionY, tangentV);
-                    const float axisLengthSquared = axisU * axisU + axisV * axisV;
-                    if (sycl::isfinite(axisLengthSquared) && axisLengthSquared > 1.0e-12f) {
-                        const float inverseAxisLength = sycl::rsqrt(axisLengthSquared);
-                        axisU *= inverseAxisLength;
-                        axisV *= inverseAxisLength;
-                        tensorUu += directionalViolationY * axisU * axisU;
-                        tensorUv += directionalViolationY * axisU * axisV;
-                        tensorVv += directionalViolationY * axisV * axisV;
-                    }
-                }
-
-                // K += v_x a_x a_x^T + v_y a_y a_y^T. The outer products
-                // make this an axis statistic, so opposite directions agree.
+                const float tensorUu = footprint.splitTensor.uu;
+                const float tensorUv = footprint.splitTensor.uv;
+                const float tensorVv = footprint.splitTensor.vv;
                 if (tensorUu != 0.0f || tensorUv != 0.0f || tensorVv != 0.0f) {
                     sycl::atomic_ref<float,
                                      sycl::memory_order::relaxed,
@@ -1166,8 +1001,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 }
             }
 
+            if (observedMemberCount == 0u) { return; }
             const float selectedSlabScaleLoss = accumulatedScaleLoss /
-                static_cast<float>(selectedLayer.hitCount);
+                static_cast<float>(observedMemberCount);
             sensor.curvatureScaleBuffer[pixelIndex] = selectedSlabScaleLoss;
             sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 1u;
     });

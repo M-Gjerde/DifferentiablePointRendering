@@ -102,7 +102,10 @@ class OptimizationConfig:
     # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
     densification_relative_error: bool = True
     densification_radiance_floor: float = 0.001  # linear RGB radiance units
-    densification_full_position: bool = True
+    # False uses only the surfel's local footprint-translation derivative as
+    # the clone signal. True also includes non-local position derivatives from
+    # visibility, shadowing, attenuation, and other transport effects.
+    densification_full_position: bool = False
     densification_stats_skip_interval_start: bool = True
     densification_downweight_normal_gradients: bool = False
     # When false, position-triggered densification may displace children along
@@ -166,7 +169,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 2_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_mesh_res: int = 512
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None

@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 3
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -76,9 +76,9 @@ class OptimizationConfig:
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.25
+    global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
+    position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 25_000
@@ -95,8 +95,8 @@ class OptimizationConfig:
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 0.0e-0
+    intra_slab_depth_weight: float = 2.0e-4
+    curvature_scale_weight: float = 0.0e-7
 
     # Rendering model
     share_local_layer_direct_lighting: bool = True
@@ -117,7 +117,10 @@ class OptimizationConfig:
     # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
     densification_relative_error: bool = True
     densification_radiance_floor: float = 0.001  # linear RGB radiance units
-    densification_full_position: bool = True
+    # False uses only the surfel's local footprint-translation derivative as
+    # the clone signal. True also includes non-local position derivatives from
+    # visibility, shadowing, attenuation, and other transport effects.
+    densification_full_position: bool = False
     densification_downweight_normal_gradients: bool = False
     # Legacy albedo normalization; ignored when relative-error statistics are enabled.
     densify_bsdf_floor: float = 0.01
@@ -127,8 +130,8 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min: float = 8.0e-4
+    densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -192,9 +195,9 @@ class OptimizationConfig:
     enable_image_preview: bool = True
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 2_000
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 768
+    mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None

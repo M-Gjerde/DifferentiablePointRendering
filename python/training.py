@@ -422,7 +422,9 @@ def compute_iteration_gradients(
         curvature_scale_weight: float,
         densification_relative_error: bool = False,
         densification_radiance_floor: float = 0.01,
-        densification_full_position: bool = True,
+        # False retains the local footprint-translation clone signal; True replaces
+        # it with the complete position gradient, including transport derivatives.
+        densification_full_position: bool = False,
 ) -> IterationGradientResult:
     active_camera_name = active_camera_name_for_iteration(
         active_training_camera_ids,

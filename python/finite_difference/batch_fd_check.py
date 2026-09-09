@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--script",
         type=Path,
-        default=Path(__file__).with_name("fd_test.py"),
+        default=Path(__file__).resolve().parents[1] / "test" / "fd_test.py",
         help="Single-case runner.",
     )
     parser.add_argument(
