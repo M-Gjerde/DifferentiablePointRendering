@@ -23,6 +23,12 @@ def make_training_progress_postfix(
         "rgb": f"{float(loss_state['total_rgb_loss_value']):.3e}",
     }
 
+    regularizer_loss = sum(
+        float(loss_state.get(field_name, 0.0))
+        for _, field_name in WEIGHTED_LOSS_FIELDS
+    )
+    postfix["reg"] = f"{regularizer_loss:.3e}"
+
     for label, field_name in WEIGHTED_LOSS_FIELDS:
         value = float(loss_state.get(field_name, 0.0))
         if value != 0.0:

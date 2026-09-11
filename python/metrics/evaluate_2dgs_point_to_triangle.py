@@ -22,7 +22,7 @@ else:  # Support direct execution: python metrics/evaluate_2dgs_point_to_triangl
     )
 
 
-DEFAULT_OUTPUT_ROOT = Path("/home/magnus/projects/2D-GS-Viser-Viewer/output/run1")
+DEFAULT_OUTPUT_ROOT = Path("/home/magnus/projects/2D-GS-Viser-Viewer/output")
 DEFAULT_GROUND_TRUTH_ROOT = Path("/home/magnus/phd/models")
 DEFAULT_DATASETS = ("dragon", "horse", "lego", "plant", "teapot")
 RUNTIME_DEFINITION = (
