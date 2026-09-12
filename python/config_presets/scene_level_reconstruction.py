@@ -50,7 +50,7 @@ class OptimizationConfig:
     scene_xml: str = "cbox_custom.xml"
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
-    target_color_space: str = "srgb"
+    target_color_space: str = "auto"
     output_dir: Path = Path("OptimizationOutput")
     checkpoint: Path | None = None
 
@@ -345,7 +345,8 @@ def parse_args() -> OptimizationConfig:
         "--target-color-space",
         choices=["auto", "srgb", "linear"],
         help=(
-            "Target image encoding. 'auto' uses ICC metadata and file/sample conventions; "
+            "Target image encoding (default: auto). 'auto' uses ICC metadata, "
+            "decodes untagged integer images as sRGB, and treats EXR/HDR as linear; "
             "all targets are converted to linear sRGB for optimization."
         ),
     )

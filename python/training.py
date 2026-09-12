@@ -755,8 +755,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     densification_grad_abs_min_decay_start_iteration = int(config.densification_grad_abs_min_decay_start_iteration)
     densification_grad_abs_min_decay_end_iteration = int(config.densification_grad_abs_min_decay_end_iteration)
     densification_downweight_normal_gradients = config.densification_downweight_normal_gradients
-    densify_bsdf_floor = float(config.densify_bsdf_floor)
-    densify_bsdf_gamma = float(config.densify_bsdf_gamma)
     rebuild_bvh_interval = max(int(config.rebuild_bvh_interval), 1)
     use_device_training_step = config.use_device_training_step
     device_training_disabled_reasons: list[str] = []
@@ -1047,8 +1045,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         rotations=rotations,
                         albedos=albedos,
                         trainable_surfel_mask=trainable_surfel_mask,
-                        densify_bsdf_floor=densify_bsdf_floor,
-                        densify_bsdf_gamma=densify_bsdf_gamma,
                         densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                         densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                         densify_radiance_rms_sum_per_camera_np=clone_radiance_rms_sum_per_camera_np,
@@ -1857,8 +1853,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     rotations=rotations,
                     albedos=albedos,
                     trainable_surfel_mask=trainable_surfel_mask,
-                    densify_bsdf_floor=densify_bsdf_floor,
-                    densify_bsdf_gamma=densify_bsdf_gamma,
                     densify_position_grad_per_camera_np=clone_signal_per_camera_np,
                     densify_position_grad_per_camera_count_np=clone_signal_record_count_per_camera_np,
                     densify_radiance_rms_sum_per_camera_np=clone_radiance_rms_sum_per_camera_np,

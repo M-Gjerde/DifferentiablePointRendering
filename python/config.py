@@ -51,7 +51,7 @@ class OptimizationConfig:
     scene_xml: str = "cbox_custom.xml"
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
-    target_color_space: str = "srgb"
+    target_color_space: str = "auto"
     output_dir: Path = Path("OptimizationOutput")
     checkpoint: Path | None = None
 
@@ -66,7 +66,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.000055
-    learning_rate_rotation: float = 0.005
+    learning_rate_rotation: float = 0.0075
     learning_rate_scale: float = 0.0005
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
@@ -78,8 +78,8 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 30.0
-    position_lr_scale_final: float = 10.0
+    position_lr_scale_init: float = 20.0
+    position_lr_scale_final: float = 2.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 25_000
 
@@ -109,29 +109,26 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 300
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
     # Densification: gradient signal
     # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
     densification_relative_error: bool = True
-    densification_radiance_floor: float = 0.001  # linear RGB radiance units
+    densification_radiance_floor: float = 0.005  # linear RGB radiance units
     # False uses only the surfel's local footprint-translation derivative as
     # the clone signal. True also includes non-local position derivatives from
     # visibility, shadowing, attenuation, and other transport effects.
     densification_full_position: bool = False
     densification_downweight_normal_gradients: bool = False
-    # Legacy albedo normalization; ignored when relative-error statistics are enabled.
-    densify_bsdf_floor: float = 0.01
-    densify_bsdf_gamma: float = 1.0
 
     # Densification: base selection threshold
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 8.0e-4
+    densification_grad_abs_min: float = 2.0e-3
+    densification_grad_abs_min_final: float = 2.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -155,7 +152,7 @@ class OptimizationConfig:
     densification_scale_min: float = 6.0e-3
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
-    densification_split_offset_scale: float = 0.1
+    densification_split_offset_scale: float = 0.15
     densification_split_scale_factor: float = math.sqrt(2)
     # When false, position-triggered splits may use the full 3D gradient,
     # including the surfel-normal direction.
@@ -373,7 +370,8 @@ def parse_args() -> OptimizationConfig:
         "--target-color-space",
         choices=["auto", "srgb", "linear"],
         help=(
-            "Target image encoding. 'auto' uses ICC metadata and file/sample conventions; "
+            "Target image encoding (default: auto). 'auto' uses ICC metadata, "
+            "decodes untagged integer images as sRGB, and treats EXR/HDR as linear; "
             "all targets are converted to linear sRGB for optimization."
         ),
     )
@@ -528,12 +526,6 @@ def parse_args() -> OptimizationConfig:
             "Downweight tangent densification statistics when position gradients "
             "point mostly along the surfel normal. Disabled by default."
         ),
-    )
-    _add_typed_fields(
-        densification_signal,
-        float,
-        "densify_bsdf_floor",
-        "densify_bsdf_gamma",
     )
 
     densification_selection = parser.add_argument_group("densification: candidate selection")

@@ -107,8 +107,6 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
         "--densification-tangent-only",
         "--no-densification-tangent-only",
     ),
-    "densify_bsdf_floor": "--densify-bsdf-floor",
-    "densify_bsdf_gamma": "--densify-bsdf-gamma",
     "opacity_prune_threshold": "--opacity-prune-threshold",
     "max_prune_fraction": "--max-prune-fraction",
     "min_surfel_area": "--min-surfel-area",

@@ -68,8 +68,6 @@ RUN_CONFIG_PARAMETERS = [
     "learning_rate_albedo",
     "learning_rate_opacity",
     "learning_rate_beta",
-    "densify_bsdf_floor",
-    "densify_bsdf_gamma",
     "densification_downweight_normal_gradients",
     "densification_tangent_only",
     "inactive_transport_prune_cycles",
