@@ -78,8 +78,8 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 20.0
-    position_lr_scale_final: float = 1.0
+    position_lr_scale_init: float = 30.0
+    position_lr_scale_final: float = 10.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 25_000
 
@@ -89,13 +89,13 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.1
+    depth_distort_weight: float = 0.05
     # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 0.0001
+    intra_slab_depth_weight: float = 2.0e-4
     curvature_scale_weight: float = 0.0e-7
 
     # Rendering model
@@ -109,7 +109,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 400
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -130,7 +130,7 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 8.306368236769634e-05
+    densification_grad_abs_min: float = 8.0e-4
     densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
@@ -145,18 +145,18 @@ class OptimizationConfig:
     # Densification: radiance balancing (used in both threshold modes)
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
-    densification_radiance_bias_strength: float = 0.0
+    densification_radiance_bias_strength: float=  1.0
     densification_radiance_bias_min_weight: float = 0.25
     densification_radiance_bias_max_weight: float = 2.0
 
     # Densification: curvature trigger and clone/split policy
     # A non-positive value disables curvature-triggered densification.
     curvature_violation_threshold: float = -1
-    densification_scale_min: float = 0.006929942917040718
+    densification_scale_min: float = 6.0e-3
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
-    densification_split_offset_scale: float = 0.2809285053587729
-    densification_split_scale_factor: float = 1.7896726729752717
+    densification_split_offset_scale: float = 0.1
+    densification_split_scale_factor: float = math.sqrt(2)
     # When false, position-triggered splits may use the full 3D gradient,
     # including the surfel-normal direction.
     densification_tangent_only: bool = False
@@ -168,7 +168,7 @@ class OptimizationConfig:
     prune_after: int = 0
     opacity_prune_threshold: float = 0.0
     max_prune_fraction: float = 0.9
-    min_surfel_area: float = 2.8533385488035552e-05
+    min_surfel_area: float = math.pi * 2.0e-5
     inactive_transport_prune_cycles: int = 1
     reset_opacity_interval: int = 0
     reset_opacity_value: float = 0.025
