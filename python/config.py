@@ -78,8 +78,8 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 20.0
-    position_lr_scale_final: float = 2.0
+    position_lr_scale_init: float = 1.0
+    position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 25_000
 
@@ -89,13 +89,13 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.05
+    depth_distort_weight: float = 0.02
     # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 2.0e-4
+    intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-7
 
     # Rendering model
@@ -109,7 +109,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 300
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -127,8 +127,8 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 2.0e-3
-    densification_grad_abs_min_final: float = 2.0e-3
+    densification_grad_abs_min: float = 1.0e-3
+    densification_grad_abs_min_final: float = 1.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
