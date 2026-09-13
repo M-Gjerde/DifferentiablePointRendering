@@ -78,7 +78,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 1.0
+    position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 25_000
@@ -89,7 +89,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.02
+    depth_distort_weight: float = 0.01
     # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
@@ -127,8 +127,8 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 1.0e-3
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -142,7 +142,7 @@ class OptimizationConfig:
     # Densification: radiance balancing (used in both threshold modes)
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
-    densification_radiance_bias_strength: float=  1.0
+    densification_radiance_bias_strength: float=  0.5
     densification_radiance_bias_min_weight: float = 0.25
     densification_radiance_bias_max_weight: float = 2.0
 
