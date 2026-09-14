@@ -1264,10 +1264,7 @@ def should_save_image_snapshot(
         return False
     return (
         iteration == final_iteration
-        or (
-            next_densification_iteration is not None
-            and iteration + 1 == next_densification_iteration
-        )
+        or iteration % save_interval == 0
     )
 
 
@@ -2279,7 +2276,10 @@ def maybe_make_densification_result(
 
     if (
             not force_densification
-            and iteration % densification_interval != 0
+            and (
+                iteration <= densification_interval
+                or (iteration - 1) % densification_interval != 0
+            )
     ):
         return None
 

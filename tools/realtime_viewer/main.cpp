@@ -2846,10 +2846,17 @@ namespace {
             return;
         }
 
-        const float safeThreshold =
-            std::isfinite(splitThreshold) && splitThreshold > 1.0e-12f
-                ? splitThreshold
-                : 1.0f;
+        const bool thresholdEnabled = std::isfinite(splitThreshold) && splitThreshold > 0.0f;
+        float safeThreshold = thresholdEnabled ? splitThreshold : 1.0f;
+        if (!thresholdEnabled) {
+            // Disabled densification still shows scores, without marking split candidates.
+            for (const float value : values) {
+                if (std::isfinite(value)) {
+                    safeThreshold = std::max(safeThreshold, value);
+                }
+            }
+        }
+        safeThreshold = std::max(safeThreshold, 1.0e-12f);
         constexpr glm::vec3 kThresholdCrossedColor{1.0f, 0.0f, 1.0f};
         for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
             const std::size_t baseIndex = pixelIndex * 4u;
@@ -2867,7 +2874,7 @@ namespace {
                 continue;
             }
             const float normalized = std::clamp(value / safeThreshold, 0.0f, 1.0f);
-            const glm::vec3 color = value >= safeThreshold
+            const glm::vec3 color = thresholdEnabled && value >= safeThreshold
                 ? kThresholdCrossedColor
                 : scalarColor(normalized, colorMap);
             displayPixels[baseIndex + 0u] = channelToByte(color.r);
@@ -3104,22 +3111,24 @@ int main(int argc, char** argv) {
         int densityGridSize = 64;
         float densityColorMaximum = 100.0f;
         bool densityLogScale = true;
-        float curvatureViolationDisplayThreshold = 5.0f;
-        float positionWhatIfDisplayThreshold = 0.0f;
+        // Training debug defaults mirror python/config.py (OptimizationConfig).
+        float curvatureViolationDisplayThreshold = -1.0f;
+        constexpr float kPositionDefaultThreshold = 5.0e-3f;
+        float positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
         float positionWhatIfReferenceThreshold = 0.0f;
         std::filesystem::path positionWhatIfThresholdPointCloudPath;
-        float positionRadianceBiasStrength = 1.0f;
-        float positionRadianceBiasMinWeight = 0.5f;
-        float positionRadianceBiasMaxWeight = 10.0f;
-        constexpr float kPositionRadianceBiasFloor = 1.0e-3f;
+        float positionRadianceBiasStrength = 0.5f;
+        float positionRadianceBiasMinWeight = 0.2f;
+        float positionRadianceBiasMaxWeight = 1.5f;
+        constexpr float kPositionRadianceBiasFloor = 0.005f;
         int primitiveAgeColdAfterIterations = 1000;
         // Viewer-only diagnostic default. Optimization keeps its renderer-side
         // debug allocations disabled unless explicitly requested there.
         bool regularizerPrimitiveGradientMapsEnabled = true;
         bool ssimDebugMapsEnabled = false;
-        float viewerSsimWeight = 0.2f;
-        int viewerSsimWindowSize = 11;
-        float viewerSsimSigma = 1.5f;
+        float viewerSsimWeight = 0.0f;
+        int viewerSsimWindowSize = 5;
+        float viewerSsimSigma = 0.75f;
         int selectedLightIndex = 0;
         bool showLightGizmo = true;
         ImGuizmo::OPERATION lightGizmoOperation = ImGuizmo::TRANSLATE;
@@ -4161,7 +4170,7 @@ int main(int argc, char** argv) {
                                         positionWhatIfReferenceThreshold != savedThreshold ||
                                         !std::isfinite(positionWhatIfDisplayThreshold) ||
                                         positionWhatIfDisplayThreshold <= 0.0f) {
-                                        positionWhatIfDisplayThreshold = savedThreshold;
+                                        positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
                                         positionWhatIfReferenceThreshold = savedThreshold;
                                         positionWhatIfThresholdPointCloudPath =
                                             currentPointCloudPath;
@@ -5241,27 +5250,28 @@ int main(int argc, char** argv) {
                     "The scale stays fixed until you change it. This is screen-space concentration, not world-space density.");
             }
             if (viewImageMode == ViewImageMode::CurvaturePrimitiveScore) {
-                if (ImGui::SliderFloat(
+                if (ImGui::InputFloat(
                         "Curvature split threshold",
                         &curvatureViolationDisplayThreshold,
-                        1.0e-6f,
-                        1.0e6f,
-                        "%.4g",
-                        ImGuiSliderFlags_Logarithmic)) {
-                    curvatureViolationDisplayThreshold = std::max(
-                        curvatureViolationDisplayThreshold, 1.0e-6f);
+                        0.0f,
+                        0.0f,
+                        "%.4g")) {
                     updateDisplayTexture();
                 }
 
-                ImGui::TextDisabled(
-                    "Below: C_i / threshold colormap; magenta: at/above split boundary");
+                const bool curvatureSplittingEnabled =
+                    std::isfinite(curvatureViolationDisplayThreshold) &&
+                    curvatureViolationDisplayThreshold > 0.0f;
+                ImGui::TextDisabled(curvatureSplittingEnabled
+                    ? "Below: C_i / threshold colormap; magenta: at/above split boundary"
+                    : "Curvature splitting disabled (threshold <= 0); colors show score magnitude");
 
                 const std::size_t splitCandidateCount = static_cast<std::size_t>(
                     std::count_if(
                         debugDisplayBuffers.curvatureObservedPrimitiveScores.begin(),
                         debugDisplayBuffers.curvatureObservedPrimitiveScores.end(),
                         [&](float score) {
-                            return score >= curvatureViolationDisplayThreshold;
+                            return curvatureSplittingEnabled && score >= curvatureViolationDisplayThreshold;
                         }));
                 ImGui::Text(
                     "Observed: %zu   above threshold: %zu   max C_i: %.4g",
@@ -5313,10 +5323,10 @@ int main(int argc, char** argv) {
                         savedThreshold);
                     const float sliderMinimum = static_cast<float>(std::max(
                         static_cast<double>(std::numeric_limits<float>::min()),
-                        static_cast<double>(savedThreshold) * 1.0e-3));
+                        static_cast<double>(std::min(savedThreshold, kPositionDefaultThreshold)) * 1.0e-3));
                     const float sliderMaximum = static_cast<float>(std::min(
                         static_cast<double>(std::numeric_limits<float>::max()),
-                        static_cast<double>(savedThreshold) * 1.0e3));
+                        static_cast<double>(std::max(savedThreshold, kPositionDefaultThreshold)) * 1.0e3));
                     if (ImGui::SliderFloat(
                             "What-if position threshold",
                             &positionWhatIfDisplayThreshold,
@@ -5332,6 +5342,11 @@ int main(int argc, char** argv) {
                     }
                     if (ImGui::Button("Use saved##position-threshold")) {
                         positionWhatIfDisplayThreshold = savedThreshold;
+                        updateDisplayTexture();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Use config default##position-threshold")) {
+                        positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
                         updateDisplayTexture();
                     }
                     ImGui::TextDisabled(

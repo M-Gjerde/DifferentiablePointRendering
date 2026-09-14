@@ -175,7 +175,8 @@ def resolve_datasets(args: argparse.Namespace) -> list[Dataset]:
     datasets: list[Dataset] = []
     for name in selected_dataset_names(args.datasets, output_root, args.view_count):
         view_count_suffix = f"_{args.view_count}" if args.view_count is not None else ""
-        dataset_root = output_root / "run1" / f"2dgs_{name}{view_count_suffix}"
+        #dataset_root = output_root / "run1" / f"2dgs_{name}{view_count_suffix}"
+        dataset_root = output_root / f"2dgs_{name}{view_count_suffix}"
         if not dataset_root.is_dir():
             raise NotADirectoryError(f"Could not find 2DGS dataset directory: {dataset_root}")
         datasets.append(

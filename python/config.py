@@ -57,7 +57,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 20_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
 
@@ -66,22 +66,22 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.000055
-    learning_rate_rotation: float = 0.0075
-    learning_rate_scale: float = 0.0005
+    learning_rate_rotation: float = 0.005
+    learning_rate_scale: float = 0.0001
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
-    learning_rate_beta: float = 0.0005
+    learning_rate_beta: float = 0.0003
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.33
+    global_lr_scale_final: float = 0.3
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 20.0
-    position_lr_scale_final: float = 1.0
+    position_lr_scale_init: float = 10.0
+    position_lr_scale_final: float = 5.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 25_000
+    lr_decay_max_steps: int = 10_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.00
@@ -89,14 +89,14 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.01
+    depth_distort_weight: float = 0.0001
     # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 0.0e-7
+    curvature_scale_weight: float = 0.0e-6
 
     # Rendering model
     share_local_layer_direct_lighting: bool = True
@@ -109,6 +109,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
+    # Densify at N * interval + 1 (N >= 1), after boundary snapshots.
     densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
@@ -127,8 +128,8 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min: float = 8.0e-4
+    densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -142,9 +143,9 @@ class OptimizationConfig:
     # Densification: radiance balancing (used in both threshold modes)
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
-    densification_radiance_bias_strength: float=  0.5
-    densification_radiance_bias_min_weight: float = 0.25
-    densification_radiance_bias_max_weight: float = 2.0
+    densification_radiance_bias_strength: float=  1.0
+    densification_radiance_bias_min_weight: float = 0.2
+    densification_radiance_bias_max_weight: float = 1.25
 
     # Densification: curvature trigger and clone/split policy
     # A non-positive value disables curvature-triggered densification.
@@ -174,14 +175,13 @@ class OptimizationConfig:
 
     # Output and monitoring
     log_interval: int = 25
-    # When enabled (> 0), save images on the first iteration, immediately before
-    # each scheduled densification, and on the final iteration.
+    # When enabled (> 0), save images every N iterations, plus first and final.
     save_interval: int = 100
     # When enabled (> 0), also save the first iteration, matching image snapshots.
     save_ply_files_interval: int = save_interval
     # Debug snapshots at the iteration immediately before the next scheduled
     # densification, replacing periodic PLY saves. Interval 0 still disables saves.
-    save_ply_before_densification: bool = True
+    save_ply_before_densification: bool = False
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = False
     save_snapshot_depth_distortion: bool = False
@@ -194,7 +194,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 2048
+    mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None

@@ -237,9 +237,15 @@ def next_densification_iteration_after(
         densify_after: int,
         densification_interval: int,
 ) -> int | None:
+    """Return the next global N * interval + 1 boundary, with N >= 1."""
     if densification_interval <= 0:
         return None
-    return max(int(densify_after), int(current_iteration) + max(int(densification_interval), 1))
+    interval = int(densification_interval)
+    earliest_iteration = max(
+        int(current_iteration) + 1, int(densify_after), interval + 1,
+    )
+    cycle = (earliest_iteration - 1 + interval - 1) // interval
+    return cycle * interval + 1
 
 
 def active_camera_name_for_iteration(

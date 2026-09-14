@@ -61,6 +61,20 @@ Controls:
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
 - Left/right or down/up arrows: step through optimization point snapshots
 
+### Training debug defaults
+
+The debug controls mirror the current defaults in `python/config.py`: position
+threshold `0.005`, radiance-bias strength `0.5`, weight limits `[0.2, 1.5]`, and
+radiance floor `0.005`. Position previews start at this threshold when loading a
+snapshot; **Use saved** selects its recorded threshold and **Use config default**
+restores `0.005`.
+
+Curvature splitting starts disabled (`-1`); enter a positive threshold to preview
+split candidates. Disabled splitting still displays curvature scores without
+magenta candidate highlighting. SSIM debug defaults are weight `0`, window size
+`5`, and sigma `0.75`. These defaults are copied into the viewer; it does not load
+`config.py` at runtime.
+
 ### Depth-distortion previews
 
 The viewer defaults to **World distance**, matching training with
