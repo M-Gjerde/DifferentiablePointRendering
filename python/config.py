@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 3
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -57,7 +57,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 20_000
+    iterations: int = 30_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
 
@@ -67,21 +67,21 @@ class OptimizationConfig:
     # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0001
+    learning_rate_scale: float = 0.0005
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
-    learning_rate_beta: float = 0.0003
+    learning_rate_beta: float = 0.0005
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.3
+    global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
-    position_lr_scale_final: float = 5.0
+    position_lr_scale_init: float = 20.0
+    position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 10_000
+    lr_decay_max_steps: int = 25_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.00
@@ -89,17 +89,17 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.0001
+    depth_distort_weight: float = 0.02
     # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 0.0e-6
+    intra_slab_depth_weight: float = 2.0e-4
+    curvature_scale_weight: float = 0.0e-7
 
     # Rendering model
-    share_local_layer_direct_lighting: bool = True
+    share_local_layer_direct_lighting: bool = False
 
     # Camera sampling
     one_camera_per_iteration: bool = True
@@ -109,7 +109,6 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    # Densify at N * interval + 1 (N >= 1), after boundary snapshots.
     densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
@@ -117,7 +116,7 @@ class OptimizationConfig:
     # Densification: gradient signal
     # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
     densification_relative_error: bool = True
-    densification_radiance_floor: float = 0.005  # linear RGB radiance units
+    densification_radiance_floor: float = 0.001  # linear RGB radiance units
     # False uses only the surfel's local footprint-translation derivative as
     # the clone signal. True also includes non-local position derivatives from
     # visibility, shadowing, attenuation, and other transport effects.
@@ -128,8 +127,8 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 8.0e-4
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -144,8 +143,8 @@ class OptimizationConfig:
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
     densification_radiance_bias_strength: float=  1.0
-    densification_radiance_bias_min_weight: float = 0.2
-    densification_radiance_bias_max_weight: float = 1.25
+    densification_radiance_bias_min_weight: float = 0.25
+    densification_radiance_bias_max_weight: float = 2.0
 
     # Densification: curvature trigger and clone/split policy
     # A non-positive value disables curvature-triggered densification.
@@ -153,7 +152,7 @@ class OptimizationConfig:
     densification_scale_min: float = 6.0e-3
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
-    densification_split_offset_scale: float = 0.15
+    densification_split_offset_scale: float = 0.1
     densification_split_scale_factor: float = math.sqrt(2)
     # When false, position-triggered splits may use the full 3D gradient,
     # including the surfel-normal direction.
@@ -175,7 +174,8 @@ class OptimizationConfig:
 
     # Output and monitoring
     log_interval: int = 25
-    # When enabled (> 0), save images every N iterations, plus first and final.
+    # When enabled (> 0), save images on the first iteration, immediately before
+    # each scheduled densification, and on the final iteration.
     save_interval: int = 100
     # When enabled (> 0), also save the first iteration, matching image snapshots.
     save_ply_files_interval: int = save_interval
@@ -194,7 +194,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 50
     save_final_mesh: bool = True
     ground_truth: Path | None = None
@@ -369,10 +369,11 @@ def parse_args() -> OptimizationConfig:
     inputs.add_argument(
         "--target-color-space",
         choices=["auto", "srgb", "linear"],
+        default="linear",
         help=(
             "Target image encoding (default: auto). 'auto' uses ICC metadata, "
             "decodes untagged integer images as sRGB, and treats EXR/HDR as linear; "
-            "all targets are converted to linear sRGB for optimization."
+            "all targets are converted to linear sRGB for preview, optimization itself uses linear."
         ),
     )
     inputs.add_argument("--output", "-o", "-m", "--output-dir", dest="output_dir", type=Path)

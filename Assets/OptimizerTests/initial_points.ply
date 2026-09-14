@@ -1,7 +1,7 @@
 ply
 format ascii 1.0
 comment Quaternion surfels: position, rotation quaternion, scales, diffuse albedo, opacity
-element vertex 19
+element vertex 3
 property float x
 property float y
 property float z
@@ -19,6 +19,7 @@ property float beta
 property float shape
 property float power
 end_header
+ 0.000  0.000 1.5    0 1 0 0  0.001 0.001  1 1 1  1 -1000 0 200
 -0.009 -0.0 0.026  1 0 0 0  0.150 0.250  0.20 0.90 0.20  1   -0 0 0
 -0.225 -0.300 0.000011  1 0 0 0  0.250 0.350  0.80 0.20 0.40  1 -0 0 0
 -0.075 -0.300 0.000017  1 0 0 0  0.250 0.350  0.80 0.20 0.40  1 -0 0 0
@@ -37,4 +38,3 @@ end_header
  0.075  0.300 0.000012  1 0 0 0  0.250 0.350  0.80 0.20 0.40  1 -0 0 0
  0.225  0.300 0.000020  1 0 0 0  0.250 0.350  0.80 0.20 0.40  1 -0 0 0
  0.375  0.300 0.000003  1 0 0 0  0.250 0.350  0.80 0.20 0.40  1 -0 0 0
- 0.000  0.000 1.5    0 1 0 0  0.001 0.001  1 1 1  1 -1000 0 200

@@ -827,6 +827,11 @@ namespace Pale {
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
         float curvatureScaleRegularizerWeight = 0.0f;
+        // Training retains surface outputs by default; RGB-only viewers can skip them.
+        bool computeSurfaceDiagnostics = true;
+        bool computeDepthNormalDiagnostics = true;
+        // Primitive-ID previews need slab selection, but not curvature fitting.
+        bool computeVisiblePrimitiveDiagnostics = false;
         // Request the curvature image even without a loss or densification consumer.
         bool computeCurvatureDiagnostics = false;
         bool normalFromDepthUseMeanDepth = false;
@@ -842,6 +847,24 @@ namespace Pale {
         float pointGeometryCoverageScale = 1.1f;
         uint32_t pointGeometryMinimumContributors = 1u;
         bool pointGeometryDebugShowAlbedo = false;
+
+        // Forward-only, one point-cloud instance: a pair or two multi-surfel slabs.
+        bool sharedHeightEnabled = false;
+        int sharedHeightMemberA = -1; // -1 selects the first non-emissive surfel
+        int sharedHeightMemberB = -1; // -1 selects the next non-emissive surfel
+        int sharedHeightShading = 0; // 0: unshadowed point lights, 1: albedo, 2: normals, 3: slab weights
+        bool sharedHeightTwoSlabs = false;
+        int sharedHeightSlabStartA = 0;
+        int sharedHeightSlabStartB = 4;
+        int sharedHeightSlabCountA = 4;
+        int sharedHeightSlabCountB = 4;
+        float sharedHeightSlabHalfWidth = 1.25f;
+        float sharedHeightSlabHalfDepth = 0.6f;
+        float sharedHeightSlabLateralShiftA = 0.0f;
+        float sharedHeightSlabLateralShiftB = 0.0f;
+        float sharedHeightSlabDepthShiftA = 0.0f;
+        float sharedHeightSlabDepthShiftB = 0.0f;
+        float sharedHeightSlabCoverage = 6.0f;
 
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;

@@ -5,6 +5,7 @@
 #include "CurvatureRegularizer.h"
 #include "IntersectionKernels.h"
 #include "KernelHelpers.h"
+#include "SharedHeightForward.h"
 #include "Core/ScopedTimer.h"
 #include <cmath>
 namespace Pale {
@@ -271,7 +272,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         bool medianFound = false;
         float medianDepth = 0.0f;
         float3 medianWorldPosition{0.0f};
-        bool keepTracingRegularizer = true;
+        bool keepTracingRegularizer = settings.computeSurfaceDiagnostics;
 
         auto accumulateRegularizerHit =
             [&](const LocalSurfelLayerHit &regularizerHit) -> bool {
@@ -374,7 +375,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             //
             // A_Q and B_Q are reconstructed every forward pass, but x_Q is a
             // detached target in the corresponding adjoint.
-            if (localLayer.hitCount > 1u && slabConsensus.valid != 0u) {
+            if (settings.computeSurfaceDiagnostics && localLayer.hitCount > 1u && slabConsensus.valid != 0u) {
                 const float inverseMemberCount =
                         1.0f / static_cast<float>(localLayer.hitCount);
                 const float inverseSlabThicknessSquared =
@@ -759,6 +760,10 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
 }
 
 void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPass) {
+    if (pkg.settings.sharedHeightEnabled) {
+        launchSharedHeightForward(pkg, cameraIndex);
+        return;
+    }
     if (pkg.settings.rendererDebugShareLocalLayerDirectLighting) {
         if (pkg.scene.profileCounters) launchCameraRgbGatherKernel<true, true>(pkg, cameraIndex);
         else launchCameraRgbGatherKernel<true, false>(pkg, cameraIndex);
@@ -777,62 +782,64 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
     // Pass 2:
     //   Normal from 2DGS-style pseudo surface depth map
     // -------------------------------------------------------------------------
-    ScopedTimer normalTimer("Forward camera: normals from depth", spdlog::level::debug);
-    sycl::event kernelEvent4 = queue.parallel_for<class SurfaceDepthNormalKernel>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
-        const std::uint32_t pixelIndex = tid[0];
-        const std::uint32_t x = pixelIndex % imageWidth;
-        const std::uint32_t y = pixelIndex / imageWidth;
-        if (x == 0u || y == 0u || x + 1u >= imageWidth || y + 1u >= imageHeight) {
-            sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
-            return;
-        }
-        const uint32_t idxL = y * imageWidth + (x - 1u);
-        const uint32_t idxR = y * imageWidth + (x + 1u);
-        const uint32_t idxU = (y - 1u) * imageWidth + x;
-        const uint32_t idxD = (y + 1u) * imageWidth + x;
-        const bool useMeanDepth = settings.normalFromDepthUseMeanDepth;
-        const float zC = useMeanDepth ? sensor.meanDepthBuffer[pixelIndex] : sensor.medianDepthBuffer[pixelIndex];
-        const float zL = useMeanDepth ? sensor.meanDepthBuffer[idxL] : sensor.medianDepthBuffer[idxL];
-        const float zR = useMeanDepth ? sensor.meanDepthBuffer[idxR] : sensor.medianDepthBuffer[idxR];
-        const float zU = useMeanDepth ? sensor.meanDepthBuffer[idxU] : sensor.medianDepthBuffer[idxU];
-        const float zD = useMeanDepth ? sensor.meanDepthBuffer[idxD] : sensor.medianDepthBuffer[idxD];
-        if (zC <= 0.0f || zL <= 0.0f || zR <= 0.0f || zU <= 0.0f || zD <= 0.0f) {
-            sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
-            return;
-        }
-        const float3 pL = reconstructWorldPositionFromDepthCenter(sensor.camera, x - 1u, y, zL);
-        const float3 pR = reconstructWorldPositionFromDepthCenter(sensor.camera, x + 1u, y, zR);
-        const float3 pU = reconstructWorldPositionFromDepthCenter(sensor.camera, x, y - 1u, zU);
-        const float3 pD = reconstructWorldPositionFromDepthCenter(sensor.camera, x, y + 1u, zD);
-        // 2DGS depth_to_normal:
-        //
-        //   dx = points[2:, 1:-1] - points[:-2, 1:-1]
-        //   dy = points[1:-1, 2:] - points[1:-1, :-2]
-        //   normal = normalize(cross(dx, dy))
-        //
-        // With image coordinates:
-        //
-        //   tangentY = P(y + 1, x) - P(y - 1, x)
-        //   tangentX = P(y, x + 1) - P(y, x - 1)
-        //
-        const float3 tangentY = pD - pU;
-        const float3 tangentX = pR - pL;
-        const float tangentYLengthSquared = dot(tangentY, tangentY);
-        const float tangentXLengthSquared = dot(tangentX, tangentX);
-        if (tangentYLengthSquared <= 1.0e-16f || tangentXLengthSquared <= 1.0e-16f) {
-            sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
-            return;
-        }
-        // Match 2DGS cross-product order exactly:
-        //
-        //   normal = normalize(cross(tangentY, tangentX))
-        //
-        // Do not flip toward the camera if you want exact 2DGS behavior.
-        const float3 normalW = normalize(cross(tangentY, tangentX));
-        sensor.normalFromDepthBuffer[pixelIndex] = float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
-    });
-    kernelEvent4.wait();
-    normalTimer.stop();
+    if (settings.computeDepthNormalDiagnostics || settings.normalConsistencyWeight != 0.0f) {
+        ScopedTimer normalTimer("Forward camera: normals from depth", spdlog::level::debug);
+        sycl::event kernelEvent4 = queue.parallel_for<class SurfaceDepthNormalKernel>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
+            const std::uint32_t pixelIndex = tid[0];
+            const std::uint32_t x = pixelIndex % imageWidth;
+            const std::uint32_t y = pixelIndex / imageWidth;
+            if (x == 0u || y == 0u || x + 1u >= imageWidth || y + 1u >= imageHeight) {
+                sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
+                return;
+            }
+            const uint32_t idxL = y * imageWidth + (x - 1u);
+            const uint32_t idxR = y * imageWidth + (x + 1u);
+            const uint32_t idxU = (y - 1u) * imageWidth + x;
+            const uint32_t idxD = (y + 1u) * imageWidth + x;
+            const bool useMeanDepth = settings.normalFromDepthUseMeanDepth;
+            const float zC = useMeanDepth ? sensor.meanDepthBuffer[pixelIndex] : sensor.medianDepthBuffer[pixelIndex];
+            const float zL = useMeanDepth ? sensor.meanDepthBuffer[idxL] : sensor.medianDepthBuffer[idxL];
+            const float zR = useMeanDepth ? sensor.meanDepthBuffer[idxR] : sensor.medianDepthBuffer[idxR];
+            const float zU = useMeanDepth ? sensor.meanDepthBuffer[idxU] : sensor.medianDepthBuffer[idxU];
+            const float zD = useMeanDepth ? sensor.meanDepthBuffer[idxD] : sensor.medianDepthBuffer[idxD];
+            if (zC <= 0.0f || zL <= 0.0f || zR <= 0.0f || zU <= 0.0f || zD <= 0.0f) {
+                sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
+                return;
+            }
+            const float3 pL = reconstructWorldPositionFromDepthCenter(sensor.camera, x - 1u, y, zL);
+            const float3 pR = reconstructWorldPositionFromDepthCenter(sensor.camera, x + 1u, y, zR);
+            const float3 pU = reconstructWorldPositionFromDepthCenter(sensor.camera, x, y - 1u, zU);
+            const float3 pD = reconstructWorldPositionFromDepthCenter(sensor.camera, x, y + 1u, zD);
+            // 2DGS depth_to_normal:
+            //
+            //   dx = points[2:, 1:-1] - points[:-2, 1:-1]
+            //   dy = points[1:-1, 2:] - points[1:-1, :-2]
+            //   normal = normalize(cross(dx, dy))
+            //
+            // With image coordinates:
+            //
+            //   tangentY = P(y + 1, x) - P(y - 1, x)
+            //   tangentX = P(y, x + 1) - P(y, x - 1)
+            //
+            const float3 tangentY = pD - pU;
+            const float3 tangentX = pR - pL;
+            const float tangentYLengthSquared = dot(tangentY, tangentY);
+            const float tangentXLengthSquared = dot(tangentX, tangentX);
+            if (tangentYLengthSquared <= 1.0e-16f || tangentXLengthSquared <= 1.0e-16f) {
+                sensor.normalFromDepthBuffer[pixelIndex] = float4{0.0f, 0.0f, 0.0f, 0.0f};
+                return;
+            }
+            // Match 2DGS cross-product order exactly:
+            //
+            //   normal = normalize(cross(tangentY, tangentX))
+            //
+            // Do not flip toward the camera if you want exact 2DGS behavior.
+            const float3 normalW = normalize(cross(tangentY, tangentX));
+            sensor.normalFromDepthBuffer[pixelIndex] = float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
+        });
+        kernelEvent4.wait();
+        normalTimer.stop();
+    }
 
     // -------------------------------------------------------------------------
     // Pass 3: curvature-aware surfel-scale regularizer.
@@ -851,8 +858,9 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
         curvatureDensificationStats.directionTensorUu != nullptr &&
         curvatureDensificationStats.directionTensorUv != nullptr &&
         curvatureDensificationStats.directionTensorVv != nullptr;
-    if (settings.curvatureScaleRegularizerWeight == 0.0f &&
-        !hasCurvatureDensificationConsumer && !settings.computeCurvatureDiagnostics) {
+    const bool computeCurvature = settings.curvatureScaleRegularizerWeight != 0.0f ||
+        hasCurvatureDensificationConsumer || settings.computeCurvatureDiagnostics;
+    if (!computeCurvature && !settings.computeVisiblePrimitiveDiagnostics) {
         return;
     }
     ScopedTimer curvatureTimer("Forward camera: curvature and slab search", spdlog::level::debug);
@@ -925,6 +933,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 }
                 sensor.curvaturePrimitiveIndexBuffer[pixelIndex] =
                     selectedLayer.hits[dominantHitIndex].primitiveIndex;
+            }
+
+            if (!computeCurvature) {
+                return;
             }
 
             float accumulatedScaleLoss = 0.0f;
@@ -1101,16 +1113,20 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
             accumulatedRadianceRGB += transmittance * outgoingRadiance;
             // Median depth using compositing weights w_i = T_i * alpha_i
             const float wi = transmittance * alphaEff;
+            transmittance *= (1.0f - alphaEff);
+            accumulatedCompositeWeight += wi;
+            if (!settings.computeSurfaceDiagnostics) {
+                return;
+            }
             const float zi = dot(pointHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
             accumulatedMeanDepthWeight += wi;
             accumulatedMeanDepth += wi * zi;
-            if (!medianFound && (accumulatedCompositeWeight + wi) >= 0.5f) {
+            if (!medianFound && accumulatedCompositeWeight >= 0.5f) {
                 medianFound = true;
                 medianDepth = zi;
                 medianWorldPosition = pointHit.hitPositionW;
                 medianNormalW = normalW;
             }
-            accumulatedCompositeWeight += wi;
             const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionWorldSpace);
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
@@ -1122,7 +1138,6 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                 previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
                 ++previousDepthDistortionHitCount;
             }
-            transmittance *= (1.0f - alphaEff);
         };
 
         if (canUsePointHitBatches) {
@@ -1184,19 +1199,19 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                     const GPUMaterial &material = scene.materials[instance.materialIndex];
                     const bool isBackfaceHit = dot(primaryRay.direction, worldHit.geometricNormalW) > 0.0f;
                     const float3 normalW = isBackfaceHit ? -worldHit.geometricNormalW : worldHit.geometricNormalW;
+                    const float wi = transmittance;
+                    accumulatedCompositeWeight += wi;
                     // Treat terminal mesh as opaque for median-depth purposes.
-                    {
-                        const float wi = transmittance;
+                    if (settings.computeSurfaceDiagnostics) {
                         const float zi = dot(worldHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
                         accumulatedMeanDepthWeight += wi;
                         accumulatedMeanDepth += wi * zi;
-                        if (!medianFound && (accumulatedCompositeWeight + wi) >= 0.5f) {
+                        if (!medianFound && accumulatedCompositeWeight >= 0.5f) {
                             medianFound = true;
                             medianDepth = zi;
                             medianWorldPosition = worldHit.hitPositionW;
                             medianNormalW = normalW;
                         }
-                        accumulatedCompositeWeight += wi;
                     }
                     if (material.isEmissive()) {
                         const float3 emittedRadiance = material.power * material.baseColor;

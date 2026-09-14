@@ -59,9 +59,22 @@ Controls:
 - `R`: load the latest optimization run PLY
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
-- Left/right or down/up arrows: step through optimization point snapshots
+- Left/right or down/up arrows: step through snapshots in the active optimization run
+
+Arrow-key navigation refreshes only the active run's `points` folder, including
+new snapshots written during training. It stays in that run until you use `R`
+or **Load latest run PLY** to search for the latest run again.
 
 ### Training debug defaults
+
+Debug computations follow the selected **Display** view. Normal RGB browsing
+skips surface diagnostics, regularizer backward passes, curvature searches, and
+CPU SSIM calculations. Select a diagnostic directly from **Display** (or cycle
+with `+`/`-`) to compute it; selecting **Rendered** stops that work again.
+Regularizer gradient views compute only their selected loss and share one
+gradient allocation. Curvature statistics are allocated only when their view
+is requested. Explicit **Adjoint profiling → Every render** remains an opt-in
+background profiling operation.
 
 The debug controls mirror the current defaults in `python/config.py`: position
 threshold `0.005`, radiance-bias strength `0.5`, weight limits `[0.2, 1.5]`, and
@@ -87,3 +100,25 @@ inspect runs trained with `depth_distort_world_space=False`.
 The loss image shows the raw per-pixel distortion; the position-gradient image
 uses the mean image loss with unit regularizer weight. Colors rescale separately
 for each frame, so equal colors across frames do not imply equal loss values.
+
+## Shared-height surface experiment
+
+In **Renderer debug**, enable **Shared surface experiment**. Leave the
+two indices at `-1` to join the first two non-emissive surfels, or select their
+GPU indices explicitly. Use **Display → Rendered** and the **Height shading**
+selector for unshadowed point lights, albedo, or reconstructed surface normals.
+The pair shares one height field with no depth-slab membership threshold.
+
+This forward-only experiment requires one point-cloud instance and no meshes.
+It uses a cubic footprint taper for the joined pair; shadows, indirect lighting,
+and backward optimization are not implemented. See
+[the implementation notes](../../docs/shared_height_forward.md) for the geometry,
+limitations, and native tests.
+
+For the multi-surfel experiment, also enable **Two overlapping slabs**. The
+ready-to-load [test scene](../../Assets/Experiments/shared_slabs/README.md) includes
+`points.ply`, a camera XML, and exact launch instructions. `--shared-slabs` enables
+this mode at startup with its default two groups of four surfels. Its width,
+depth, and offset controls move smooth support boundaries; **Slab weights**
+visualizes the transition between charts. The geometry is blended before ray
+intersection, and coverage is applied once to the common surface hit.

@@ -140,6 +140,7 @@ namespace Pale {
                     spdlog::level::debug);
                 for (size_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
                     const bool useCameraGatherKernel2 =
+                            pkg.settings.sharedHeightEnabled ||
                             pkg.settings.cameraGatherKernelKind == CameraGatherKernelKind::CameraGatherKernel2;
                     const std::string kernelName =
                             useCameraGatherKernel2 ? "CameraGatherKernel2" : "CameraGatherKernel";
@@ -203,6 +204,8 @@ namespace Pale {
 
     // ---- Orchestrator -------------------------------------------------------
     void submitAdjointKernel(RenderPackage& pkg) {
+        if (pkg.settings.sharedHeightEnabled)
+            throw std::runtime_error("Shared-height rendering is forward-only; its adjoint is not implemented.");
         {
             ScopedTimer timer("Adjoint setup: clear point gradients", spdlog::level::debug);
             clearAdjointPointGradients(pkg);
@@ -386,6 +389,8 @@ namespace Pale {
     }
 
     void submitSurfaceRegularizersKernel(RenderPackage& pkg) {
+        if (pkg.settings.sharedHeightEnabled)
+            throw std::runtime_error("Shared-height rendering has no surface-regularizer adjoint yet.");
         {
             ScopedTimer timer("Surface regularizer clear gradients", spdlog::level::debug);
             clearPointGradients(pkg.queue, pkg.depthDistortionGradients);

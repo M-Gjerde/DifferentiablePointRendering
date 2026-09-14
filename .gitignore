@@ -1,0 +1,10 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+
+# Local IDE metadata
+.idea/
+
+# Generated experiment output
+/python/OptimizationOutput/
+/python/finite_difference/Output/

@@ -73,6 +73,7 @@ namespace {
         std::filesystem::path scenePath = "OptimizerTests/scene.xml";
         uint32_t width = 0;
         uint32_t height = 0;
+        bool sharedSlabs = false;
     };
 
     struct SceneBounds {
@@ -178,7 +179,6 @@ namespace {
         // pass, even when the displayed quantity itself is not curvature.
         return mode == ViewImageMode::CurvatureScale ||
                mode == ViewImageMode::CurvaturePrimitiveScore ||
-               mode == ViewImageMode::PositionPrimitiveScore ||
                mode == ViewImageMode::DensificationOrigin ||
                mode == ViewImageMode::PrimitiveAge ||
                isRegularizerGradientView(mode);
@@ -2016,6 +2016,8 @@ namespace {
                 args.width = static_cast<uint32_t>(std::max(1, std::stoi(requireValue("--width"))));
             } else if (arg == "--height") {
                 args.height = static_cast<uint32_t>(std::max(1, std::stoi(requireValue("--height"))));
+            } else if (arg == "--shared-slabs") {
+                args.sharedSlabs = true;
             } else {
                 positional.push_back(arg);
             }
@@ -2310,40 +2312,43 @@ namespace {
 
     void prepareRealtimeViewerSurfaceRegularizerAdjoints(
         sycl::queue queue,
-        const Pale::SensorGPU& sensor) {
+        const Pale::SensorGPU& sensor,
+        ViewImageMode mode) {
         const std::size_t pixelCount =
             static_cast<std::size_t>(sensor.width) * static_cast<std::size_t>(sensor.height);
         if (pixelCount == 0u) {
             return;
         }
 
-        // Debug each source with unit loss weight while retaining the exact
-        // production normalizations used by training.
-        queue.fill(
-            sensor.depthDistortionAdjointBuffer,
-            1.0f / static_cast<float>(pixelCount),
-            pixelCount);
-        queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
-        queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount);
+        // Unit loss weight with the same normalization as training.
+        if (mode == ViewImageMode::DepthPositionGradient) {
+            queue.fill(sensor.depthDistortionAdjointBuffer,
+                1.0f / static_cast<float>(pixelCount), pixelCount).wait();
+            return;
+        }
 
-        const std::vector<uint32_t> intraSlabCounts = Pale::downloadUint32Buffer(
-            queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
-        uint64_t totalActiveSlabs = 0u;
-        for (const uint32_t count : intraSlabCounts) {
-            totalActiveSlabs += count;
-        }
-        const float inverseActiveSlabCount =
-            1.0f / static_cast<float>(std::max<uint64_t>(totalActiveSlabs, 1u));
-        std::vector<float> intraSlabAdjoints(pixelCount, 0.0f);
-        for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
-            if (intraSlabCounts[pixelIndex] > 0u) {
-                intraSlabAdjoints[pixelIndex] = inverseActiveSlabCount;
+        if (mode == ViewImageMode::IntraSlabPositionGradient) {
+            const std::vector<uint32_t> intraSlabCounts = Pale::downloadUint32Buffer(
+                queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
+            uint64_t totalActiveSlabs = 0u;
+            for (const uint32_t count : intraSlabCounts) {
+                totalActiveSlabs += count;
             }
+            const float inverseActiveSlabCount =
+                1.0f / static_cast<float>(std::max<uint64_t>(totalActiveSlabs, 1u));
+            std::vector<float> intraSlabAdjoints(pixelCount, 0.0f);
+            for (std::size_t pixelIndex = 0u; pixelIndex < pixelCount; ++pixelIndex) {
+                if (intraSlabCounts[pixelIndex] > 0u) {
+                    intraSlabAdjoints[pixelIndex] = inverseActiveSlabCount;
+                }
+            }
+            queue.memcpy(
+                sensor.intraSlabDepthAdjointBuffer,
+                intraSlabAdjoints.data(),
+                pixelCount * sizeof(float));
+            queue.wait();
+            return;
         }
-        queue.memcpy(
-            sensor.intraSlabDepthAdjointBuffer,
-            intraSlabAdjoints.data(),
-            pixelCount * sizeof(float));
 
         const std::vector<float> visibleNormals = Pale::downloadFloat4Buffer(
             queue, sensor.visibleNormalBuffer, pixelCount);
@@ -2409,6 +2414,29 @@ namespace {
         settings.pointGeometryCoverageScale = 1.0f;
         settings.pointGeometryMinimumContributors = 1u;
         settings.pointGeometryDebugShowAlbedo = false;
+        return settings;
+    }
+
+    Pale::PathTracerSettings makeViewerDebugSettings(
+        Pale::PathTracerSettings settings, ViewImageMode mode) {
+        if (settings.sharedHeightEnabled) {
+            settings.integratorKind = Pale::IntegratorKind::photonMapping;
+        }
+        settings.computeSurfaceDiagnostics =
+            mode != ViewImageMode::Rendered &&
+            mode != ViewImageMode::SurfelDensity &&
+            mode != ViewImageMode::PositionPrimitiveScore &&
+            !isSsimDebugView(mode);
+        settings.computeDepthNormalDiagnostics =
+            mode == ViewImageMode::DepthNormal ||
+            mode == ViewImageMode::NormalPositionGradient;
+        settings.computeVisiblePrimitiveDiagnostics =
+            requiresVisibleSlabSearch(mode);
+        settings.computeCurvatureDiagnostics =
+            mode == ViewImageMode::CurvatureScale ||
+            mode == ViewImageMode::CurvaturePrimitiveScore;
+        // The legacy gather kernel requests depth normals through this weight.
+        settings.normalConsistencyWeight = settings.computeDepthNormalDiagnostics ? 1.0f : 0.0f;
         return settings;
     }
 
@@ -3091,9 +3119,13 @@ int main(int argc, char** argv) {
         }
 
         Pale::PathTracerSettings settings = makeDefaultSettings();
+        if (args.sharedSlabs) {
+            settings.sharedHeightEnabled = true;
+            settings.sharedHeightTwoSlabs = true;
+            settings.sharedHeightShading = 2;
+        }
         Pale::PathTracer tracer(queue, settings);
-        Pale::CurvatureDensificationStats curvatureDensificationStats =
-            Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
+        Pale::CurvatureDensificationStats curvatureDensificationStats{};
         Pale::SceneBuild::BuildProducts renderBuildProducts = buildProducts;
         renderBuildProducts.cameraGPUs.clear();
         Pale::SensorGPU sensor{};
@@ -3122,10 +3154,6 @@ int main(int argc, char** argv) {
         float positionRadianceBiasMaxWeight = 1.5f;
         constexpr float kPositionRadianceBiasFloor = 0.005f;
         int primitiveAgeColdAfterIterations = 1000;
-        // Viewer-only diagnostic default. Optimization keeps its renderer-side
-        // debug allocations disabled unless explicitly requested there.
-        bool regularizerPrimitiveGradientMapsEnabled = true;
-        bool ssimDebugMapsEnabled = false;
         float viewerSsimWeight = 0.0f;
         int viewerSsimWindowSize = 5;
         float viewerSsimSigma = 0.75f;
@@ -3184,9 +3212,7 @@ int main(int argc, char** argv) {
         }
         queue.memset(deviceProfilingCounters, 0, sizeof(Pale::RenderProfilingCounters)).wait();
         Pale::PointGradients viewerAdjointGradients{};
-        Pale::PointGradients viewerDepthRegularizerGradients{};
-        Pale::PointGradients viewerNormalRegularizerGradients{};
-        Pale::PointGradients viewerIntraSlabRegularizerGradients{};
+        Pale::PointGradients viewerRegularizerGradients{};
 
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");
@@ -3228,8 +3254,6 @@ int main(int argc, char** argv) {
             Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, queue);
             if (curvatureDensificationStats.numPoints != buildProducts.points.size()) {
                 Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
-                curvatureDensificationStats =
-                    Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
             }
             sceneGpu.profileCounters =
                 gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
@@ -3477,51 +3501,12 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            bool switchedToNewLatestDirectory = false;
-            const std::optional<std::filesystem::path> latestPointCloud =
-                findLatestOptimizationPointCloud(optimizationOutputDirectory);
-            if (latestPointCloud) {
-                const std::filesystem::path latestPointsDirectory = latestPointCloud->parent_path();
-                if (!equivalentPaths(latestPointsDirectory, latestOptimizationPointsDirectory)) {
-                    latestOptimizationPointsDirectory = latestPointsDirectory;
-                    switchedToNewLatestDirectory = true;
-                }
-            }
-
+            // Refresh only this run so newly written snapshots remain visible.
+            // Discovering another run is an explicit R / Load latest run action.
             std::vector<PointCloudSnapshot> snapshots =
                 listOptimizationPointCloudSnapshots(latestOptimizationPointsDirectory);
             if (snapshots.empty()) {
                 pointCloudStatus = "No optimization snapshots found in " + latestOptimizationPointsDirectory.string();
-                return;
-            }
-
-            std::optional<std::size_t> newLatestSnapshotIndex;
-            if (switchedToNewLatestDirectory && latestPointCloud) {
-                const auto latestIterator = std::find_if(
-                    snapshots.begin(),
-                    snapshots.end(),
-                    [&](const PointCloudSnapshot& snapshot) {
-                        return equivalentPaths(snapshot.path, *latestPointCloud);
-                    });
-                newLatestSnapshotIndex = latestIterator == snapshots.end()
-                                             ? snapshots.size() - 1u
-                                             : static_cast<std::size_t>(
-                                                 std::distance(snapshots.begin(), latestIterator));
-                latestOptimizationSnapshotIndex = *newLatestSnapshotIndex;
-            }
-
-            if (switchedToNewLatestDirectory && direction > 0 && latestPointCloud) {
-                const std::size_t latestIndex = newLatestSnapshotIndex.value_or(snapshots.size() - 1u);
-                if (replaceOptimizationPointCloud(snapshots[latestIndex].path, true)) {
-                    latestOptimizationMode = true;
-                    latestOptimizationSnapshots = std::move(snapshots);
-                    latestOptimizationSnapshotIndex = latestIndex;
-                    pointCloudStatus =
-                        "Latest optimization snapshot " +
-                        std::to_string(latestOptimizationSnapshotIndex + 1u) + "/" +
-                        std::to_string(latestOptimizationSnapshots.size()) + ": " +
-                        currentPointCloudPath.filename().string();
-                }
                 return;
             }
 
@@ -3533,15 +3518,11 @@ int main(int argc, char** argv) {
                 });
             std::size_t currentIndex = currentIterator == snapshots.end()
                                            ? std::min(
-                                               newLatestSnapshotIndex.value_or(latestOptimizationSnapshotIndex),
+                                               latestOptimizationSnapshotIndex,
                                                snapshots.size() - 1u)
                                            : static_cast<std::size_t>(std::distance(snapshots.begin(), currentIterator));
 
             if (direction < 0 && currentIndex == 0u) {
-                if (switchedToNewLatestDirectory && replaceOptimizationPointCloud(snapshots[currentIndex].path, true)) {
-                    latestOptimizationMode = true;
-                    pointCloudStatus = "Already at earliest optimization snapshot";
-                }
                 latestOptimizationSnapshots = std::move(snapshots);
                 latestOptimizationSnapshotIndex = 0u;
                 pointCloudStatus = "Already at earliest optimization snapshot";
@@ -4267,32 +4248,23 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 case ViewImageMode::DepthPositionGradient:
-                    if (!regularizerPrimitiveGradientMapsEnabled) {
-                        return false;
-                    }
                     if (!debugDisplayBuffers.depthPositionGradientValid) {
                         debugDisplayBuffers.depthPositionGradient =
-                            makePositionGradientMap(viewerDepthRegularizerGradients);
+                            makePositionGradientMap(viewerRegularizerGradients);
                         debugDisplayBuffers.depthPositionGradientValid = true;
                     }
                     return true;
                 case ViewImageMode::NormalPositionGradient:
-                    if (!regularizerPrimitiveGradientMapsEnabled) {
-                        return false;
-                    }
                     if (!debugDisplayBuffers.normalPositionGradientValid) {
                         debugDisplayBuffers.normalPositionGradient =
-                            makePositionGradientMap(viewerNormalRegularizerGradients);
+                            makePositionGradientMap(viewerRegularizerGradients);
                         debugDisplayBuffers.normalPositionGradientValid = true;
                     }
                     return true;
                 case ViewImageMode::IntraSlabPositionGradient:
-                    if (!regularizerPrimitiveGradientMapsEnabled) {
-                        return false;
-                    }
                     if (!debugDisplayBuffers.intraSlabPositionGradientValid) {
                         debugDisplayBuffers.intraSlabPositionGradient =
-                            makePositionGradientMap(viewerIntraSlabRegularizerGradients);
+                            makePositionGradientMap(viewerRegularizerGradients);
                         debugDisplayBuffers.intraSlabPositionGradientValid = true;
                     }
                     return true;
@@ -4301,7 +4273,7 @@ int main(int argc, char** argv) {
                 case ViewImageMode::SsimIndex:
                 case ViewImageMode::Dssim:
                 case ViewImageMode::RgbObjectiveGradient:
-                    return ssimDebugMapsEnabled && debugDisplayBuffers.ssimDebugValid;
+                    return debugDisplayBuffers.ssimDebugValid;
                 case ViewImageMode::Rendered:
                     return true;
             }
@@ -4547,22 +4519,13 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            // These maps need a fresh visible-slab identity/curvature output.
-            const bool needsSlabSearch = requiresVisibleSlabSearch(nextMode);
-            if (needsSlabSearch || requiresVisibleSlabSearch(viewImageMode)) {
-                renderRequested = true;
-            }
+            // A newly selected diagnostic needs fresh buffers. Never display
+            // gradients or SSIM results left over from another cloud or view.
             viewImageMode = nextMode;
-            if (needsSlabSearch) {
-                return;
+            renderRequested = true;
+            if (nextMode == ViewImageMode::Rendered) {
+                updateDisplayTexture();
             }
-            updateDisplayTexture();
-        };
-
-        const auto isViewImageModeAvailable = [&](ViewImageMode mode) {
-            return !(isRegularizerGradientView(mode) &&
-                     !regularizerPrimitiveGradientMapsEnabled) &&
-                   !(isSsimDebugView(mode) && !ssimDebugMapsEnabled);
         };
 
         const auto cycleViewImageMode = [&](int direction) {
@@ -4575,16 +4538,10 @@ int main(int argc, char** argv) {
                 }
             }
 
-            for (std::size_t offset = 1u; offset <= modeCount; ++offset) {
-                const std::size_t nextIndex = direction > 0
-                    ? (currentIndex + offset) % modeCount
-                    : (currentIndex + modeCount - (offset % modeCount)) % modeCount;
-                const ViewImageMode nextMode = kViewImageModeShortcutOrder[nextIndex];
-                if (isViewImageModeAvailable(nextMode)) {
-                    setViewImageMode(nextMode);
-                    return;
-                }
-            }
+            const std::size_t nextIndex = direction > 0
+                ? (currentIndex + 1u) % modeCount
+                : (currentIndex + modeCount - 1u) % modeCount;
+            setViewImageMode(kViewImageModeShortcutOrder[nextIndex]);
         };
 
         auto ensureViewerAdjointGradients = [&]() {
@@ -4609,20 +4566,12 @@ int main(int argc, char** argv) {
         };
 
         auto freeViewerRegularizerGradients = [&]() {
-            Pale::freeGradientsForScene(queue, viewerDepthRegularizerGradients);
-            Pale::freeGradientsForScene(queue, viewerNormalRegularizerGradients);
-            Pale::freeGradientsForScene(queue, viewerIntraSlabRegularizerGradients);
+            Pale::freeGradientsForScene(queue, viewerRegularizerGradients);
         };
 
         auto ensureViewerRegularizerGradients = [&]() {
-            const bool hasUsableGradients =
-                viewerDepthRegularizerGradients.gradPosition != nullptr &&
-                viewerNormalRegularizerGradients.gradPosition != nullptr &&
-                viewerIntraSlabRegularizerGradients.gradPosition != nullptr &&
-                viewerDepthRegularizerGradients.numPoints == sceneGpu.pointCount &&
-                viewerNormalRegularizerGradients.numPoints == sceneGpu.pointCount &&
-                viewerIntraSlabRegularizerGradients.numPoints == sceneGpu.pointCount;
-            if (hasUsableGradients) {
+            if (viewerRegularizerGradients.gradPosition != nullptr &&
+                viewerRegularizerGradients.numPoints == sceneGpu.pointCount) {
                 return;
             }
 
@@ -4630,39 +4579,49 @@ int main(int argc, char** argv) {
             Pale::SceneBuild::BuildProducts gradientBuildProducts = renderBuildProducts;
             gradientBuildProducts.cameraGPUs.clear();
             gradientBuildProducts.cameraGPUs.push_back(sensor.camera);
-            viewerDepthRegularizerGradients =
-                Pale::makeGradientsForScene(queue, gradientBuildProducts, nullptr);
-            viewerNormalRegularizerGradients =
-                Pale::makeGradientsForScene(queue, gradientBuildProducts, nullptr);
-            viewerIntraSlabRegularizerGradients =
+            viewerRegularizerGradients =
                 Pale::makeGradientsForScene(queue, gradientBuildProducts, nullptr);
         };
 
         auto runViewerRegularizerGradientPass = [&](std::vector<Pale::SensorGPU>& renderSensors) {
-            if (!regularizerPrimitiveGradientMapsEnabled ||
+            lastRegularizerGradientMapMs = 0.0;
+            if (settings.sharedHeightEnabled) return;
+            if (!isRegularizerGradientView(viewImageMode) ||
                 !hasSensor || sceneGpu.pointCount == 0u) {
                 return;
             }
 
             const auto start = std::chrono::steady_clock::now();
             ensureViewerRegularizerGradients();
-            prepareRealtimeViewerSurfaceRegularizerAdjoints(queue, sensor);
+            prepareRealtimeViewerSurfaceRegularizerAdjoints(queue, sensor, viewImageMode);
 
             Pale::PathTracerSettings regularizerSettings = settings;
-            regularizerSettings.depthDistortionWeight = 1.0f;
-            regularizerSettings.normalConsistencyWeight = 1.0f;
+            regularizerSettings.depthDistortionWeight =
+                viewImageMode == ViewImageMode::DepthPositionGradient ? 1.0f : 0.0f;
+            regularizerSettings.normalConsistencyWeight =
+                viewImageMode == ViewImageMode::NormalPositionGradient ? 1.0f : 0.0f;
             regularizerSettings.visibilityWeightedOpacityRegularizerWeight = 0.0f;
-            regularizerSettings.intraSlabDepthRegularizerWeight = 1.0f;
+            regularizerSettings.intraSlabDepthRegularizerWeight =
+                viewImageMode == ViewImageMode::IntraSlabPositionGradient ? 1.0f : 0.0f;
             regularizerSettings.curvatureScaleRegularizerWeight = 0.0f;
             tracer.getSettings() = regularizerSettings;
+            // The backward kernel reads the point count from the depth slot,
+            // even when only another regularizer is enabled. No buffers needed.
+            Pale::PointGradients unusedDepthGradients{};
+            unusedDepthGradients.numPoints = sceneGpu.pointCount;
+            Pale::PointGradients unusedNormalGradients{};
+            Pale::PointGradients unusedIntraSlabGradients{};
             Pale::PointGradients unusedOpacityGradients{};
             Pale::PointGradients unusedCurvatureGradients{};
             tracer.renderSurfaceRegularizersBackward(
                 renderSensors,
-                viewerDepthRegularizerGradients,
-                viewerNormalRegularizerGradients,
+                regularizerSettings.depthDistortionWeight != 0.0f
+                    ? viewerRegularizerGradients : unusedDepthGradients,
+                regularizerSettings.normalConsistencyWeight != 0.0f
+                    ? viewerRegularizerGradients : unusedNormalGradients,
                 unusedOpacityGradients,
-                viewerIntraSlabRegularizerGradients,
+                regularizerSettings.intraSlabDepthRegularizerWeight != 0.0f
+                    ? viewerRegularizerGradients : unusedIntraSlabGradients,
                 unusedCurvatureGradients,
                 nullptr);
             tracer.getSettings() = settings;
@@ -4674,6 +4633,11 @@ int main(int argc, char** argv) {
         };
 
         auto runViewerAdjointPass = [&](std::vector<Pale::SensorGPU>& renderSensors) {
+            if (settings.sharedHeightEnabled) {
+                runAdjointNextRender = false;
+                viewerAdjointStatus = "Shared height is forward-only; adjoint disabled";
+                return;
+            }
             if (!runAdjointEveryRender && !runAdjointNextRender) {
                 return;
             }
@@ -4784,9 +4748,14 @@ int main(int argc, char** argv) {
                     sizeof(Pale::RenderProfilingCounters)).wait();
             }
 
-            Pale::PathTracerSettings activeTracerSettings = settings;
-            activeTracerSettings.computeCurvatureDiagnostics =
-                requiresVisibleSlabSearch(viewImageMode);
+            Pale::PathTracerSettings activeTracerSettings =
+                makeViewerDebugSettings(settings, viewImageMode);
+            if (viewImageMode == ViewImageMode::CurvaturePrimitiveScore &&
+                curvatureDensificationStats.numPoints != sceneGpu.pointCount) {
+                Pale::freeCurvatureDensificationStats(queue, curvatureDensificationStats);
+                curvatureDensificationStats =
+                    Pale::makeCurvatureDensificationStatsForScene(queue, buildProducts);
+            }
             tracer.setCurvatureDensificationStats(
                 viewImageMode == ViewImageMode::CurvaturePrimitiveScore
                     ? &curvatureDensificationStats : nullptr);
@@ -4816,7 +4785,7 @@ int main(int argc, char** argv) {
             // Adjoint profiling reuses the raw framebuffer as its source. Capture
             // the primal linear RGB first so SSIM diagnostics describe the forward render.
             std::vector<float> ssimRenderedLinearRgba;
-            if (ssimDebugMapsEnabled && cameraSource == CameraSource::SceneXml) {
+            if (isSsimDebugView(viewImageMode) && cameraSource == CameraSource::SceneXml) {
                 ssimRenderedLinearRgba = Pale::downloadSensorRGBARAW(queue, sensor);
             }
             runViewerRegularizerGradientPass(renderSensors);
@@ -4846,7 +4815,8 @@ int main(int argc, char** argv) {
             displayedCamera = camera;
             displayedRenderWidth = renderWidth;
             displayedRenderHeight = renderHeight;
-            if (ssimDebugMapsEnabled) {
+            lastSsimDebugMapMs = 0.0;
+            if (isSsimDebugView(viewImageMode)) {
                 const auto ssimStart = std::chrono::steady_clock::now();
                 if (cameraSource != CameraSource::SceneXml) {
                     ssimTargetCache.status =
@@ -5181,9 +5151,6 @@ int main(int argc, char** argv) {
             ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
             if (ImGui::BeginCombo("Display", viewImageModeLabel(viewImageMode))) {
                 for (const ViewImageMode candidateMode : kViewImageModeShortcutOrder) {
-                    if (!isViewImageModeAvailable(candidateMode)) {
-                        continue;
-                    }
                     const bool selected = viewImageMode == candidateMode;
                     if (ImGui::Selectable(viewImageModeLabel(candidateMode), selected)) {
                         setViewImageMode(candidateMode);
@@ -5693,6 +5660,68 @@ int main(int argc, char** argv) {
 
             ImGui::Separator();
             if (ImGui::CollapsingHeader("Renderer debug")) {
+                if (ImGui::Checkbox("Shared surface experiment", &settings.sharedHeightEnabled)) {
+                    if (settings.sharedHeightEnabled) {
+                        settings.integratorKind = Pale::IntegratorKind::photonMapping;
+                        settings.cameraGatherKernelKind = Pale::CameraGatherKernelKind::CameraGatherKernel2;
+                        viewImageMode = ViewImageMode::Rendered;
+                    }
+                    tracerDirty = true;
+                    renderRequested = true;
+                }
+                if (settings.sharedHeightEnabled) {
+                    bool changed = false;
+                    changed |= ImGui::Checkbox("Two overlapping slabs", &settings.sharedHeightTwoSlabs);
+                    if (settings.sharedHeightTwoSlabs) {
+                        changed |= ImGui::InputInt("Slab A first surfel", &settings.sharedHeightSlabStartA);
+                        changed |= ImGui::SliderInt("Slab A surfel count", &settings.sharedHeightSlabCountA, 1, 8);
+                        changed |= ImGui::InputInt("Slab B first surfel", &settings.sharedHeightSlabStartB);
+                        changed |= ImGui::SliderInt("Slab B surfel count", &settings.sharedHeightSlabCountB, 1, 8);
+                        changed |= ImGui::DragFloat("Slab half width", &settings.sharedHeightSlabHalfWidth, 0.01f, 0.001f, 100.0f);
+                        changed |= ImGui::DragFloat("Slab half depth h", &settings.sharedHeightSlabHalfDepth, 0.005f, 0.001f, 100.0f);
+                        changed |= ImGui::DragFloat("Slab A lateral shift", &settings.sharedHeightSlabLateralShiftA, 0.01f);
+                        changed |= ImGui::DragFloat("Slab B lateral shift", &settings.sharedHeightSlabLateralShiftB, 0.01f);
+                        changed |= ImGui::DragFloat("Slab A depth shift", &settings.sharedHeightSlabDepthShiftA, 0.005f);
+                        changed |= ImGui::DragFloat("Slab B depth shift", &settings.sharedHeightSlabDepthShiftB, 0.005f);
+                        changed |= ImGui::DragFloat("Slab coverage", &settings.sharedHeightSlabCoverage, 0.1f, 0.01f, 100.0f);
+                        ImGui::TextWrapped("Ranges are fixed GPU indices, up to eight surfels per slab. Invalid ranges or emissive members render blank. Offsets move support boundaries without changing membership. Excessive offsets can remove coverage.");
+                    } else {
+                        changed |= ImGui::InputInt("Height member A (-1: auto)", &settings.sharedHeightMemberA);
+                        changed |= ImGui::InputInt("Height member B (-1: auto)", &settings.sharedHeightMemberB);
+                    }
+                    changed |= ImGui::Combo("Height shading", &settings.sharedHeightShading,
+                        "Point lights (unshadowed)\0Albedo\0Surface normals\0Slab weights (A red, B blue)\0");
+                    if (changed) {
+                        settings.sharedHeightMemberA = std::max(-1, settings.sharedHeightMemberA);
+                        settings.sharedHeightMemberB = std::max(-1, settings.sharedHeightMemberB);
+                        renderRequested = true;
+                    }
+                    if (!settings.sharedHeightTwoSlabs) {
+                        int members[2]{settings.sharedHeightMemberA, settings.sharedHeightMemberB};
+                        for (int m = 0; m < 2; ++m) {
+                            if (members[m] < 0) {
+                                for (std::size_t i = 0; i < renderBuildProducts.points.size(); ++i) {
+                                    if (int(i) != members[1 - m] && !renderBuildProducts.points[i].isEmissive()) {
+                                        members[m] = int(i); break;
+                                    }
+                                }
+                            }
+                        }
+                        ImGui::Text("GPU surfel indices: %d, %d", members[0], members[1]);
+                        bool validPair = members[0] >= 0 && members[1] >= 0 && members[0] != members[1];
+                        for (int member : members)
+                            validPair = validPair && member >= 0 &&
+                                std::size_t(member) < renderBuildProducts.points.size() &&
+                                !renderBuildProducts.points[member].isEmissive();
+                        if (!validPair)
+                            ImGui::TextWrapped("Select two distinct, non-emissive surfels. Invalid selections render blank.");
+                    }
+                    if (renderBuildProducts.instances.size() != 1 ||
+                        renderBuildProducts.instances.front().geometryType != Pale::GeometryType::PointCloud)
+                        ImGui::TextWrapped("This experiment requires one point-cloud instance and no meshes; this scene will render blank.");
+                    ImGui::TextWrapped("Forward experiment: cubic footprint blend. Two-slab mode blends geometry before intersection; h controls smooth depth support. Beta is unused for joined members. No shadows, indirect lighting, or adjoint. Use Rendered and Height shading to inspect it. Other surfels remain separate.");
+                    ImGui::Separator();
+                }
                 int cameraGatherKernelIndex =
                     settings.cameraGatherKernelKind == Pale::CameraGatherKernelKind::CameraGatherKernel2 ? 1 : 0;
 
@@ -5706,42 +5735,16 @@ int main(int argc, char** argv) {
                     renderRequested = true;
                     }
 
-                if (ImGui::Checkbox(
-                        "Regularizer primitive gradient maps",
-                        &regularizerPrimitiveGradientMapsEnabled)) {
-                    if (!regularizerPrimitiveGradientMapsEnabled) {
-                        freeViewerRegularizerGradients();
-                        if (viewImageMode == ViewImageMode::DepthPositionGradient ||
-                            viewImageMode == ViewImageMode::NormalPositionGradient ||
-                            viewImageMode == ViewImageMode::IntraSlabPositionGradient) {
-                            setViewImageMode(ViewImageMode::Rendered);
-                        }
-                    }
-                    renderRequested = true;
-                }
-                ImGui::TextDisabled(
-                    "Viewer default; allocates 3 gradient sets and runs the surface adjoint");
-                if (regularizerPrimitiveGradientMapsEnabled) {
+                ImGui::TextDisabled("Debug maps are computed only for the selected Display view");
+                if (isRegularizerGradientView(viewImageMode)) {
                     ImGui::Text(
-                        "Last regularizer gradient maps: %.3f ms (unit loss weights)",
+                        "Selected regularizer gradient map: %.3f ms (unit loss weight)",
                         lastRegularizerGradientMapMs);
                 }
 
                 ImGui::SeparatorText("SSIM diagnostics");
-                if (ImGui::Checkbox("SSIM debug maps", &ssimDebugMapsEnabled)) {
-                    if (!ssimDebugMapsEnabled) {
-                        debugDisplayBuffers.releaseSsimDebug();
-                        ssimTargetCache.invalidate();
-                        ssimTargetCache.status = "SSIM debug maps are disabled";
-                        if (isSsimDebugView(viewImageMode)) {
-                            setViewImageMode(ViewImageMode::Rendered);
-                        }
-                    }
-                    renderRequested = true;
-                }
-                ImGui::TextDisabled(
-                    "Off by default; loads the saved target and computes CPU SSIM maps");
-                if (ssimDebugMapsEnabled) {
+                ImGui::TextDisabled("Select an SSIM/RGB loss view in Display to compute diagnostics");
+                if (isSsimDebugView(viewImageMode)) {
                     bool ssimSettingsChanged = false;
                     ssimSettingsChanged |= ImGui::SliderFloat(
                         "SSIM weight", &viewerSsimWeight, 0.0f, 1.0f, "%.3f");
