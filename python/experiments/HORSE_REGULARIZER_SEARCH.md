@@ -19,14 +19,18 @@ Only these weights vary:
 
 | Regularizer | Candidate strengths |
 | --- | --- |
-| Depth distortion | 0, 0.00005, 0.0005, 0.005, 0.05, 0.5 |
-| Normal consistency | 0, 0.00001, 0.0001, 0.001, 0.01, 0.1 |
-| Intra-slab depth | 0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2 |
+| Depth distortion | 0, 0.001, 0.005, 0.01, 0.02, 0.1 |
+| Normal consistency | 0, 0.0005, 0.0025, 0.005, 0.01, 0.05 |
+| Intra-slab depth | 0, 1e-5, 5e-5, 1e-4, 2e-4, 1e-3 |
 | Curvature scale | 0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4 |
 
-The first six trials use the current weights, all four disabled, and each
-regularizer disabled individually. TPE then searches combinations from the
-candidate strengths, with 16 startup trials in total.
+The first trial uses the current defaults: depth distortion 0.01, normal
+consistency 0.005, intra-slab depth 1e-4, and curvature scale 0. The next five
+trials disable all four regularizers, disable each of the three active
+regularizers individually, and enable curvature scale at 1e-6. Active weights
+are searched at 0, 0.1x, 0.5x, 1x, 2x, and 10x their baseline strengths.
+Curvature retains its zero-inclusive logarithmic candidate grid. TPE then
+searches combinations, with 16 startup trials in total.
 
 All remaining training settings inherit the current `config.py`, including
 learning rates, world-space depth distortion, densification, and output settings.
@@ -36,4 +40,6 @@ to keep trials comparable. Prepare a new study if the config changes.
 The existing horse study's 200,000-point feasibility cap is retained, with point
 stability enforcement and automatic repair trials disabled.
 Study state and results are saved under
-`OptimizationOutput/studies/horse_10_regularizer_strengths_10k_v1`.
+`OptimizationOutput/studies/horse_10_regularizer_strengths_10k_v2`.
+Version 2 starts a fresh study so the updated defaults and candidate strengths
+are not mixed with version 1 results.

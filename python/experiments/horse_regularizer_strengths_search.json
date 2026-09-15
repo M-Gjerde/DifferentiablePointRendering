@@ -1,8 +1,8 @@
 {
-  "study_name": "horse_10_regularizer_strengths_10k_v1",
+  "study_name": "horse_10_regularizer_strengths_10k_v2",
   "dataset_path": "~/phd/datasets/horse_pbdr_10",
   "ground_truth": "~/phd/models/horse.ply",
-  "output_root": "OptimizationOutput/studies/horse_10_regularizer_strengths_10k_v1",
+  "output_root": "OptimizationOutput/studies/horse_10_regularizer_strengths_10k_v2",
   "max_trials": 80,
   "seed": 0,
   "enqueue_repairs": false,
@@ -48,33 +48,33 @@
       "type": "categorical",
       "choices": [
         0.0,
-        5e-05,
-        0.0005,
+        0.001,
         0.005,
-        0.05,
-        0.5
+        0.01,
+        0.02,
+        0.1
       ]
     },
     "normal_consistency_weight": {
       "type": "categorical",
       "choices": [
         0.0,
-        1e-05,
-        0.0001,
-        0.001,
+        0.0005,
+        0.0025,
+        0.005,
         0.01,
-        0.1
+        0.05
       ]
     },
     "intra_slab_depth_weight": {
       "type": "categorical",
       "choices": [
         0.0,
-        1e-06,
         1e-05,
+        5e-05,
         0.0001,
-        0.001,
-        0.01
+        0.0002,
+        0.001
       ]
     },
     "curvature_scale_weight": {
@@ -91,10 +91,10 @@
   },
   "initial_trials": [
     {
-      "depth_distort_weight": 0.005,
-      "normal_consistency_weight": 0.001,
+      "depth_distort_weight": 0.01,
+      "normal_consistency_weight": 0.005,
       "intra_slab_depth_weight": 0.0001,
-      "curvature_scale_weight": 1e-06
+      "curvature_scale_weight": 0.0
     },
     {
       "depth_distort_weight": 0.0,
@@ -104,30 +104,30 @@
     },
     {
       "depth_distort_weight": 0.0,
-      "normal_consistency_weight": 0.001,
-      "intra_slab_depth_weight": 0.0001,
-      "curvature_scale_weight": 1e-06
-    },
-    {
-      "depth_distort_weight": 0.005,
-      "normal_consistency_weight": 0.0,
-      "intra_slab_depth_weight": 0.0001,
-      "curvature_scale_weight": 1e-06
-    },
-    {
-      "depth_distort_weight": 0.005,
-      "normal_consistency_weight": 0.001,
-      "intra_slab_depth_weight": 0.0,
-      "curvature_scale_weight": 1e-06
-    },
-    {
-      "depth_distort_weight": 0.005,
-      "normal_consistency_weight": 0.001,
+      "normal_consistency_weight": 0.005,
       "intra_slab_depth_weight": 0.0001,
       "curvature_scale_weight": 0.0
+    },
+    {
+      "depth_distort_weight": 0.01,
+      "normal_consistency_weight": 0.0,
+      "intra_slab_depth_weight": 0.0001,
+      "curvature_scale_weight": 0.0
+    },
+    {
+      "depth_distort_weight": 0.01,
+      "normal_consistency_weight": 0.005,
+      "intra_slab_depth_weight": 0.0,
+      "curvature_scale_weight": 0.0
+    },
+    {
+      "depth_distort_weight": 0.01,
+      "normal_consistency_weight": 0.005,
+      "intra_slab_depth_weight": 0.0001,
+      "curvature_scale_weight": 1e-06
     }
   ],
-  "config_sha256": "773e34b707288a2947a9d3271fdca543a6b983c642469d1fbb34cdc1e4463c9e",
+  "config_sha256": "5a310c9b590f424e0bdbf75a641f74e3a3e3b00b0ef52d7a08379253e30aa503",
   "defaults_snapshot": {
     "optimization": {
       "assets_root": "../Assets",
@@ -159,13 +159,13 @@
       "ssim_weight": 0.0,
       "ssim_window_size": 5,
       "ssim_sigma": 0.75,
-      "depth_distort_weight": 0.005,
+      "depth_distort_weight": 0.01,
       "depth_distort_world_space": true,
       "depth_distort_start_iteration": 0,
-      "normal_consistency_weight": 0.001,
+      "normal_consistency_weight": 0.005,
       "opacity_prior_weight": 0.0,
       "intra_slab_depth_weight": 0.0001,
-      "curvature_scale_weight": 1e-06,
+      "curvature_scale_weight": 0.0,
       "share_local_layer_direct_lighting": true,
       "one_camera_per_iteration": true,
       "camera_sampling_mode": "round_robin",

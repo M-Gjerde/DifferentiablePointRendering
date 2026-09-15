@@ -1098,8 +1098,7 @@ namespace Pale {
                                     computePointCloudLocalLayerConsensus(
                                         localLayer,
                                         currentRayState.ray,
-                                        scene);
-                            measurementEvent.sharedDirectLightPositionW =
+                                        scene); measurementEvent.sharedDirectLightPositionW =
                                     slabConsensus.valid != 0u
                                         ? slabConsensus.pointW
                                         : localLayer.hits[0].hitPositionW;
