@@ -58,7 +58,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 10_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
 
@@ -82,7 +82,7 @@ class OptimizationConfig:
     position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 25_000
+    lr_decay_max_steps: int = 10_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.00
@@ -96,7 +96,7 @@ class OptimizationConfig:
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.001
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 1.0e-5
+    intra_slab_depth_weight: float = 1.0e-4
     curvature_scale_weight: float = 1.0e-6
 
     # Rendering model
