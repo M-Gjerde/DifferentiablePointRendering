@@ -2819,7 +2819,7 @@ namespace Pale {
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 constexpr float kAlphaEpsilon = 1.0e-8f;
 
-                constexpr bool kDetachDepthDistortionWeights = false;
+                const bool kDetachDepthDistortionWeights = settings.depthDistortionGaussian;
 
                 const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
                 const uint32_t pixelX = pixelIndex % imageWidth;
@@ -2891,7 +2891,7 @@ namespace Pale {
                     if (depth <= 0.0f) {
                         return true;
                     }
-                    const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
+                    const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
                     const float compositeWeight = transmittance * alphaEffective;
                     SurfaceRegularizerHitRecord &record = hits[hitCount];
                     record.primitiveIndex = primitiveIndex;
@@ -3027,7 +3027,9 @@ namespace Pale {
                     float barWeightDepth = 0.0f;
                     float barDepthDepth = 0.0f;
                     if (useDepthDistortion) {
-                        const float depthToNdcDerivative = depthDistortionCoordinateDerivative(hit.depth, settings.depthDistortionWorldSpace);
+                        const float depthToNdcDerivative = settings.depthDistortionGaussian
+                            ? 1.0f
+                            : depthDistortionCoordinateDerivative(hit.depth, settings.depthDistortionWorldSpace);
                         for (uint32_t otherIndex = 0u; otherIndex < hitCount; ++otherIndex) {
                             if (otherIndex == hitIndex) { continue; }
 
@@ -3040,7 +3042,11 @@ namespace Pale {
                             const float depthDeltaSign = ndcDepthDelta > 0.0f ? 1.0f :
                                 (ndcDepthDelta < 0.0f ? -1.0f : 0.0f);
                             const float depthPairWeight =
-                                    lowerHit.compositeWeight * upperHit.compositeWeight * depthDistortionAdjoint;
+                                    lowerHit.compositeWeight * upperHit.compositeWeight * depthDistortionAdjoint *
+                                    (settings.depthDistortionGaussian
+                                        ? depthDistortionGaussianSlope(absoluteDepthDelta,
+                                            settings.depthDistortionHalfStrengthMeters)
+                                        : 1.0f);
 
                             if (hitIsUpper) {
                                 barDepthDepth += depthPairWeight * depthDeltaSign * depthToNdcDerivative;

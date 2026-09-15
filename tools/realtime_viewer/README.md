@@ -102,8 +102,10 @@ the mean ray-depth alternative is a diagnostic preview only.
 ### Surface curvature map
 
 The display menu and **+/-** cycle group **Surface curvature (magnitude)**,
-**Curvature scale**, and **Curvature primitive score** consecutively. Number-key
-shortcuts remain unchanged, including **8** for Curvature scale.
+**Curvature scale**, and **Curvature primitive score** consecutively. The first
+ten views use number keys **1–9, then 0** in menu/cycle order: **8** is Surface
+curvature, **9** is Curvature scale, and **0** is Curvature primitive score.
+Position primitive score follows them without a number shortcut.
 
 Choose **Display → Surface curvature (magnitude)** for an estimate of local
 surface bending. For each fitted member of the visible slab, the map uses
@@ -140,8 +142,8 @@ existing plane-distance view.
 Both views use the selected slab membership rule and normal filter. They share
 a logarithmic color scale from zero to the maximum of both maps for the current
 frame, so equal colors represent equal loss values. The viewer also displays
-both means over all pixels, including zero-loss pixels. Existing shortcuts
-1–9 are preserved; select the new view from **Display** or cycle with **+/-**.
+both means over all pixels, including zero-loss pixels. Select the ray-depth view from **Display** or cycle with **+/-**. Number keys
+**1–9, then 0** select the first ten views in that same menu/cycle order.
 
 This is a forward-only comparison: training losses, their gradients, and the
 shared point used for shading are unchanged. These slab diagnostics are
@@ -168,24 +170,33 @@ radiance floor `0.005`. Position previews start at this threshold when loading a
 snapshot; **Use saved** selects its recorded threshold and **Use config default**
 restores `0.005`.
 
-Curvature splitting starts disabled (`-1`); enter a positive threshold to preview
-split candidates. Disabled splitting still displays curvature scores without
+The curvature split preview starts disabled (`0`); its logarithmic threshold slider
+ranges from `0` to `1`. Select a positive threshold to preview split candidates,
+or Ctrl-click to type a value beyond the slider range. This changes only the viewer
+preview, not the training configuration. Disabled splitting still displays curvature scores without
 magenta candidate highlighting. SSIM debug defaults are weight `0`, window size
 `5`, and sigma `0.75`. These defaults are copied into the viewer; it does not load
 `config.py` at runtime.
 
 ### Depth-distortion previews
 
-The viewer defaults to **World distance**, matching training with
-`depth_distort_world_space=True`. The loss and position-gradient previews both
-use linear camera-forward depth, so equal depth separations retain their
-contribution when moved farther from the camera (for equal compositing weights).
-Choose **Normalized depth (legacy)** in the **Depth distortion** selector to
-inspect runs trained with `depth_distort_world_space=False`.
+The viewer defaults to **World distance + Gaussian falloff**, matching training
+with `depth_distort_gaussian=True`. The **Half-strength distance (m)** control
+defaults to 0.10: attraction is 50% at a 10 cm camera-forward depth separation,
+6.25% at 20 cm, and about 0.2% at 30 cm. Both the loss image and position-gradient
+preview use this mode and distance. Pair weights are detached in backward.
+The loss has scene-distance units; geometry is assumed to be in metres.
 
-The loss image shows the raw per-pixel distortion; the position-gradient image
-uses the mean image loss with unit regularizer weight. Colors rescale separately
-for each frame, so equal colors across frames do not imply equal loss values.
+The formula has no pixel-width, focal-length, resolution, or reference-depth
+normalization. Viewing changes can still change intersections and visibility.
+This changes diagnostics/regularization only, not slab membership or RGB.
+Choose **World distance** for the original absolute depth loss or **Normalized
+depth (legacy)** for runs with `depth_distort_world_space=False` and Gaussian
+falloff disabled. Pixel-footprint mode has been removed.
+
+The loss image shows raw per-pixel distortion; the position-gradient image uses
+mean image loss with unit regularizer weight. Colors rescale separately each
+frame, so equal colors across frames do not imply equal loss values.
 
 ## Shared-height surface experiment
 

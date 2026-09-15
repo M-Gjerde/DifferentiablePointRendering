@@ -139,19 +139,6 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    // Number keys keep their established views independently of menu/cycle grouping.
-    constexpr std::array<ViewImageMode, 9> kViewImageModeNumberShortcuts = {
-        ViewImageMode::Rendered,
-        ViewImageMode::MedianDepth,
-        ViewImageMode::DepthDistortion,
-        ViewImageMode::MeanDepth,
-        ViewImageMode::VisibleNormal,
-        ViewImageMode::DepthNormal,
-        ViewImageMode::IntraSlabDepth,
-        ViewImageMode::CurvatureScale,
-        ViewImageMode::PositionPrimitiveScore,
-    };
-
     constexpr std::array<const char*, 23> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
@@ -160,10 +147,10 @@ namespace {
         "5 Visible normal",
         "6 Depth normal",
         "7 Intra-slab depth (plane distance)",
-        "Surface curvature (magnitude)",
-        "8 Curvature scale",
-        "Curvature primitive score",
-        "9 Position primitive score (saved)",
+        "8 Surface curvature (magnitude)",
+        "9 Curvature scale",
+        "0 Curvature primitive score",
+        "Position primitive score (saved)",
         "Intra-slab depth (mean ray depth)",
         "Surfel density (projected centers)",
         "Densification split origin",
@@ -2448,6 +2435,7 @@ namespace {
         settings.numGatherPasses = 1u;
         settings.renderDebugGradientImages = false;
         settings.depthDistortionWorldSpace = true;
+        settings.depthDistortionGaussian = true;
         settings.enableAdjointDirectLight = true;
         settings.pointGeometrySupportRadius = 0.00f;
         settings.pointGeometryReconstructionLength = 0.0f;
@@ -3193,7 +3181,7 @@ int main(int argc, char** argv) {
         float densityColorMaximum = 100.0f;
         bool densityLogScale = true;
         // Training debug defaults mirror python/config.py (OptimizationConfig).
-        float curvatureViolationDisplayThreshold = -1.0f;
+    float curvatureViolationDisplayThreshold = 2.0f;
         constexpr float kPositionDefaultThreshold = 5.0e-3f;
         float positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
         float positionWhatIfReferenceThreshold = 0.0f;
@@ -5076,7 +5064,8 @@ int main(int argc, char** argv) {
                     stepLatestOptimizationSnapshot(-1);
                 }
 
-                constexpr std::array<ImGuiKey, 9> viewImageModeShortcutKeys = {
+                // The first ten menu/cycle entries map to 1..9, then 0.
+                constexpr std::array<ImGuiKey, 10> viewImageModeShortcutKeys = {
                     ImGuiKey_1,
                     ImGuiKey_2,
                     ImGuiKey_3,
@@ -5086,13 +5075,14 @@ int main(int argc, char** argv) {
                     ImGuiKey_7,
                     ImGuiKey_8,
                     ImGuiKey_9,
+                    ImGuiKey_0,
                 };
 
                 for (std::size_t shortcutIndex = 0;
                      shortcutIndex < viewImageModeShortcutKeys.size();
                      ++shortcutIndex) {
                     if (ImGui::IsKeyPressed(viewImageModeShortcutKeys[shortcutIndex], false)) {
-                        setViewImageMode(kViewImageModeNumberShortcuts[shortcutIndex]);
+                        setViewImageMode(kViewImageModeCycleOrder[shortcutIndex]);
                         break;
                     }
                 }
@@ -5209,16 +5199,28 @@ int main(int argc, char** argv) {
                 renderRequested = true;
             }
 
-            int distortionDepthMode = settings.depthDistortionWorldSpace ? 0 : 1;
-            const char* distortionDepthModes[] = {"World distance", "Normalized depth (legacy)"};
-            if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 2)) {
+            int distortionDepthMode = settings.depthDistortionGaussian ? 2 :
+                (settings.depthDistortionWorldSpace ? 0 : 1);
+            const char* distortionDepthModes[] = {"World distance", "Normalized depth (legacy)", "World distance + Gaussian falloff"};
+            if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 3)) {
+                settings.depthDistortionGaussian = distortionDepthMode == 2;
                 settings.depthDistortionWorldSpace = distortionDepthMode == 0;
                 renderRequested = true;
             }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip(
-                    "Use the same depth mode as the training run. World distance preserves "
-                    "the contribution of distant surfaces in both loss and gradient previews.");
+                    "Match the training run. Gaussian falloff uses metric camera-forward "
+                    "depth differences and detached weights, with no pixel-width normalization.");
+            }
+            if (settings.depthDistortionGaussian) {
+                if (ImGui::DragFloat("Half-strength distance (m)", &settings.depthDistortionHalfStrengthMeters,
+                                     0.001f, 0.0001f, 100.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp)) {
+                    renderRequested = true;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Attraction is 50%% at this distance, 6.25%% at twice this distance.");
+                }
+                ImGui::TextWrapped("Metric depth separation; independent of pixel width, focal length and reference depth.");
             }
 
             int cameraSourceIndex = cameraSource == CameraSource::SceneXml ? 1 : 0;
@@ -5354,14 +5356,16 @@ int main(int argc, char** argv) {
                     "The scale stays fixed until you change it. This is screen-space concentration, not world-space density.");
             }
             if (viewImageMode == ViewImageMode::CurvaturePrimitiveScore) {
-                if (ImGui::InputFloat(
+                if (ImGui::SliderFloat(
                         "Curvature split threshold",
                         &curvatureViolationDisplayThreshold,
                         0.0f,
-                        0.0f,
-                        "%.4g")) {
+                        100.0f,
+                        "%.4g",
+                        ImGuiSliderFlags_Logarithmic)) {
                     updateDisplayTexture();
                 }
+                ImGui::TextDisabled("0 disables preview; Ctrl-click to enter a value beyond the slider range.");
 
                 const bool curvatureSplittingEnabled =
                     std::isfinite(curvatureViolationDisplayThreshold) &&

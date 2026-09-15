@@ -28,6 +28,8 @@ class RendererSettingsConfig:
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
             "depth_distort_world_space": config.depth_distort_world_space,
+            "depth_distort_gaussian": config.depth_distort_gaussian,
+            "depth_distort_half_strength_m": config.depth_distort_half_strength_m,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "opacity_prior_weight": config.opacity_prior_weight,
@@ -58,7 +60,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 10_000
+    iterations: int = 50_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
 
@@ -79,10 +81,10 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 20.0
-    position_lr_scale_final: float = 1.0
+    position_lr_scale_init: float = 50.0
+    position_lr_scale_final: float = 5.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 10_000
+    lr_decay_max_steps: int = 30_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.00
@@ -93,11 +95,14 @@ class OptimizationConfig:
     depth_distort_weight: float = 0.01
     # Absolute pairwise camera-forward depth differences in scene units.
     depth_distort_world_space: bool = True
+    # Metric Gaussian loss overrides world/NDC choice and detaches pair weights.
+    depth_distort_gaussian: bool = True
+    depth_distort_half_strength_m: float = 0.50  # Camera-forward separation in metres at 50% attraction.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 0.0e-6
+    intra_slab_depth_weight: float = 5.0e-5
+    curvature_scale_weight: float = 1.0e-5
 
     # Rendering model
     share_local_layer_direct_lighting: bool = True
@@ -468,6 +473,7 @@ def parse_args() -> OptimizationConfig:
         "ssim_sigma",
         "normal_consistency_weight",
         "depth_distort_weight",
+        "depth_distort_half_strength_m",
         "opacity_prior_weight",
         "intra_slab_depth_weight",
         "curvature_scale_weight",
@@ -478,6 +484,11 @@ def parse_args() -> OptimizationConfig:
         help="Measure distortion using linear camera-forward depth in scene units instead of inverse-depth NDC; retune --depth-distort-weight when switching.",
     )
     objective.add_argument("--depth-distort-start-iteration", type=int)
+    _add_boolean_argument(
+        objective,
+        "--depth-distort-gaussian",
+        help="Use metric camera-forward depth distortion with Gaussian falloff and detached weights; overrides world/NDC mode.",
+    )
     _add_boolean_argument(
         objective,
         "--normal-from-depth-use-mean-depth",
@@ -703,6 +714,9 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
+
+    if not math.isfinite(config.depth_distort_half_strength_m) or config.depth_distort_half_strength_m <= 0:
+        parser.error("--depth-distort-half-strength-m must be finite and positive")
 
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")

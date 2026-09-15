@@ -3,7 +3,7 @@
   "dataset_path": "~/phd/datasets/horse_pbdr_10",
   "ground_truth": "~/phd/models/horse.ply",
   "output_root": "OptimizationOutput/studies/horse_10_regularizer_strengths_10k_v2",
-  "max_trials": 80,
+  "max_trials": 40,
   "seed": 0,
   "enqueue_repairs": false,
   "samples": 500000,
@@ -23,7 +23,7 @@
     9000,
     10000
   ],
-  "sampler_startup_trials": 16,
+  "sampler_startup_trials": 4,
   "pruner_startup_trials": 16,
   "pruner_warmup_iteration": 10000,
   "pruner_interval_iterations": 1000,

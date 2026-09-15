@@ -12,7 +12,7 @@ inspect the training command without starting training.
 This study uses the local horse_10 dataset at `~/phd/datasets/horse_pbdr_10`
 and ground truth `~/phd/models/horse.ply`. Each trial runs for 10,000 iterations.
 It minimizes the final checkpoint's Chamfer distance, evaluating every 1,000
-iterations. The budget is 80 sequential trials (`--max-trials N` overrides it).
+iterations. The budget is 40 sequential trials (`--max-trials N` overrides it).
 Performance pruning starts at 10,000 iterations to compare full training runs.
 
 Only these weights vary:
@@ -30,7 +30,9 @@ trials disable all four regularizers, disable each of the three active
 regularizers individually, and enable curvature scale at 1e-6. Active weights
 are searched at 0, 0.1x, 0.5x, 1x, 2x, and 10x their baseline strengths.
 Curvature retains its zero-inclusive logarithmic candidate grid. TPE then
-searches combinations, with 16 startup trials in total.
+searches combinations, with a sampler startup threshold of 4 trials. The six
+queued comparisons still run first; guided sampling begins after that queue
+finishes, provided at least four trials completed or were pruned.
 
 All remaining training settings inherit the current `config.py`, including
 learning rates, world-space depth distortion, densification, and output settings.

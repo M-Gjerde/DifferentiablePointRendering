@@ -308,12 +308,12 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             }
             accumulatedCompositeWeight += compositeWeight;
 
-            const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
+            const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
             if (profileEnabled) {
                 profileRegularizerHits += 1u;
                 profileDepthPairIterations += previousDepthDistortionHitCount;
             }
-            for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
+            for (uint32_t previousIndex = 0u; !settings.depthDistortionGaussian && previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                 distortion += previousDepthDistortionWeights[previousIndex] * compositeWeight *
                               sycl::fabs(depthDifference);
@@ -735,6 +735,11 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
         if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
             sensor.curvaturePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
+        }
+        if (settings.depthDistortionGaussian) {
+            distortion = depthDistortionGaussianSum(
+                previousDepthDistortionNdcDepths, previousDepthDistortionWeights,
+                previousDepthDistortionHitCount, settings);
         }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         sensor.intraSlabDepthBuffer[pixelIndex] = intraSlabDepthLossSum;
@@ -1174,8 +1179,8 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                 medianWorldPosition = pointHit.hitPositionW;
                 medianNormalW = normalW;
             }
-            const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionWorldSpace);
-            for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
+            const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
+            for (uint32_t previousIndex = 0u; !settings.depthDistortionGaussian && previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                 distortion += previousDepthDistortionWeights[previousIndex] * wi *
                               sycl::fabs(depthDifference);
@@ -1283,6 +1288,11 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         const float alpha = sycl::clamp(accumulatedCompositeWeight, 0.0f, 1.0f);
         const float4 currentValue(accumulatedRadianceRGB.x(), accumulatedRadianceRGB.y(), accumulatedRadianceRGB.z(), alpha);
         sensor.framebuffer[framebufferIndex] += currentValue;
+        if (settings.depthDistortionGaussian) {
+            distortion = depthDistortionGaussianSum(
+                previousDepthDistortionNdcDepths, previousDepthDistortionWeights,
+                previousDepthDistortionHitCount, settings);
+        }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         if (accumulatedMeanDepthWeight > 1.0e-6f) {
             sensor.meanDepthBuffer[pixelIndex] = accumulatedMeanDepth / accumulatedMeanDepthWeight;
@@ -1416,6 +1426,9 @@ void launchPointSampledPathTracingCameraKernel(
                 float prefixWeight = 0.0f;
                 float prefixWeightDepth = 0.0f;
                 float prefixWeightDepthSquared = 0.0f;
+                float gaussianDepths[kMaxSplatEventsPerRay];
+                float gaussianWeights[kMaxSplatEventsPerRay];
+                uint32_t gaussianHitCount = 0u;
                 float visibilityWeightedOpacityLoss = 0.0f;
                 float accumulatedCompositeWeight = 0.0f;
                 bool medianFound = false;
@@ -1468,11 +1481,15 @@ void launchPointSampledPathTracingCameraKernel(
                         medianNormalW = normalW;
                     }
                     accumulatedCompositeWeight += compositeWeight;
-                    const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
+                    const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
                     distortion += compositeWeight * (
                         normalizedDepth * normalizedDepth * prefixWeight +
                         prefixWeightDepthSquared -
                         2.0f * normalizedDepth * prefixWeightDepth);
+                    if (settings.depthDistortionGaussian) {
+                        gaussianDepths[gaussianHitCount] = depth;
+                        gaussianWeights[gaussianHitCount++] = compositeWeight;
+                    }
                     prefixWeight += compositeWeight;
                     prefixWeightDepth += compositeWeight * normalizedDepth;
                     prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
@@ -1490,6 +1507,10 @@ void launchPointSampledPathTracingCameraKernel(
                     accumulatedRadianceRGB.z() * inverseTotalSamples,
                     1.0f);
                 sensor.framebuffer[framebufferIndex] += currentValue;
+                if (settings.depthDistortionGaussian) {
+                    distortion = depthDistortionGaussianSum(
+                        gaussianDepths, gaussianWeights, gaussianHitCount, settings);
+                }
                 sensor.depthDistortionBuffer[pixelIndex] += distortion * inverseTotalSamples;
                 sensor.visibilityWeightedOpacityBuffer[pixelIndex] +=
                     visibilityWeightedOpacityLoss * inverseTotalSamples;

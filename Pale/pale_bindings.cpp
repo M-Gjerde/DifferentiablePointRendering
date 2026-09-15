@@ -288,6 +288,21 @@ public:
                     get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
             m_settings.depthDistortionWorldSpace =
                     get_b(settingsDict, "depth_distort_world_space", m_settings.depthDistortionWorldSpace);
+            m_settings.depthDistortionGaussian =
+                    get_b(settingsDict, "depth_distort_gaussian", m_settings.depthDistortionGaussian);
+            if (get_b(settingsDict, "depth_distort_pixel_footprint", false) &&
+                !settingsDict.contains("depth_distort_gaussian")) {
+                throw std::invalid_argument(
+                    "Pixel-footprint depth distortion has been replaced by metric Gaussian distortion. "
+                    "Replace depth_distort_pixel_footprint with depth_distort_gaussian, "
+                    "set depth_distort_half_strength_m (default 0.1 metres), and retune depth_distort_weight.");
+            }
+            m_settings.depthDistortionHalfStrengthMeters = get_f(settingsDict,
+                "depth_distort_half_strength_m", m_settings.depthDistortionHalfStrengthMeters);
+            if (!std::isfinite(m_settings.depthDistortionHalfStrengthMeters) ||
+                m_settings.depthDistortionHalfStrengthMeters <= 0.0f) {
+                throw std::invalid_argument("depth_distort_half_strength_m must be finite and > 0");
+            }
 
             m_settings.normalConsistencyWeight =
                     get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);

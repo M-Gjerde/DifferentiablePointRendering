@@ -829,6 +829,10 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         // Absolute pairwise camera-forward depth differences in scene units.
         bool depthDistortionWorldSpace = true;
+        // Opt-in metric Gaussian loss; takes precedence over world/NDC mode.
+        bool depthDistortionGaussian = false;
+        // Gaussian attraction is 50% at this camera-forward separation in metres.
+        float depthDistortionHalfStrengthMeters = 0.10f;
         float normalConsistencyWeight = 0.0f;
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
