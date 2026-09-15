@@ -3266,9 +3266,14 @@ int main(int argc, char** argv) {
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");
         }
+#if GLFW_VERSION_MAJOR > 3 || (GLFW_VERSION_MAJOR == 3 && GLFW_VERSION_MINOR >= 4)
         Pale::Log::PA_INFO("Viewer window backend: {}",
             glfwGetPlatform() == GLFW_PLATFORM_WAYLAND ? "Wayland" :
             glfwGetPlatform() == GLFW_PLATFORM_X11 ? "X11" : "other");
+#else
+        // GLFW before 3.4 exposes build information instead of a platform query.
+        Pale::Log::PA_INFO("Viewer GLFW build: {}", glfwGetVersionString());
+#endif
 
         const char* glslVersion = "#version 130";
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
