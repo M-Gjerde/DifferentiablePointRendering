@@ -185,9 +185,15 @@ inline void launchSharedHeightForward(RenderPackage &pkg, uint32_t cameraIndex) 
         sensor.depthDistortionAdjointBuffer[pixel] = 0.0f;
         sensor.visibilityWeightedOpacityBuffer[pixel] = 0.0f;
         sensor.intraSlabDepthBuffer[pixel] = 0.0f;
+        if (sensor.intraSlabRayDepthBuffer != nullptr) {
+            sensor.intraSlabRayDepthBuffer[pixel] = 0.0f;
+        }
         sensor.intraSlabDepthAdjointBuffer[pixel] = 0.0f;
         sensor.intraSlabDepthActiveSlabCountBuffer[pixel] = 0u;
         sensor.curvatureScaleBuffer[pixel] = 0.0f;
+        if (sensor.surfaceCurvatureBuffer != nullptr) {
+            sensor.surfaceCurvatureBuffer[pixel] = std::numeric_limits<float>::quiet_NaN();
+        }
         sensor.curvatureScaleAdjointBuffer[pixel] = 0.0f;
         sensor.curvatureScaleActiveSlabCountBuffer[pixel] = 0u;
         if (sensor.curvaturePrimitiveIndexBuffer) sensor.curvaturePrimitiveIndexBuffer[pixel] = kInvalidIndex;

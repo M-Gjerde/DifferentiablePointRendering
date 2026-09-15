@@ -740,6 +740,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sdf-trunc", default=-1.0, type=float)
     parser.add_argument("--num-cluster", default=50, type=int)
     parser.add_argument("--mesh-res", default=2048, type=int)
+    parser.add_argument("--export-gltf", action=argparse.BooleanOptionalAction, default=True,
+                        help="Export reconstruction.glb with a UV albedo texture and point lights.")
+    parser.add_argument("--texture-size", default=2048, type=int,
+                        help="Width and height of the reconstructed albedo texture in pixels.")
+    parser.add_argument("--uv-partitions", default=0, type=int,
+                        help="UV unwrap partitions (0: automatic; 1: single partition). More partitions add UV seams.")
+    parser.add_argument("--uv-threads", default=0, type=int,
+                        help="UV unwrap CPU threads (0: automatic, up to 8).")
+    parser.add_argument("--export-cameras", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--meters-per-unit", default=1.0, type=float,
+                        help="Convert PALE coordinates to meters; scales light power to preserve illumination.")
+    parser.add_argument("--reuse-mesh", type=Path, default=None,
+                        help="Bake/export an existing mesh instead of rerunning TSDF extraction.")
 
     parser.add_argument("--depth-key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
     parser.add_argument(
@@ -790,6 +803,32 @@ if __name__ == "__main__":
         print(f"Using property-overridden point cloud {points_path}")
 
     validate_quaternion_surfel_ply(points_path)
+
+    if args.reuse_mesh is not None:
+        # A saved mesh/point checkpoint needs no renderer initialization or GPU.
+        from gltf_export import export_reconstruction_glb, load_surfel_parameters
+
+        reuse_path = args.reuse_mesh.expanduser().resolve()
+        if not reuse_path.is_file():
+            raise FileNotFoundError(reuse_path)
+        if args.export_gltf:
+            export_cameras = []
+            if args.export_cameras:
+                with (run_dir / "run_config.json").open() as file:
+                    saved_config = json.load(file)
+                available_cameras = load_scene_xml_cameras(infer_cameras_xml(args, saved_config))
+                selected = ([name.strip() for name in args.camera_names.split(",") if name.strip()]
+                            if args.camera_names else list(available_cameras))
+                export_cameras = [available_cameras[name] for name in selected]
+            export_reconstruction_glb(
+                o3d.io.read_triangle_mesh(str(reuse_path)),
+                load_surfel_parameters(points_path),
+                mesh_dir / f"reconstruction{mesh_name_suffix}.glb",
+                cameras=export_cameras, texture_size=args.texture_size,
+                uv_partitions=args.uv_partitions, uv_threads=args.uv_threads,
+                meters_per_unit=args.meters_per_unit,
+            )
+        raise SystemExit(0)
 
     renderer, run_config = load_renderer(run_dir, points_path)
 
@@ -852,3 +891,16 @@ if __name__ == "__main__":
         mesh_post_path = mesh_dir / f"fuse_post{mesh_name_suffix}.ply"
         o3d.io.write_triangle_mesh(str(mesh_post_path), mesh_post)
         print(f"mesh post processed saved at {mesh_post_path}")
+
+    if args.export_gltf and not args.skip_mesh:
+        from gltf_export import export_reconstruction_glb
+
+        export_reconstruction_glb(
+            mesh_post,
+            renderer.get_point_parameters(),
+            mesh_dir / f"reconstruction{mesh_name_suffix}.glb",
+            cameras=[cameras[name] for name in camera_names if name in cameras] if args.export_cameras else (),
+            texture_size=args.texture_size,
+            uv_partitions=args.uv_partitions, uv_threads=args.uv_threads,
+            meters_per_unit=args.meters_per_unit,
+        )

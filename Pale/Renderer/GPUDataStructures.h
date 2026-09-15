@@ -874,7 +874,7 @@ namespace Pale {
 
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
-        LocalLayerDepthMode rendererDebugLocalLayerDepthMode = LocalLayerDepthMode::NormalDistance;
+        LocalLayerDepthMode rendererDebugLocalLayerDepthMode = LocalLayerDepthMode::SymmetricRayDepth;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
         uint32_t rendererDebugMaxSplatEventsPerRay = 8;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;

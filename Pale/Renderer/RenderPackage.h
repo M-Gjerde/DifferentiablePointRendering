@@ -28,9 +28,14 @@ namespace Pale {
         float* depthDistortionAdjointBuffer = nullptr;
         float* visibilityWeightedOpacityBuffer = nullptr;
         float* intraSlabDepthBuffer = nullptr;
+        // Optional forward-only comparison: unweighted variance of ray hit depths / h^2.
+        float* intraSlabRayDepthBuffer = nullptr;
         float* intraSlabDepthAdjointBuffer = nullptr;
         uint32_t* intraSlabDepthActiveSlabCountBuffer = nullptr;
         float* curvatureScaleBuffer = nullptr;
+        // Optional visible-surface curvature magnitude, in inverse world units.
+        // NaN denotes no usable estimate; zero is a valid flat estimate.
+        float* surfaceCurvatureBuffer = nullptr;
         float* curvatureScaleAdjointBuffer = nullptr;
         uint32_t* curvatureScaleActiveSlabCountBuffer = nullptr;
         // Optional debug output: dominant primitive from the exact visible slab

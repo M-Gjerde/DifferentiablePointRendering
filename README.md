@@ -177,6 +177,14 @@ cmake -S . -B build \
 cmake --build build -j"$(nproc)"
 ```
 
+### Export a relightable reconstruction to Blender
+
+Final mesh extraction also creates `mesh/reconstruction.glb` with a UV texture
+baked directly from reconstructed surfel albedo, editable point lights, and
+cameras. Pressing **S** during training also exports a GLB for that snapshot;
+scheduled mesh intervals remain PLY-only. See [glTF export](docs/gltf_export.md) for texture resolution, exporting
+existing meshes, and Blender import settings.
+
 ### Monitor optimization metrics
 
 Pass `--metrics` to launch the live metrics viewer alongside training. When

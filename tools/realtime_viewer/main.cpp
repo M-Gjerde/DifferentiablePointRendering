@@ -40,6 +40,7 @@
 #include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
 #include "SurfelDensity.h"
+#include "ResponsiveWork.h"
 #include "spdlog/spdlog.h"
 
 import Pale.Assets;
@@ -94,7 +95,9 @@ namespace {
         DepthNormal,
         DepthDistortion,
         IntraSlabDepth,
+        IntraSlabRayDepth,
         CurvatureScale,
+        SurfaceCurvature,
         CurvaturePrimitiveScore,
         PositionPrimitiveScore,
         SurfelDensity,
@@ -110,7 +113,7 @@ namespace {
         RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 21> kViewImageModeShortcutOrder = {
+    constexpr std::array<ViewImageMode, 23> kViewImageModeCycleOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -118,10 +121,12 @@ namespace {
         ViewImageMode::VisibleNormal,
         ViewImageMode::DepthNormal,
         ViewImageMode::IntraSlabDepth,
+        ViewImageMode::SurfaceCurvature,
         ViewImageMode::CurvatureScale,
-        ViewImageMode::PositionPrimitiveScore,
-        ViewImageMode::SurfelDensity,
         ViewImageMode::CurvaturePrimitiveScore,
+        ViewImageMode::PositionPrimitiveScore,
+        ViewImageMode::IntraSlabRayDepth,
+        ViewImageMode::SurfelDensity,
         ViewImageMode::DensificationOrigin,
         ViewImageMode::PrimitiveAge,
         ViewImageMode::DepthPositionGradient,
@@ -134,18 +139,33 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 21> kViewImageModeLabels = {
+    // Number keys keep their established views independently of menu/cycle grouping.
+    constexpr std::array<ViewImageMode, 9> kViewImageModeNumberShortcuts = {
+        ViewImageMode::Rendered,
+        ViewImageMode::MedianDepth,
+        ViewImageMode::DepthDistortion,
+        ViewImageMode::MeanDepth,
+        ViewImageMode::VisibleNormal,
+        ViewImageMode::DepthNormal,
+        ViewImageMode::IntraSlabDepth,
+        ViewImageMode::CurvatureScale,
+        ViewImageMode::PositionPrimitiveScore,
+    };
+
+    constexpr std::array<const char*, 23> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
         "4 Mean depth",
         "5 Visible normal",
         "6 Depth normal",
-        "7 Intra-slab depth",
+        "7 Intra-slab depth (plane distance)",
+        "Surface curvature (magnitude)",
         "8 Curvature scale",
-        "9 Position primitive score (saved)",
-        "Surfel density (projected centers)",
         "Curvature primitive score",
+        "9 Position primitive score (saved)",
+        "Intra-slab depth (mean ray depth)",
+        "Surfel density (projected centers)",
         "Densification split origin",
         "Primitive age",
         "Depth distortion |grad position|",
@@ -159,8 +179,8 @@ namespace {
     };
 
     [[nodiscard]] const char* viewImageModeLabel(ViewImageMode mode) {
-        for (std::size_t index = 0; index < kViewImageModeShortcutOrder.size(); ++index) {
-            if (kViewImageModeShortcutOrder[index] == mode) {
+        for (std::size_t index = 0; index < kViewImageModeCycleOrder.size(); ++index) {
+            if (kViewImageModeCycleOrder[index] == mode) {
                 return kViewImageModeLabels[index];
             }
         }
@@ -206,7 +226,12 @@ namespace {
         bool depthNormalValid = false;
         bool depthDistortionValid = false;
         bool intraSlabDepthValid = false;
+        float slabLossColorMaximum = 0.0f;
+        double slabPlaneLossMean = 0.0;
+        double slabRayLossMean = 0.0;
         bool curvatureScaleValid = false;
+        bool surfaceCurvatureValid = false;
+        float surfaceCurvatureMaximum = 0.0f;
         bool curvaturePrimitiveScoreValid = false;
         bool positionPrimitiveScoreValid = false;
         bool surfelDensityValid = false;
@@ -226,7 +251,9 @@ namespace {
         std::vector<float> depthNormal;
         std::vector<float> depthDistortion;
         std::vector<float> intraSlabDepth;
+        std::vector<float> intraSlabRayDepth;
         std::vector<float> curvatureScale;
+        std::vector<float> surfaceCurvature;
         std::vector<float> curvaturePrimitiveScore;
         std::vector<float> curvatureObservedPrimitiveScores;
         std::vector<float> positionPrimitiveScore;
@@ -264,7 +291,12 @@ namespace {
             depthNormalValid = false;
             depthDistortionValid = false;
             intraSlabDepthValid = false;
+            slabLossColorMaximum = 0.0f;
+            slabPlaneLossMean = 0.0;
+            slabRayLossMean = 0.0;
             curvatureScaleValid = false;
+            surfaceCurvatureValid = false;
+            surfaceCurvatureMaximum = 0.0f;
             curvaturePrimitiveScoreValid = false;
             positionPrimitiveScoreValid = false;
             surfelDensityValid = false;
@@ -283,7 +315,9 @@ namespace {
             depthNormal.clear();
             depthDistortion.clear();
             intraSlabDepth.clear();
+            intraSlabRayDepth.clear();
             curvatureScale.clear();
+            surfaceCurvature.clear();
             curvaturePrimitiveScore.clear();
             curvatureObservedPrimitiveScores.clear();
             positionPrimitiveScore.clear();
@@ -2194,9 +2228,11 @@ namespace {
         sensor.depthDistortionAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.visibilityWeightedOpacityBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.intraSlabDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.intraSlabRayDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.intraSlabDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.intraSlabDepthActiveSlabCountBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
         sensor.curvatureScaleBuffer = sycl::malloc_device<float>(pixelCount, queue);
+        sensor.surfaceCurvatureBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.curvatureScaleAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.curvatureScaleActiveSlabCountBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
         sensor.curvaturePrimitiveIndexBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
@@ -2210,10 +2246,11 @@ namespace {
         sensor.visibleNormalAdjointBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
 
         if (!sensor.framebuffer || !sensor.outputFramebuffer || !sensor.ldrFramebuffer ||
-            !sensor.intraSlabDepthBuffer || !sensor.intraSlabDepthAdjointBuffer ||
+            !sensor.intraSlabDepthBuffer || !sensor.intraSlabRayDepthBuffer ||
+            !sensor.intraSlabDepthAdjointBuffer ||
             !sensor.intraSlabDepthActiveSlabCountBuffer || !sensor.curvatureScaleBuffer ||
             !sensor.curvatureScaleAdjointBuffer || !sensor.curvatureScaleActiveSlabCountBuffer ||
-            !sensor.curvaturePrimitiveIndexBuffer) {
+            !sensor.curvaturePrimitiveIndexBuffer || !sensor.surfaceCurvatureBuffer) {
             throw std::runtime_error("Failed to allocate realtime sensor framebuffers");
         }
         return sensor;
@@ -2229,9 +2266,11 @@ namespace {
         queue.memset(sensor.depthDistortionAdjointBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.visibilityWeightedOpacityBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.intraSlabDepthBuffer, 0, pixelCount * sizeof(float));
+        queue.memset(sensor.intraSlabRayDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.intraSlabDepthActiveSlabCountBuffer, 0, pixelCount * sizeof(std::uint32_t));
         queue.memset(sensor.curvatureScaleBuffer, 0, pixelCount * sizeof(float));
+        queue.fill(sensor.surfaceCurvatureBuffer, std::numeric_limits<float>::quiet_NaN(), pixelCount);
         queue.memset(sensor.curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.curvatureScaleActiveSlabCountBuffer, 0, pixelCount * sizeof(std::uint32_t));
         queue.fill(sensor.curvaturePrimitiveIndexBuffer, UINT32_MAX, pixelCount);
@@ -2262,9 +2301,11 @@ namespace {
         freeDevicePtr(queue, sensor.depthDistortionAdjointBuffer);
         freeDevicePtr(queue, sensor.visibilityWeightedOpacityBuffer);
         freeDevicePtr(queue, sensor.intraSlabDepthBuffer);
+        freeDevicePtr(queue, sensor.intraSlabRayDepthBuffer);
         freeDevicePtr(queue, sensor.intraSlabDepthAdjointBuffer);
         freeDevicePtr(queue, sensor.intraSlabDepthActiveSlabCountBuffer);
         freeDevicePtr(queue, sensor.curvatureScaleBuffer);
+        freeDevicePtr(queue, sensor.surfaceCurvatureBuffer);
         freeDevicePtr(queue, sensor.curvatureScaleAdjointBuffer);
         freeDevicePtr(queue, sensor.curvatureScaleActiveSlabCountBuffer);
         freeDevicePtr(queue, sensor.curvaturePrimitiveIndexBuffer);
@@ -2434,6 +2475,7 @@ namespace {
             requiresVisibleSlabSearch(mode);
         settings.computeCurvatureDiagnostics =
             mode == ViewImageMode::CurvatureScale ||
+            mode == ViewImageMode::SurfaceCurvature ||
             mode == ViewImageMode::CurvaturePrimitiveScore;
         // The legacy gather kernel requests depth normals through this weight.
         settings.normalConsistencyWeight = settings.computeDepthNormalDiagnostics ? 1.0f : 0.0f;
@@ -2741,7 +2783,9 @@ namespace {
         bool invert,
         bool logScale,
         ScalarColorMap colorMap,
-        std::vector<uint8_t>& displayPixels) {
+        std::vector<uint8_t>& displayPixels,
+        float sharedMaximum = 0.0f,
+        bool includeZero = false) {
         const std::size_t pixelCount =
             static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
         displayPixels.assign(pixelCount * 4u, 0u);
@@ -2754,7 +2798,7 @@ namespace {
         bool hasValue = false;
         for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
             const float value = values[pixelIndex];
-            if (!std::isfinite(value) || value <= 0.0f) {
+            if (!std::isfinite(value) || value < 0.0f || (!includeZero && value == 0.0f)) {
                 continue;
             }
 
@@ -2769,6 +2813,11 @@ namespace {
             }
         }
 
+        if (sharedMaximum > 0.0f && std::isfinite(sharedMaximum)) {
+            minValue = 0.0f;
+            maxValue = logScale ? std::log1p(sharedMaximum) : sharedMaximum;
+            hasValue = true;
+        }
         if (!hasValue) {
             for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
                 displayPixels[pixelIndex * 4u + 3u] = 255u;
@@ -2782,7 +2831,7 @@ namespace {
             const std::size_t baseIndex = pixelIndex * 4u;
             const float value = values[pixelIndex];
             displayPixels[baseIndex + 3u] = 255u;
-            if (!std::isfinite(value) || value <= 0.0f) {
+            if (!std::isfinite(value) || value < 0.0f || (!includeZero && value == 0.0f)) {
                 continue;
             }
 
@@ -3217,6 +3266,9 @@ int main(int argc, char** argv) {
         if (!glfwInit()) {
             throw std::runtime_error("Failed to initialize GLFW");
         }
+        Pale::Log::PA_INFO("Viewer window backend: {}",
+            glfwGetPlatform() == GLFW_PLATFORM_WAYLAND ? "Wayland" :
+            glfwGetPlatform() == GLFW_PLATFORM_X11 ? "X11" : "other");
 
         const char* glslVersion = "#version 130";
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -3237,6 +3289,9 @@ int main(int argc, char** argv) {
         glfwSwapInterval(1);
         glfwSetWindowUserPointer(window, &dropState);
         glfwSetDropCallback(window, glfwDropCallback);
+        glfwSetWindowCloseCallback(window, [](GLFWwindow*) {
+            Pale::Log::PA_WARN("Viewer received a window-system close request (user close or display disconnect)");
+        });
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
@@ -3983,10 +4038,43 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 case ViewImageMode::IntraSlabDepth:
+                case ViewImageMode::IntraSlabRayDepth:
                     if (!debugDisplayBuffers.intraSlabDepthValid) {
                         debugDisplayBuffers.intraSlabDepth =
                             Pale::downloadFloatBuffer(queue, sensor.intraSlabDepthBuffer, pixelCount);
+                        debugDisplayBuffers.intraSlabRayDepth =
+                            Pale::downloadFloatBuffer(queue, sensor.intraSlabRayDepthBuffer, pixelCount);
+                        float maximum = 0.0f;
+                        double planeSum = 0.0;
+                        double raySum = 0.0;
+                        for (std::size_t i = 0u; i < pixelCount; ++i) {
+                            const float planeLoss = debugDisplayBuffers.intraSlabDepth[i];
+                            const float rayLoss = debugDisplayBuffers.intraSlabRayDepth[i];
+                            if (std::isfinite(planeLoss)) {
+                                maximum = std::max(maximum, planeLoss);
+                                planeSum += planeLoss;
+                            }
+                            if (std::isfinite(rayLoss)) {
+                                maximum = std::max(maximum, rayLoss);
+                                raySum += rayLoss;
+                            }
+                        }
+                        debugDisplayBuffers.slabLossColorMaximum = maximum;
+                        debugDisplayBuffers.slabPlaneLossMean = planeSum / std::max(pixelCount, std::size_t{1});
+                        debugDisplayBuffers.slabRayLossMean = raySum / std::max(pixelCount, std::size_t{1});
                         debugDisplayBuffers.intraSlabDepthValid = true;
+                    }
+                    return true;
+                case ViewImageMode::SurfaceCurvature:
+                    if (!debugDisplayBuffers.surfaceCurvatureValid) {
+                        debugDisplayBuffers.surfaceCurvature =
+                            Pale::downloadFloatBuffer(queue, sensor.surfaceCurvatureBuffer, pixelCount);
+                        float maximum = 0.0f;
+                        for (const float value : debugDisplayBuffers.surfaceCurvature) {
+                            if (std::isfinite(value)) maximum = std::max(maximum, value);
+                        }
+                        debugDisplayBuffers.surfaceCurvatureMaximum = maximum;
+                        debugDisplayBuffers.surfaceCurvatureValid = true;
                     }
                     return true;
                 case ViewImageMode::CurvatureScale:
@@ -4360,14 +4448,25 @@ int main(int argc, char** argv) {
                             pixels);
                         break;
                     case ViewImageMode::IntraSlabDepth:
+                    case ViewImageMode::IntraSlabRayDepth:
                         colorizeScalarBuffer(
-                            debugDisplayBuffers.intraSlabDepth,
+                            viewImageMode == ViewImageMode::IntraSlabDepth
+                                ? debugDisplayBuffers.intraSlabDepth : debugDisplayBuffers.intraSlabRayDepth,
                             displayedRenderWidth,
                             displayedRenderHeight,
                             false,
                             true,
                             scalarColorMap,
-                            pixels);
+                            pixels,
+                            debugDisplayBuffers.slabLossColorMaximum);
+                        break;
+                    case ViewImageMode::SurfaceCurvature:
+                        colorizeScalarBuffer(
+                            debugDisplayBuffers.surfaceCurvature,
+                            displayedRenderWidth,
+                            displayedRenderHeight,
+                            false, true, scalarColorMap, pixels,
+                            std::max(debugDisplayBuffers.surfaceCurvatureMaximum, 1.0e-6f), true);
                         break;
                     case ViewImageMode::CurvatureScale:
                         colorizeScalarBuffer(
@@ -4529,10 +4628,10 @@ int main(int argc, char** argv) {
         };
 
         const auto cycleViewImageMode = [&](int direction) {
-            const std::size_t modeCount = kViewImageModeShortcutOrder.size();
+            const std::size_t modeCount = kViewImageModeCycleOrder.size();
             std::size_t currentIndex = 0u;
             for (std::size_t index = 0u; index < modeCount; ++index) {
-                if (kViewImageModeShortcutOrder[index] == viewImageMode) {
+                if (kViewImageModeCycleOrder[index] == viewImageMode) {
                     currentIndex = index;
                     break;
                 }
@@ -4541,7 +4640,7 @@ int main(int argc, char** argv) {
             const std::size_t nextIndex = direction > 0
                 ? (currentIndex + 1u) % modeCount
                 : (currentIndex + modeCount - 1u) % modeCount;
-            setViewImageMode(kViewImageModeShortcutOrder[nextIndex]);
+            setViewImageMode(kViewImageModeCycleOrder[nextIndex]);
         };
 
         auto ensureViewerAdjointGradients = [&]() {
@@ -4851,7 +4950,11 @@ int main(int argc, char** argv) {
                 lastSsimDebugMapMs =
                     std::chrono::duration<double, std::milli>(ssimStop - ssimStart).count();
             }
-            updateDisplayTexture();
+            // Prepare diagnostic data on the renderer thread too: some views
+            // launch their own SYCL kernels. OpenGL upload stays on the UI thread.
+            if (viewImageMode != ViewImageMode::Rendered) {
+                ensureDebugDisplayBuffer(viewImageMode);
+            }
             cameraDirty = false;
             renderRequested = false;
         };
@@ -4859,8 +4962,10 @@ int main(int argc, char** argv) {
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+                Pale::Log::PA_INFO("Viewer close requested by Escape");
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
+            if (glfwWindowShouldClose(window)) { break; }
 
             if (dropState.hasPendingPlyPath) {
                 const std::filesystem::path droppedPath = dropState.pendingPlyPath;
@@ -4869,7 +4974,11 @@ int main(int argc, char** argv) {
             }
 
             if ((autoRender && cameraDirty) || renderRequested) {
-                renderNow();
+                glfwSetWindowTitle(window, "Pale Realtime Viewer - rendering / compiling kernels");
+                viewer::runWithEventPump(renderNow, [] { glfwPollEvents(); });
+                if (glfwWindowShouldClose(window)) { break; }
+                glfwSetWindowTitle(window, "Pale Realtime Viewer");
+                updateDisplayTexture();
             }
 
             ImGui_ImplOpenGL3_NewFrame();
@@ -4978,7 +5087,7 @@ int main(int argc, char** argv) {
                      shortcutIndex < viewImageModeShortcutKeys.size();
                      ++shortcutIndex) {
                     if (ImGui::IsKeyPressed(viewImageModeShortcutKeys[shortcutIndex], false)) {
-                        setViewImageMode(kViewImageModeShortcutOrder[shortcutIndex]);
+                        setViewImageMode(kViewImageModeNumberShortcuts[shortcutIndex]);
                         break;
                     }
                 }
@@ -5150,7 +5259,7 @@ int main(int argc, char** argv) {
 
             ImGui::Text("Resolution: %u x %u", renderWidth, renderHeight);
             if (ImGui::BeginCombo("Display", viewImageModeLabel(viewImageMode))) {
-                for (const ViewImageMode candidateMode : kViewImageModeShortcutOrder) {
+                for (const ViewImageMode candidateMode : kViewImageModeCycleOrder) {
                     const bool selected = viewImageMode == candidateMode;
                     if (ImGui::Selectable(viewImageModeLabel(candidateMode), selected)) {
                         setViewImageMode(candidateMode);
@@ -5162,11 +5271,25 @@ int main(int argc, char** argv) {
                 ImGui::EndCombo();
             }
             ImGui::TextDisabled("1-9 direct   +/- cycle display modes");
+            if (viewImageMode == ViewImageMode::IntraSlabDepth ||
+                viewImageMode == ViewImageMode::IntraSlabRayDepth) {
+                ImGui::TextWrapped("Both slab losses use the same logarithmic color scale and unit weight.");
+                ImGui::TextWrapped("Mean ray depth: equal-weight squared hit-depth differences from the slab mean.");
+                if (settings.sharedHeightEnabled) {
+                    ImGui::TextWrapped("Slab loss previews are unavailable while Shared surface experiment is enabled.");
+                } else if (debugDisplayBuffers.intraSlabDepthValid) {
+                    ImGui::Text("Mean per pixel: plane %.6g | ray %.6g",
+                        debugDisplayBuffers.slabPlaneLossMean, debugDisplayBuffers.slabRayLossMean);
+                    ImGui::Text("Shared color range: 0 to %.6g", debugDisplayBuffers.slabLossColorMaximum);
+                }
+            }
             if (viewImageMode == ViewImageMode::MeanDepth ||
                 viewImageMode == ViewImageMode::MedianDepth ||
                 viewImageMode == ViewImageMode::DepthDistortion ||
                 viewImageMode == ViewImageMode::IntraSlabDepth ||
+                viewImageMode == ViewImageMode::IntraSlabRayDepth ||
                 viewImageMode == ViewImageMode::CurvatureScale ||
+                viewImageMode == ViewImageMode::SurfaceCurvature ||
                 viewImageMode == ViewImageMode::CurvaturePrimitiveScore ||
                 viewImageMode == ViewImageMode::PositionPrimitiveScore ||
                 viewImageMode == ViewImageMode::SurfelDensity ||
@@ -5186,6 +5309,15 @@ int main(int argc, char** argv) {
                         IM_ARRAYSIZE(scalarColorMaps))) {
                     scalarColorMap = static_cast<ScalarColorMap>(scalarColorMapIndex);
                     updateDisplayTexture();
+                }
+            }
+            if (viewImageMode == ViewImageMode::SurfaceCurvature) {
+                ImGui::TextWrapped("Estimated curvature magnitude at visible depth, in inverse scene units.");
+                ImGui::TextWrapped("Flat = zero; black = no estimate. Colors rescale per frame (logarithmic).");
+                if (settings.sharedHeightEnabled) {
+                    ImGui::TextWrapped("Unavailable while Shared surface experiment is enabled.");
+                } else if (debugDisplayBuffers.surfaceCurvatureValid) {
+                    ImGui::Text("Maximum curvature: %.6g", debugDisplayBuffers.surfaceCurvatureMaximum);
                 }
             }
             if (viewImageMode == ViewImageMode::SurfelDensity) {
@@ -6363,6 +6495,7 @@ int main(int argc, char** argv) {
             glfwSwapBuffers(window);
         }
 
+        Pale::Log::PA_INFO("Viewer event loop ended; releasing renderer resources");
         if (hasSensor) {
             destroySensor(queue, sensor);
         }

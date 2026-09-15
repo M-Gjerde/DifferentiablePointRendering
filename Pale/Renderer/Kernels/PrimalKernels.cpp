@@ -262,6 +262,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         float3 accumulatedWeightedNormal{0.0f};
         float visibilityWeightedOpacityLoss = 0.0f;
         float intraSlabDepthLossSum = 0.0f;
+        float intraSlabRayDepthLossSum = 0.0f;
         uint32_t intraSlabDepthActiveSlabCount = 0u;
         float previousDepthDistortionWeights[kMaxSplatEventsPerRay];
         float previousDepthDistortionNdcDepths[kMaxSplatEventsPerRay];
@@ -367,6 +368,26 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             const float3 sharedSlabPositionW =
                     slabConsensus.valid != 0u ? slabConsensus.pointW : anchorPositionW;
 
+            if (settings.computeSurfaceDiagnostics && sensor.intraSlabRayDepthBuffer != nullptr &&
+                localLayer.hitCount > 1u) {
+                const float inverseMemberCount = 1.0f / static_cast<float>(localLayer.hitCount);
+                // Relative world-space ray depths avoid cancellation far from the camera.
+                // Every member has equal influence; no opacity or normal-angle weights.
+                float meanDepthOffset = 0.0f;
+                for (uint32_t i = 0u; i < localLayer.hitCount; ++i) {
+                    meanDepthOffset += dot(
+                        localLayer.hits[i].hitPositionW - anchorPositionW, originalRay.direction);
+                }
+                meanDepthOffset *= inverseMemberCount;
+                float rayDepthLoss = 0.0f;
+                for (uint32_t i = 0u; i < localLayer.hitCount; ++i) {
+                    const float depthOffset = dot(
+                        localLayer.hits[i].hitPositionW - anchorPositionW, originalRay.direction);
+                    const float residual = (depthOffset - meanDepthOffset) / localLayerDepthEpsilon;
+                    rayDepthLoss += residual * residual;
+                }
+                intraSlabRayDepthLossSum += rayDepthLoss * inverseMemberCount;
+            }
             // Full, unblended point-to-plane consensus constraint:
             //
             //   x_Q = o + d * B_Q/A_Q
@@ -708,12 +729,18 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         sensor.curvatureScaleAdjointBuffer[pixelIndex] = 0.0f;
         // These outputs must also be fresh when the optional curvature pass is skipped.
         sensor.curvatureScaleBuffer[pixelIndex] = 0.0f;
+        if (sensor.surfaceCurvatureBuffer != nullptr) {
+            sensor.surfaceCurvatureBuffer[pixelIndex] = std::numeric_limits<float>::quiet_NaN();
+        }
         sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
         if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
             sensor.curvaturePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
         }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         sensor.intraSlabDepthBuffer[pixelIndex] = intraSlabDepthLossSum;
+        if (sensor.intraSlabRayDepthBuffer != nullptr) {
+            sensor.intraSlabRayDepthBuffer[pixelIndex] = intraSlabRayDepthLossSum;
+        }
         sensor.intraSlabDepthActiveSlabCountBuffer[pixelIndex] =
                 intraSlabDepthActiveSlabCount;
         if (accumulatedRegularizerWeight > 1.0e-6f) {
@@ -940,6 +967,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             }
 
             float accumulatedScaleLoss = 0.0f;
+            float accumulatedCurvatureMagnitude = 0.0f;
             uint32_t observedMemberCount = 0u;
             const bool accumulateDensificationStats =
                 curvatureDensificationStats.numPoints == scene.pointCount &&
@@ -956,9 +984,18 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 const LocalSurfelLayerHit &localHit = selectedLayer.hits[localHitIndex];
                 const Point &surfel = scene.points[localHit.primitiveIndex];
                 CurvatureTensor tensor{};
+                CurvatureTensor worldTensor{};
                 if (!estimateSurfelCurvature(surfel, selectedLayer,
                         scene.transforms[selectedTransformIndex], scene, slabThickness,
-                        localLayerNormalCosineThreshold, tensor)) { continue; }
+                        localLayerNormalCosineThreshold, tensor,
+                        sensor.surfaceCurvatureBuffer != nullptr ? &worldTensor : nullptr)) { continue; }
+                if (sensor.surfaceCurvatureBuffer != nullptr) {
+                    // Spectral radius of the symmetric world-space normal derivative:
+                    // max(abs(kappa_1), abs(kappa_2)), independent of normal sign.
+                    accumulatedCurvatureMagnitude += 0.5f * (
+                        sycl::fabs(worldTensor.uu + worldTensor.vv) +
+                        sycl::hypot(worldTensor.uu - worldTensor.vv, 2.0f * worldTensor.uv));
+                }
                 ++observedMemberCount;
                 const CurvatureFootprint footprint = evaluateCurvatureFootprint(
                     tensor, surfel.scale.x(), surfel.scale.y(), slabThickness);
@@ -1017,6 +1054,10 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             const float selectedSlabScaleLoss = accumulatedScaleLoss /
                 static_cast<float>(observedMemberCount);
             sensor.curvatureScaleBuffer[pixelIndex] = selectedSlabScaleLoss;
+            if (sensor.surfaceCurvatureBuffer != nullptr) {
+                sensor.surfaceCurvatureBuffer[pixelIndex] = accumulatedCurvatureMagnitude /
+                    static_cast<float>(observedMemberCount);
+            }
             sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 1u;
     });
     scaleCurvatureEvent.wait();
@@ -1041,9 +1082,15 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
     queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount);
     queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount);
+    if (sensor.intraSlabRayDepthBuffer != nullptr) {
+        queue.fill(sensor.intraSlabRayDepthBuffer, 0.0f, pixelCount);
+    }
     queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
     queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
+    if (sensor.surfaceCurvatureBuffer != nullptr) {
+        queue.fill(sensor.surfaceCurvatureBuffer, std::numeric_limits<float>::quiet_NaN(), pixelCount);
+    }
     queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
     queue.wait();

@@ -33,6 +33,7 @@ def extract_mesh_from_point_cloud(
         points_path: Path,
         mesh_output_subdir: Path,
         log_prefix: str,
+        export_gltf: bool = False,
 ) -> Path | None:
     extract_mesh_script = Path(__file__).resolve().with_name("extract_mesh.py")
 
@@ -50,6 +51,11 @@ def extract_mesh_from_point_cloud(
         "--num-cluster",
         str(int(config.mesh_extraction_num_cluster)),
     ]
+    command.append("--export-gltf" if export_gltf else "--no-export-gltf")
+    if export_gltf:
+        command.extend(["--texture-size", str(int(config.mesh_albedo_texture_size))])
+        command.extend(["--uv-partitions", str(int(config.mesh_uv_partitions)),
+                        "--uv-threads", str(int(config.mesh_uv_threads))])
 
     print(
         f"{log_prefix} Extracting mesh to "
@@ -76,12 +82,16 @@ def extract_mesh_from_point_cloud(
     return mesh_path
 
 
-def extract_mesh_checkpoint(config: OptimizationConfig, iteration: int, points_path: Path) -> Path | None:
+def extract_mesh_checkpoint(
+        config: OptimizationConfig, iteration: int, points_path: Path,
+        *, export_gltf: bool = False,
+) -> Path | None:
     mesh_path = extract_mesh_from_point_cloud(
         config=config,
         points_path=points_path,
         mesh_output_subdir=Path("mesh_checkpoints") / f"iter_{iteration:05d}",
         log_prefix=f"[Iter {iteration:04d}]",
+        export_gltf=export_gltf,
     )
     if mesh_path is None:
         return None
@@ -99,6 +109,7 @@ def extract_final_mesh(config: OptimizationConfig, points_path: Path) -> Path | 
         points_path=points_path,
         mesh_output_subdir=Path("mesh"),
         log_prefix="[Final]",
+        export_gltf=True,
     )
 
 
@@ -1713,6 +1724,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             )
                             manual_mesh_path = extract_mesh_checkpoint(
                                 config, global_iteration, manual_points_path,
+                                export_gltf=True,
                             )
                             log_geometry_checkpoint(
                                 geometry_metrics, config, manual_mesh_path, global_iteration,
@@ -2463,6 +2475,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
                         manual_mesh_path = extract_mesh_checkpoint(
                             config, global_iteration, manual_points_path,
+                            export_gltf=True,
                         )
                         log_geometry_checkpoint(
                             geometry_metrics, config, manual_mesh_path, global_iteration,

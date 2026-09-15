@@ -21,8 +21,9 @@ class RendererSettingsConfig:
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
+    local_layer_depth_mode: str = "symmetric_ray_depth"
 
-    def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool]:
+    def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool | str]:
         settings = asdict(self)
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
@@ -89,14 +90,14 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.005
     # Absolute pairwise camera-forward depth differences in scene units.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.001
     opacity_prior_weight: float = 0.0
-    intra_slab_depth_weight: float = 2.0e-4
-    curvature_scale_weight: float = 0.0e-7
+    intra_slab_depth_weight: float = 1.0e-5
+    curvature_scale_weight: float = 1.0e-6
 
     # Rendering model
     share_local_layer_direct_lighting: bool = True
@@ -196,6 +197,9 @@ class OptimizationConfig:
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 50
+    mesh_albedo_texture_size: int = 2048
+    mesh_uv_partitions: int = 0
+    mesh_uv_threads: int = 0
     save_final_mesh: bool = True
     ground_truth: Path | None = None
     geometry_samples: int = 500_000
@@ -658,7 +662,8 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
-    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster")
+    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
+                      "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
     _add_boolean_argument(mesh, "--save-final-mesh")
     mesh.add_argument(
         "--ground-truth",

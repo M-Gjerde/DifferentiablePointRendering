@@ -41,6 +41,17 @@ cmake -S tools/realtime_viewer -B build-realtime \
 
 ## Run
 
+Rendering and diagnostic kernel compilation run on a worker while the main
+thread continues processing window-system events. This prevents a long JIT
+compile from starving the Wayland connection. The title indicates that rendering
+or compilation is in progress; controls are applied after the current work
+finishes. OpenGL presentation remains on the main thread. Closing during a render
+waits for that work to finish before releasing its resources.
+
+Startup logs identify the window backend. Shutdown logs distinguish Escape from
+a window-system close request; the latter can also indicate a lost display
+connection. An informational AdaptiveCpp JIT warning alone is not an error.
+
 ```bash
 ./build-realtime/PaleRealtimeViewer --assets Assets --pointcloud points.ply --scene cbox.xml
 ```
@@ -69,10 +80,10 @@ or **Load latest run PLY** to search for the latest run again.
 
 Under **Surfel traversal → Slab distance**, select:
 
-- **Along surface normal** (default): use the anchor-normal distance
+- **Along surface normal**: use the anchor-normal distance
   `abs(dot(x_i - x_anchor, n_anchor)) <= h`. The candidate ray interval expands
   by `h / max(abs(dot(n_anchor, ray_direction)), 0.05)` at grazing angles.
-- **Symmetric along ray**: use the fixed interval
+- **Symmetric along ray** (default for the viewer and training): use the fixed interval
   `[t_anchor - h, t_anchor + h]`, where `h` is the **Ray depth half-width**.
   The interval is clipped to the active ray; because the anchor is its first
   hit, the portion before the anchor normally contains no additional hits.
@@ -85,6 +96,60 @@ disabled.
 
 Python renderer settings expose the same choice as
 `local_layer_depth_mode="normal_distance"` or `"symmetric_ray_depth"`.
+The existing point-to-plane intra-slab regularizer remains the training loss;
+the mean ray-depth alternative is a diagnostic preview only.
+
+### Surface curvature map
+
+The display menu and **+/-** cycle group **Surface curvature (magnitude)**,
+**Curvature scale**, and **Curvature primitive score** consecutively. Number-key
+shortcuts remain unchanged, including **8** for Curvature scale.
+
+Choose **Display → Surface curvature (magnitude)** for an estimate of local
+surface bending. For each fitted member of the visible slab, the map uses
+`max(abs(kappa_1), abs(kappa_2))`, the largest absolute eigenvalue of the fitted
+world-space normal derivative, then averages these magnitudes over valid members.
+Units are inverse scene units: a sphere of radius `R` has magnitude `1/R`.
+The slab is selected near median depth by default, or mean depth if that option
+is enabled, using the existing curvature diagnostic's visible-slab search.
+
+This uses neighboring surfel centers and normals, rather than differentiating
+the depth image. Neighborhood coverage and slab membership affect the estimate;
+unobserved tangent directions cannot be recovered from a single neighbor.
+The existing **Curvature scale** map instead shows a footprint-size penalty,
+which can be zero on a curved surface with sufficiently small surfels.
+
+Valid flat estimates are zero and use the low end of the colormap. Black means
+no usable estimate (including background and isolated surfels). The logarithmic
+color scale starts at zero and rescales to each frame's maximum, shown below
+the display selector. The map is unavailable in **Shared surface experiment**.
+It is a forward diagnostic and does not enable a training loss or splitting.
+
+Python callers can opt in with `preview_surface_curvature=True`; the forward
+result then contains `surface_curvature`, with `NaN` for unavailable estimates.
+
+### Comparing intra-slab losses
+
+The **Display** menu offers **Intra-slab depth (plane distance)** (shortcut **7**)
+and **Intra-slab depth (mean ray depth)**. The latter previews
+`mean_i(((t_i - mean_j(t_j)) / h)^2)` for each slab, with equal weight for all
+members. Here `t_i` is world-space distance along the camera ray and `h` is the
+slab distance tolerance. Slab losses are summed per pixel, just as in the
+existing plane-distance view.
+
+Both views use the selected slab membership rule and normal filter. They share
+a logarithmic color scale from zero to the maximum of both maps for the current
+frame, so equal colors represent equal loss values. The viewer also displays
+both means over all pixels, including zero-loss pixels. Existing shortcuts
+1–9 are preserved; select the new view from **Display** or cycle with **+/-**.
+
+This is a forward-only comparison: training losses, their gradients, and the
+shared point used for shading are unchanged. These slab diagnostics are
+unavailable while **Shared surface experiment** is enabled.
+
+For integration checks, the Python setting `preview_intra_slab_ray_depth=True`
+enables the optional `intra_slab_ray_depth_preview` forward output. It is off
+by default and has no backward output.
 
 ### Training debug defaults
 

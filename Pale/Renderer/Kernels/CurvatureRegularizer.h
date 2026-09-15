@@ -94,7 +94,8 @@ namespace Pale {
     inline bool estimateSurfelCurvature(
         const Point &surfel, const PointCloudLocalLayer &layer,
         const Transform &transform, const GPUSceneBuffers &scene,
-        float thickness, float normalThreshold, CurvatureTensor &footprintTensor) {
+        float thickness, float normalThreshold, CurvatureTensor &footprintTensor,
+        CurvatureTensor *worldTensor = nullptr) {
         // transformDirection normalizes its result; retain transformed lengths
         // here because they are part of the physical ellipse footprint.
         const float3x3 linear = linearPart(transform.objectToWorld);
@@ -134,6 +135,7 @@ namespace Pale {
         }
         if (fit.cuu + fit.cvv <= 0.0f) { return false; }
         const CurvatureTensor b = fit.solve();
+        if (worldTensor != nullptr) { *worldTensor = b; }
         // Pull the world-space form back through the transformed surfel axes.
         // This also accounts for nonuniform instance scale and shear.
         const float u = sycl::sqrt(uSquared);

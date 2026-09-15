@@ -361,6 +361,39 @@ public:
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
         sceneGpu = Pale::SceneUpload::allocateAndUpload(buildProducts, deviceSelector->getQueue());
         sensorsForward = Pale::makeSensorsForScene(deviceSelector->getQueue(), buildProducts);
+        // Optional forward-only diagnostic; training losses and adjoints remain unchanged.
+        const bool previewRayDepth = get_b(settingsDict, "preview_intra_slab_ray_depth", false);
+        const bool previewCurvature = get_b(settingsDict, "preview_surface_curvature", false);
+        if (previewCurvature) m_settings.computeCurvatureDiagnostics = true;
+        if (previewRayDepth || previewCurvature) {
+            auto queue = deviceSelector->getQueue();
+            try {
+                for (auto &sensor : sensorsForward) {
+                    const size_t pixelCount = static_cast<size_t>(sensor.width) * sensor.height;
+                    if (previewRayDepth) {
+                        sensor.intraSlabRayDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
+                        if (!sensor.intraSlabRayDepthBuffer) throw std::bad_alloc();
+                        queue.fill(sensor.intraSlabRayDepthBuffer, 0.0f, pixelCount);
+                    }
+                    if (previewCurvature) {
+                        sensor.surfaceCurvatureBuffer = sycl::malloc_device<float>(pixelCount, queue);
+                        if (!sensor.surfaceCurvatureBuffer) throw std::bad_alloc();
+                        queue.fill(sensor.surfaceCurvatureBuffer,
+                            std::numeric_limits<float>::quiet_NaN(), pixelCount);
+                    }
+                }
+                queue.wait();
+            } catch (...) {
+                queue.wait();
+                for (auto &sensor : sensorsForward) {
+                    if (sensor.intraSlabRayDepthBuffer) sycl::free(sensor.intraSlabRayDepthBuffer, queue);
+                    sensor.intraSlabRayDepthBuffer = nullptr;
+                    if (sensor.surfaceCurvatureBuffer) sycl::free(sensor.surfaceCurvatureBuffer, queue);
+                    sensor.surfaceCurvatureBuffer = nullptr;
+                }
+                throw;
+            }
+        }
         //Pale::float4 color = {0.025, 0.075, 0.165, 1.0f};
         //Pale::setBackgroundColor(deviceSelector->getQueue(), sensorsForward, color);
 
@@ -457,6 +490,10 @@ public:
             freeRgbSsimScratch(queue);
             freeDeviceTrainingState(queue);
             queue.wait();
+            for (auto &sensor : sensorsForward) {
+                if (sensor.intraSlabRayDepthBuffer) sycl::free(sensor.intraSlabRayDepthBuffer, queue);
+                if (sensor.surfaceCurvatureBuffer) sycl::free(sensor.surfaceCurvatureBuffer, queue);
+            }
         }
 
         if (assetManager) {
@@ -486,8 +523,10 @@ public:
             std::vector<float> depthDistortionData;
             std::vector<float> visibilityWeightedOpacityData;
             std::vector<float> intraSlabDepthData;
+            std::vector<float> intraSlabRayDepthData;
             std::vector<std::uint32_t> intraSlabDepthActiveSlabCountData;
             std::vector<float> curvatureScaleData;
+            std::vector<float> surfaceCurvatureData;
             std::vector<std::uint32_t> curvatureScaleActiveSlabCountData;
 
             std::vector<float> medianDepthData;
@@ -524,6 +563,14 @@ public:
 
             hostImage.intraSlabDepthData =
                     Pale::downloadFloatBuffer(queue, sensor.intraSlabDepthBuffer, pixelCount);
+            if (sensor.surfaceCurvatureBuffer) {
+                hostImage.surfaceCurvatureData =
+                        Pale::downloadFloatBuffer(queue, sensor.surfaceCurvatureBuffer, pixelCount);
+            }
+            if (sensor.intraSlabRayDepthBuffer) {
+                hostImage.intraSlabRayDepthData =
+                        Pale::downloadFloatBuffer(queue, sensor.intraSlabRayDepthBuffer, pixelCount);
+            }
             hostImage.intraSlabDepthActiveSlabCountData =
                     Pale::downloadUint32Buffer(
                         queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
@@ -635,6 +682,14 @@ public:
 
             cameraResult[py::str("intra_slab_depth")] =
                     makeScalarArray(hostImage.intraSlabDepthData);
+            if (!hostImage.surfaceCurvatureData.empty()) {
+                cameraResult[py::str("surface_curvature")] =
+                        makeScalarArray(hostImage.surfaceCurvatureData);
+            }
+            if (!hostImage.intraSlabRayDepthData.empty()) {
+                cameraResult[py::str("intra_slab_ray_depth_preview")] =
+                        makeScalarArray(hostImage.intraSlabRayDepthData);
+            }
             cameraResult[py::str("intra_slab_depth_active_slab_count")] =
                     makeUintScalarArray(hostImage.intraSlabDepthActiveSlabCountData);
             cameraResult[py::str("curvature_scale")] =
