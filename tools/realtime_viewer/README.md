@@ -65,6 +65,27 @@ Arrow-key navigation refreshes only the active run's `points` folder, including
 new snapshots written during training. It stays in that run until you use `R`
 or **Load latest run PLY** to search for the latest run again.
 
+### Slab distance modes
+
+Under **Surfel traversal → Slab distance**, select:
+
+- **Along surface normal** (default): use the anchor-normal distance
+  `abs(dot(x_i - x_anchor, n_anchor)) <= h`. The candidate ray interval expands
+  by `h / max(abs(dot(n_anchor, ray_direction)), 0.05)` at grazing angles.
+- **Symmetric along ray**: use the fixed interval
+  `[t_anchor - h, t_anchor + h]`, where `h` is the **Ray depth half-width**.
+  The interval is clipped to the active ray; because the anchor is its first
+  hit, the portion before the anchor normally contains no additional hits.
+
+Only the distance test changes. Both modes retain the normal-alignment filter,
+hit/member limits, order-averaged blending, transmission, and lighting rules.
+The selected mode is shared by camera rendering, adjoint traversal, and slab
+diagnostics. Changing it requests a new render, including when auto-render is
+disabled.
+
+Python renderer settings expose the same choice as
+`local_layer_depth_mode="normal_distance"` or `"symmetric_ray_depth"`.
+
 ### Training debug defaults
 
 Debug computations follow the selected **Display** view. Normal RGB browsing

@@ -1049,7 +1049,7 @@ namespace Pale {
                                 scene,
                                 localLayerDepthEpsilon,
                                 maxLocalSurfelHits,
-                                localLayerNormalCosineThreshold);
+                                localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                             hasPrebuiltPointLayer = true;
                         }
                     } else {
@@ -1074,7 +1074,7 @@ namespace Pale {
                                     scene,
                                     localLayerDepthEpsilon,
                                     maxLocalSurfelHits,
-                                    localLayerNormalCosineThreshold);
+                                    localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                         const float qNull = settings.sampling.qNull;
                         const float qReflect = settings.sampling.qReflect;
                         float3 sampledOutgoingDirectionWorld{0.0f};
@@ -1544,7 +1544,7 @@ namespace Pale {
                             scene,
                             localLayerDepthEpsilon,
                             maxLocalSurfelHits,
-                            localLayerNormalCosineThreshold);
+                            localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                         hasPrebuiltPointLayer = true;
                     }
                 } else {
@@ -1569,7 +1569,7 @@ namespace Pale {
                                 scene,
                                 localLayerDepthEpsilon,
                                 maxLocalSurfelHits,
-                                localLayerNormalCosineThreshold);
+                                localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                 const Point &referenceSurfel = scene.points[worldHit.primitiveIndex];
                 float3 referenceNormal = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
                 if (dot(referenceNormal, -rayDirection) < 0.0f) referenceNormal = -referenceNormal;
@@ -2820,7 +2820,7 @@ namespace Pale {
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 constexpr float kAlphaEpsilon = 1.0e-8f;
 
-                constexpr bool kDetachDepthDistortionWeights = true;
+                constexpr bool kDetachDepthDistortionWeights = false;
 
                 const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
                 const uint32_t pixelX = pixelIndex % imageWidth;
@@ -3004,7 +3004,8 @@ namespace Pale {
                 //
                 // Depth distortion:
                 //
-                //   Gamma = sum_{i<j} w_i w_j (m_i-m_j)^2
+                //   Gamma = sum_{i<j} w_i w_j |m_i-m_j|
+                //   m_i is camera-forward depth in world-space mode (the default).
                 //
                 // Normal:
                 //
@@ -3035,21 +3036,24 @@ namespace Pale {
                             const SurfaceRegularizerHitRecord &lowerHit = hitIsUpper ? hits[otherIndex] : hit;
                             const SurfaceRegularizerHitRecord &upperHit = hitIsUpper ? hit : hits[otherIndex];
                             const float ndcDepthDelta = upperHit.ndcDepth - lowerHit.ndcDepth;
-                            const float ndcDepthDeltaSquared = ndcDepthDelta * ndcDepthDelta;
+                            const float absoluteDepthDelta = sycl::fabs(ndcDepthDelta);
+                            // Choose the zero subgradient at coincident depths.
+                            const float depthDeltaSign = ndcDepthDelta > 0.0f ? 1.0f :
+                                (ndcDepthDelta < 0.0f ? -1.0f : 0.0f);
                             const float depthPairWeight =
                                     lowerHit.compositeWeight * upperHit.compositeWeight * depthDistortionAdjoint;
 
                             if (hitIsUpper) {
-                                barDepthDepth += depthPairWeight * 2.0f * ndcDepthDelta * depthToNdcDerivative;
+                                barDepthDepth += depthPairWeight * depthDeltaSign * depthToNdcDerivative;
                                 if (!kDetachDepthDistortionWeights) {
                                     barWeightDepth += lowerHit.compositeWeight *
-                                                      ndcDepthDeltaSquared * depthDistortionAdjoint;
+                                                      absoluteDepthDelta * depthDistortionAdjoint;
                                 }
                             } else {
-                                barDepthDepth -= depthPairWeight * 2.0f * ndcDepthDelta * depthToNdcDerivative;
+                                barDepthDepth -= depthPairWeight * depthDeltaSign * depthToNdcDerivative;
                                 if (!kDetachDepthDistortionWeights) {
                                     barWeightDepth += upperHit.compositeWeight *
-                                                      ndcDepthDeltaSquared * depthDistortionAdjoint;
+                                                      absoluteDepthDelta * depthDistortionAdjoint;
                                 }
                             }
                         }
@@ -3140,8 +3144,8 @@ namespace Pale {
                         atomicAddFloat3(depthGradients.gradRotation[hit.primitiveIndex], depthRotationGradient);
                         if (!kDetachDepthDistortionWeights) {
                             atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex], float2{depthGradient.scaleU, depthGradient.scaleV});
-                            atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
-                            atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
+                            //atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
+                            //atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
                         }
                     }
                     // =========================================================
@@ -3177,8 +3181,8 @@ namespace Pale {
                     if (writeDebugImages) {
                         const float appliedDepthScaleU = kDetachDepthDistortionWeights ? 0.0f : depthGradient.scaleU;
                         const float appliedDepthScaleV = kDetachDepthDistortionWeights ? 0.0f : depthGradient.scaleV;
-                        const float appliedDepthOpacity = kDetachDepthDistortionWeights ? 0.0f : depthGradient.opacity;
-                        const float appliedDepthBeta = kDetachDepthDistortionWeights ? 0.0f : depthGradient.beta;
+                        const float appliedDepthOpacity = 0.0f;
+                        const float appliedDepthBeta =    0.0f;
                         const float3 totalPosition = depthGradient.position + normalGradient.position;
                         const float3 totalRotation = depthRotationGradient + normalRotationGradient;
                         SurfelGradientRecord debugRecord{};
@@ -3350,7 +3354,7 @@ namespace Pale {
                                     scene,
                                     localLayerDepthEpsilon,
                                     maxLocalSurfelHits,
-                                    localLayerNormalCosineThreshold);
+                                    localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                                 accumulateIntraSlabLayerGradient(localLayer);
                                 ++traversalIndex;
                                 furthestConsumedT = sycl::fmax(furthestConsumedT, localLayer.furthestT);
@@ -3400,7 +3404,7 @@ namespace Pale {
                                 scene,
                                 localLayerDepthEpsilon,
                                 maxLocalSurfelHits,
-                                localLayerNormalCosineThreshold);
+                                localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                             accumulateIntraSlabLayerGradient(localLayer);
                             slabRay.origin += slabRay.direction * (localLayer.furthestT + RayEpsilon);
                         }
@@ -3440,7 +3444,7 @@ namespace Pale {
                                 scene,
                                 localLayerDepthEpsilon,
                                 maxLocalSurfelHits,
-                                localLayerNormalCosineThreshold);
+                                localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                             if (localLayer.hitCount == 0u) { break; }
 
                             const float anchorDepth = dot(

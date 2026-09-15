@@ -315,7 +315,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                 distortion += previousDepthDistortionWeights[previousIndex] * compositeWeight *
-                              depthDifference * depthDifference;
+                              sycl::fabs(depthDifference);
             }
             if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
                 previousDepthDistortionWeights[previousDepthDistortionHitCount] = compositeWeight;
@@ -547,7 +547,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                         scene,
                         localLayerDepthEpsilon,
                         maxLocalSurfelHits,
-                        localLayerNormalCosineThreshold);
+                        localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
 
                     renderPointLocalLayer(localLayer, renderingRay);
                     ++traversalIndex;
@@ -638,7 +638,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                         scene,
                         localLayerDepthEpsilon,
                         maxLocalSurfelHits,
-                        localLayerNormalCosineThreshold);
+                        localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                     if (profileEnabled) {
                         profilePointHitCandidates += localLayer.hitCount;
                     }
@@ -896,7 +896,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 if (instance.geometryType == GeometryType::Mesh) { break; }
                 if (instance.geometryType != GeometryType::PointCloud) { break; }
 
-                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(scaleRegularizerRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold);
+                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(scaleRegularizerRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                 if (localLayer.hitCount == 0u) { break; }
 
                 const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
@@ -1131,7 +1131,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
             for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                 const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                 distortion += previousDepthDistortionWeights[previousIndex] * wi *
-                              depthDifference * depthDifference;
+                              sycl::fabs(depthDifference);
             }
             if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
                 previousDepthDistortionWeights[previousDepthDistortionHitCount] = wi;

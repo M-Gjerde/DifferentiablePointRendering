@@ -805,6 +805,11 @@ namespace Pale {
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
 
+    enum class LocalLayerDepthMode : uint32_t {
+        NormalDistance = 0u,
+        SymmetricRayDepth = 1u
+    };
+
     struct alignas(16) PathTracerSettings {
         IntegratorKind integratorKind = IntegratorKind::photonMapping;
         uint32_t photonsPerLaunch = 1e6;
@@ -822,7 +827,8 @@ namespace Pale {
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
-        bool depthDistortionWorldSpace = false;
+        // Absolute pairwise camera-forward depth differences in scene units.
+        bool depthDistortionWorldSpace = true;
         float normalConsistencyWeight = 0.0f;
         float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
@@ -868,6 +874,7 @@ namespace Pale {
 
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
+        LocalLayerDepthMode rendererDebugLocalLayerDepthMode = LocalLayerDepthMode::NormalDistance;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
         uint32_t rendererDebugMaxSplatEventsPerRay = 8;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;

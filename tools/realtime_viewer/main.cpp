@@ -5837,9 +5837,27 @@ int main(int argc, char** argv) {
                 }
 
                 if (ImGui::CollapsingHeader("Surfel traversal")) {
+                    int slabDepthMode = static_cast<int>(settings.rendererDebugLocalLayerDepthMode);
+                    const char* slabDepthModes[] = {
+                        "Along surface normal", "Symmetric along ray"
+                    };
+                    if (ImGui::Combo("Slab distance", &slabDepthMode, slabDepthModes, 2)) {
+                        settings.rendererDebugLocalLayerDepthMode =
+                            static_cast<Pale::LocalLayerDepthMode>(slabDepthMode);
+                        tracerDirty = true;
+                        renderRequested = true;
+                    }
+                    const bool symmetricSlabDepth = settings.rendererDebugLocalLayerDepthMode ==
+                        Pale::LocalLayerDepthMode::SymmetricRayDepth;
+                    ImGui::TextWrapped(symmetricSlabDepth
+                        ? "Fixed distance before and after the first hit along the ray."
+                        : "Distance measured along the first hit's surface normal; the ray interval widens at grazing angles.");
+                    ImGui::TextWrapped("Normal alignment and member limits apply in both modes.");
                     float localLayerDepthEpsilon = settings.rendererDebugLocalLayerDepthEpsilon;
                     if (ImGui::DragFloat(
-                            "Local layer depth epsilon",
+                            symmetricSlabDepth
+                                ? "Ray depth half-width##LocalLayerDepthEpsilon"
+                                : "Normal distance tolerance##LocalLayerDepthEpsilon",
                             &localLayerDepthEpsilon,
                             0.0005f,
                             0.0f,

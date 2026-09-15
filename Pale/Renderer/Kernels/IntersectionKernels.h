@@ -1298,6 +1298,17 @@ namespace Pale {
         return layer;
     }
 
+    SYCL_EXTERNAL inline float pointCloudLocalLayerRayHalfWidth(
+        const float3 &referenceNormalW,
+        const float3 &rayDirectionW,
+        float depthEpsilon,
+        LocalLayerDepthMode depthMode) {
+        if (depthMode == LocalLayerDepthMode::SymmetricRayDepth) return depthEpsilon;
+        // Bound the normal-distance search at grazing incidence.
+        const float viewCosine = sycl::fabs(dot(referenceNormalW, rayDirectionW));
+        return depthEpsilon / sycl::fmax(viewCosine, 0.05f);
+    }
+
     SYCL_EXTERNAL static PointCloudLocalLayer buildPointCloudLocalLayerFromHits(
         const Ray &rayWorld,
         const LocalSurfelLayerHit &firstHit,
@@ -1306,7 +1317,8 @@ namespace Pale {
         const GPUSceneBuffers &scene,
         float localLayerDepthEpsilon,
         uint32_t maxLocalSurfelHits,
-        float localLayerNormalCosineThreshold) {
+        float localLayerNormalCosineThreshold,
+        LocalLayerDepthMode depthMode) {
         PointCloudLocalLayer layer{};
         layer.hitCount = 0u;
         layer.furthestT = firstHit.tWorld;
@@ -1324,35 +1336,22 @@ namespace Pale {
         layer.referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
         if (dot(layer.referenceNormalW, -rayWorld.direction) < 0.0f) layer.referenceNormalW = -layer.referenceNormalW;
 
-        // localLayerDepthEpsilon now represents physical slab thickness along
-        // the anchor surface normal rather than distance along the viewing ray.
-        //
-        // For two parallel surfaces separated by normal distance delta:
-        //
-        //     delta = Delta_t * |n . d|
-        //
-        // hence:
-        //
-        //     Delta_t = delta / |n . d|.
-        //
-        // Clamp the denominator so a nearly tangent ray cannot generate an
-        // arbitrarily long search interval.
-        static constexpr float kMinLocalLayerViewCosine = 0.05f;
-
-        const float viewCosine = sycl::fabs(dot(layer.referenceNormalW, rayWorld.direction));
-        const float effectiveViewCosine = sycl::fmax(viewCosine, kMinLocalLayerViewCosine);
-        const float raySearchDepth = localLayerDepthEpsilon / effectiveViewCosine;
+        const bool symmetricRayDepth = depthMode == LocalLayerDepthMode::SymmetricRayDepth;
+        const float raySearchDepth = pointCloudLocalLayerRayHalfWidth(
+            layer.referenceNormalW, rayWorld.direction, localLayerDepthEpsilon, depthMode);
+        const float localTMin = symmetricRayDepth
+            ? firstHit.tWorld - raySearchDepth : firstHit.tWorld;
         const float localTMax = firstHit.tWorld + raySearchDepth;
 
-        // Then determine actual slab membership using physical normal distance
-        // from the anchor rather than ray-depth distance.
+        // Symmetric mode uses [t_anchor-h, t_anchor+h] on the active ray.
+        // Normal-distance mode also tests the physical anchor-normal separation.
         for (uint32_t candidateIndex = 0u;
              candidateIndex < candidateCount && layer.hitCount < maxLocalSurfelHits;
              ++candidateIndex) {
             const LocalSurfelLayerHit &candidate = candidateHits[candidateIndex];
 
             if (candidate.primitiveIndex == kInvalidIndex) continue;
-            if (candidate.tWorld + RayEpsilon < firstHit.tWorld) continue;
+            if (candidate.tWorld + RayEpsilon < localTMin) continue;
             if (candidate.tWorld > localTMax) continue;
 
             const Point &candidateSurfel = scene.points[candidate.primitiveIndex];
@@ -1367,15 +1366,8 @@ namespace Pale {
 
             const float3 anchorToCandidate = candidate.hitPositionW - firstHit.hitPositionW;
 
-            // View-independent slab depth:
-            //
-            //     d_perp = |(x_i - x_1) . n_1|
-            //
-            // rather than:
-            //
-            //     d_ray = |t_i - t_1|.
             const float normalDistance = sycl::fabs(dot(anchorToCandidate, layer.referenceNormalW));
-            if (normalDistance > localLayerDepthEpsilon) continue;
+            if (!symmetricRayDepth && normalDistance > localLayerDepthEpsilon) continue;
 
             layer.hits[layer.hitCount] = candidate;
             ++layer.hitCount;
@@ -1491,7 +1483,8 @@ namespace Pale {
         const GPUSceneBuffers &scene,
         float localLayerDepthEpsilon,
         uint32_t maxLocalSurfelHits,
-        float localLayerNormalCosineThreshold) {
+        float localLayerNormalCosineThreshold,
+        LocalLayerDepthMode depthMode) {
         if (maxLocalSurfelHits == 0u) {
             return PointCloudLocalLayer{};
         }
@@ -1501,12 +1494,10 @@ namespace Pale {
         float3 referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
         if (dot(referenceNormalW, -rayWorld.direction) < 0.0f) referenceNormalW = -referenceNormalW;
 
-        static constexpr float kMinLocalLayerViewCosine = 0.05f;
-        const float viewCosine = sycl::fabs(dot(referenceNormalW, rayWorld.direction));
-        const float effectiveViewCosine = sycl::fmax(viewCosine, kMinLocalLayerViewCosine);
-        const float raySearchDepth = localLayerDepthEpsilon / effectiveViewCosine;
-
-        const float localTMin = firstHit.t;
+        const float raySearchDepth = pointCloudLocalLayerRayHalfWidth(
+            referenceNormalW, rayWorld.direction, localLayerDepthEpsilon, depthMode);
+        const float localTMin = depthMode == LocalLayerDepthMode::SymmetricRayDepth
+            ? sycl::fmax(RayEpsilon, firstHit.t - raySearchDepth) : firstHit.t;
         const float localTMax = firstHit.t + raySearchDepth;
 
         const Ray rayObject = toObjectSpace(rayWorld, transform);
@@ -1539,7 +1530,8 @@ namespace Pale {
             scene,
             localLayerDepthEpsilon,
             maxLocalSurfelHits,
-            localLayerNormalCosineThreshold);
+            localLayerNormalCosineThreshold,
+            depthMode);
     }
 
     // Transmit and only attenuate the ray.

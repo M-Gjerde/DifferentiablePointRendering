@@ -89,11 +89,11 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.0025
-    # Use linear camera-forward depth in scene units instead of inverse-depth NDC.
+    depth_distort_weight: float = 0.001
+    # Absolute pairwise camera-forward depth differences in scene units.
     depth_distort_world_space: bool = True
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.01
+    normal_consistency_weight: float = 0.005
     opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 2.0e-4
     curvature_scale_weight: float = 0.0e-7
@@ -109,7 +109,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 400
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -127,13 +127,13 @@ class OptimizationConfig:
     # Absolute mode bypasses global and radiance-band score quantiles.
     # Both modes retain the bounded brightness preference below.
     densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 6.0e-4
-    densification_grad_abs_min_final: float = 6.0e-4
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
     # Densification: quantile selection (used only in "quantile" mode)
-    densification_grad_quantile: float = 0.75
+    densification_grad_quantile: float = 1.0
     # Apply the gradient quantile independently in log2 rendered/target
     # radiance bands. Values <= 1 disable radiance stratification.
     densification_radiance_quantile_bins: int = 16

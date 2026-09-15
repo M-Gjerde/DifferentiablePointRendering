@@ -324,6 +324,17 @@ public:
                     get_f(settingsDict,
                           "local_layer_depth_epsilon",
                           m_settings.rendererDebugLocalLayerDepthEpsilon);
+            if (settingsDict.contains("local_layer_depth_mode")) {
+                const std::string mode = settingsDict["local_layer_depth_mode"].cast<std::string>();
+                if (mode == "normal_distance") {
+                    m_settings.rendererDebugLocalLayerDepthMode = Pale::LocalLayerDepthMode::NormalDistance;
+                } else if (mode == "symmetric_ray_depth") {
+                    m_settings.rendererDebugLocalLayerDepthMode = Pale::LocalLayerDepthMode::SymmetricRayDepth;
+                } else {
+                    throw std::invalid_argument(
+                        "local_layer_depth_mode must be 'normal_distance' or 'symmetric_ray_depth'");
+                }
+            }
             m_settings.rendererDebugLocalLayerNormalCosineThreshold =
                     get_f(settingsDict,
                           "local_layer_normal_cosine_threshold",
