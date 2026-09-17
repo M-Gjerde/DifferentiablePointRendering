@@ -64,8 +64,7 @@ confirmed study: prepare a new output root/study name for further exploration.
 | Final position schedule factor | 10 / 5 / 3 / 1; initial factor fixed at 10 |
 | Decay duration | 7,500 / 15,000 / 22,500 / 30,000 iterations |
 | Densification interval | 100 / 200 / 400 |
-| Gradient quantile / absolute floor | 0.60–0.95 in steps of 0.05; 1e-6–3e-4 log |
-| Radiance quantile bins | 1 / 4 / 8 bins |
+| Absolute gradient threshold | 1e-6–3e-4 log |
 | Minimum split scale | 0.003–0.012 log |
 | Split displacement / scale divisor | 0.15–0.60; 1.2–2 log |
 | Maximum new fraction | 0.1 / 0.25 / 1 |
@@ -92,7 +91,7 @@ Relative-error densification remains enabled, with no extra albedo compensation.
 Its radiance floor is fixed at **0.001**, and `densify_after` is fixed at **0**,
 matching the current config. Depth distortion and normal consistency weights
 are both searched over the ranges above.
-Curvature densification/regularization, opacity resets, SSIM, shared lighting,
+Curvature densification/regularization, SSIM, shared lighting,
 adjoint sample count, camera policy, and mesh extraction settings otherwise keep
 their current defaults. Disabled or inactive options are not searched merely
 because they exist.

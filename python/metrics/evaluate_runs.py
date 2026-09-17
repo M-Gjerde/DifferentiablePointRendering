@@ -34,7 +34,6 @@ RUN_CONFIG_PARAMETERS = [
     "prune_interval",
     "densify_after",
     "prune_after",
-    "densification_grad_quantile",
     "densification_grad_abs_min",
     "densification_grad_abs_min_final",
     "densification_grad_abs_min_decay_start_iteration",
@@ -51,7 +50,6 @@ RUN_CONFIG_PARAMETERS = [
     "ssim_sigma",
     "normal_consistency_weight",
     "depth_distort_weight",
-    "opacity_prior_weight",
     "intra_slab_depth_weight",
     "curvature_scale_weight",
     "use_global_lr_decay",
@@ -71,8 +69,6 @@ RUN_CONFIG_PARAMETERS = [
     "densification_downweight_normal_gradients",
     "densification_tangent_only",
     "inactive_transport_prune_cycles",
-    "opacity_prune_threshold",
-    "max_prune_fraction",
     "min_surfel_area",
     "ground_truth",
     "geometry_samples",
@@ -92,7 +88,6 @@ LOSS_COLUMNS = [
 REGULARIZER_COLUMNS = [
     ("loss_depth_distortion_weighted_mean", "depth weighted"),
     ("loss_normal_consistency_weighted_mean", "normal weighted"),
-    ("loss_opacity_prior_weighted_mean", "opacity prior weighted"),
 ]
 
 
