@@ -18,6 +18,13 @@ export namespace Pale {
     public:
         explicit PathTracer(sycl::queue q, const PathTracerSettings &settings = {});
 
+        ~PathTracer();
+        PathTracer(const PathTracer&) = delete;
+        PathTracer& operator=(const PathTracer&) = delete;
+
+        uint32_t rayQueueCapacity() const { return m_rayQueueCapacity; }
+        bool hasAdjointScratch() const { return m_intermediates.gradientRecords != nullptr; }
+
         void setScene(const GPUSceneBuffers &scene, const SceneBuild::BuildProducts &bp);
 
         void setCurvatureDensificationStats(CurvatureDensificationStats *stats) {
@@ -39,7 +46,6 @@ export namespace Pale {
         void renderSurfaceRegularizersBackward(std::vector<SensorGPU> &sensors,
                                                PointGradients &depthDistortionGradients,
                                                PointGradients &normalConsistencyGradients,
-                                               PointGradients &visibilityOpacityGradients,
                                                PointGradients &intraSlabDepthGradients,
                                                PointGradients &curvatureScaleGradients,
                                                DebugImages *debugImages);
@@ -49,13 +55,15 @@ export namespace Pale {
         PathTracerSettings &getSettings() { return m_settings; }
 
     private:
-        void ensureRayCapacity(uint32_t requiredRayQueueCapacity);
+        void ensureRayCapacity(uint32_t requiredRayQueueCapacity, bool adjoint = false);
 
         void ensureMeasurementTwoPointEventCapacity(uint32_t cameraRayCount);
 
         void ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid &grid);
 
         void allocateIntermediates(uint32_t newCapacity);
+
+        void allocateAdjointIntermediates();
 
         void allocatePhotonMap();
 

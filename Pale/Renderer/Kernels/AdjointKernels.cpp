@@ -2792,20 +2792,15 @@ namespace Pale {
         const uint32_t pixelCount = imageWidth * imageHeight;
         PointGradients depthGradients = pkg.depthDistortionGradients;
         PointGradients normalGradients = pkg.normalConsistencyGradients;
-        PointGradients visibilityGradients = pkg.visibilityOpacityGradients;
         PointGradients intraSlabDepthGradients = pkg.intraSlabDepthGradients;
         PointGradients curvatureScaleGradients = pkg.curvatureScaleGradients;
-        const uint32_t pointCount = static_cast<uint32_t>(depthGradients.numPoints);
+        const uint32_t pointCount = scene.pointCount;
         const bool enableDepthDistortionRegularizer = settings.depthDistortionWeight != 0.0f;
         const bool enableNormalConsistencyRegularizer = settings.normalConsistencyWeight != 0.0f;
-        const bool enableVisibilityOpacityRegularizer =
-                settings.visibilityWeightedOpacityRegularizerWeight != 0.0f;
         const bool enableIntraSlabDepthRegularizer =
                 settings.intraSlabDepthRegularizerWeight != 0.0f;
         const bool enableCurvatureScaleRegularizer =
                 settings.curvatureScaleRegularizerWeight != 0.0f;
-        const float visibilityOpacityLossNormalization =
-                pixelCount > 0u ? 1.0f / static_cast<float>(pixelCount) : 0.0f;
         const bool normalFromDepthUseMeanDepth = settings.normalFromDepthUseMeanDepth;
         const uint32_t maxSurfaceHits = rendererDebugMaxSplatEventsPerRay(settings);
         const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
@@ -2819,7 +2814,6 @@ namespace Pale {
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 constexpr float kAlphaEpsilon = 1.0e-8f;
 
-                const bool kDetachDepthDistortionWeights = settings.depthDistortionGaussian;
 
                 const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
                 const uint32_t pixelX = pixelIndex % imageWidth;
@@ -2840,12 +2834,11 @@ namespace Pale {
                 const bool useSelectedDepth = sycl::fabs(selectedDepthAdjoint) > 1.0e-12f;
                 const bool useNormalConsistency =
                         enableNormalConsistencyRegularizer && (useVisibleNormal || useSelectedDepth);
-                const bool useVisibilityOpacity = enableVisibilityOpacityRegularizer;
                 const bool useIntraSlabDepth = enableIntraSlabDepthRegularizer &&
                         sycl::fabs(intraSlabDepthAdjoint) > 1.0e-12f;
                 const bool useCurvatureScale = enableCurvatureScaleRegularizer &&
                         sycl::fabs(curvatureScaleAdjoint) > 1.0e-12f;
-                if (!useDepthDistortion && !useNormalConsistency && !useVisibilityOpacity &&
+                if (!useDepthDistortion && !useNormalConsistency &&
                     !useIntraSlabDepth && !useCurvatureScale) {
                     return;
                 }
@@ -2883,7 +2876,7 @@ namespace Pale {
                         return true;
                     }
                     const float alphaEffective = alphaGeom * surfel.opacity;
-                    if (alphaEffective <= kAlphaEpsilon && !useVisibilityOpacity &&
+                    if (alphaEffective <= kAlphaEpsilon &&
                         !useIntraSlabDepth && !useCurvatureScale) {
                         return true;
                     }
@@ -2891,7 +2884,7 @@ namespace Pale {
                     if (depth <= 0.0f) {
                         return true;
                     }
-                    const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
+                    const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
                     const float compositeWeight = transmittance * alphaEffective;
                     SurfaceRegularizerHitRecord &record = hits[hitCount];
                     record.primitiveIndex = primitiveIndex;
@@ -3003,8 +2996,9 @@ namespace Pale {
                 //
                 // Depth distortion:
                 //
-                //   Gamma = sum_{i<j} w_i w_j |m_i-m_j|
-                //   m_i is camera-forward depth in world-space mode (the default).
+                //   Gamma = sum_{i<j} w_i w_j penalty(m_i-m_j)
+                //   World mode: absolute camera-forward depth differences.
+                //   NDC mode: squared differences, as in 2DGS.
                 //
                 // Normal:
                 //
@@ -3026,40 +3020,41 @@ namespace Pale {
                     // =========================================================
                     float barWeightDepth = 0.0f;
                     float barDepthDepth = 0.0f;
-                    if (useDepthDistortion) {
-                        const float depthToNdcDerivative = settings.depthDistortionGaussian
-                            ? 1.0f
-                            : depthDistortionCoordinateDerivative(hit.depth, settings.depthDistortionWorldSpace);
+                    if (useDepthDistortion && depthDistortionDepthAccepted(
+                            hit.depth, settings.depthDistortionWorldSpace)) {
+                        const float depthToNdcDerivative =
+                            depthDistortionCoordinateDerivative(hit.depth, settings.depthDistortionWorldSpace);
                         for (uint32_t otherIndex = 0u; otherIndex < hitCount; ++otherIndex) {
                             if (otherIndex == hitIndex) { continue; }
+                            if (!depthDistortionDepthAccepted(hits[otherIndex].depth,
+                                    settings.depthDistortionWorldSpace)) {
+                                continue;
+                            }
 
                             const bool hitIsUpper = otherIndex < hitIndex;
                             const SurfaceRegularizerHitRecord &lowerHit = hitIsUpper ? hits[otherIndex] : hit;
                             const SurfaceRegularizerHitRecord &upperHit = hitIsUpper ? hit : hits[otherIndex];
                             const float ndcDepthDelta = upperHit.ndcDepth - lowerHit.ndcDepth;
                             const float absoluteDepthDelta = sycl::fabs(ndcDepthDelta);
+                            const float pairPenalty = settings.depthDistortionWorldSpace
+                                ? absoluteDepthDelta : ndcDepthDelta * ndcDepthDelta;
                             // Choose the zero subgradient at coincident depths.
                             const float depthDeltaSign = ndcDepthDelta > 0.0f ? 1.0f :
                                 (ndcDepthDelta < 0.0f ? -1.0f : 0.0f);
                             const float depthPairWeight =
                                     lowerHit.compositeWeight * upperHit.compositeWeight * depthDistortionAdjoint *
-                                    (settings.depthDistortionGaussian
-                                        ? depthDistortionGaussianSlope(absoluteDepthDelta,
-                                            settings.depthDistortionHalfStrengthMeters)
-                                        : 1.0f);
+                                    (settings.depthDistortionWorldSpace ? 1.0f : 2.0f * absoluteDepthDelta);
 
                             if (hitIsUpper) {
                                 barDepthDepth += depthPairWeight * depthDeltaSign * depthToNdcDerivative;
-                                if (!kDetachDepthDistortionWeights) {
-                                    barWeightDepth += lowerHit.compositeWeight *
-                                                      absoluteDepthDelta * depthDistortionAdjoint;
-                                }
+                                barWeightDepth += lowerHit.compositeWeight *
+                                                  pairPenalty * depthDistortionAdjoint;
+
                             } else {
                                 barDepthDepth -= depthPairWeight * depthDeltaSign * depthToNdcDerivative;
-                                if (!kDetachDepthDistortionWeights) {
-                                    barWeightDepth += upperHit.compositeWeight *
-                                                      absoluteDepthDelta * depthDistortionAdjoint;
-                                }
+                                barWeightDepth += upperHit.compositeWeight *
+                                                  pairPenalty * depthDistortionAdjoint;
+
                             }
                         }
                     }
@@ -3100,7 +3095,7 @@ namespace Pale {
                     //     (1-alpha_i) barT_{i+1}
                     // =========================================================
                     float barAlphaDepth = 0.0f;
-                    if (useDepthDistortion && !kDetachDepthDistortionWeights) {
+                    if (useDepthDistortion) {
                         barAlphaDepth = hit.transmittanceBefore * (barWeightDepth - barNextTransmittanceDepth);
                         barNextTransmittanceDepth =
                                 hit.alphaEffective * barWeightDepth + (1.0f - hit.alphaEffective) *
@@ -3114,20 +3109,6 @@ namespace Pale {
                                 hit.alphaEffective * barWeightNormal + (1.0f - hit.alphaEffective) *
                                 barNextTransmittanceNormal;
                     }
-                    // =========================================================
-                    // Push local adjoints through this individual surfel.
-                    // =========================================================
-                    float visibilityOpacityGradient = 0.0f;
-                    if (useVisibilityOpacity) {
-                        const float visibilityWeight = hit.transmittanceBefore * hit.alphaGeom;
-                        const float opacityResidual = surfel.opacity - 1.0f;
-                        visibilityOpacityGradient =
-                                settings.visibilityWeightedOpacityRegularizerWeight *
-                                visibilityOpacityLossNormalization *
-                                2.0f *
-                                visibilityWeight *
-                                opacityResidual;
-                    }
                     const SurfaceRegularizerConstituentGradient depthGradient =
                             differentiateSurfaceRegularizerConstituent(surfel, hit, rayDirection, sensor.camera.forward,
                                                                        sensor.camera, barAlphaDepth, barDepthDepth,
@@ -3139,7 +3120,6 @@ namespace Pale {
                     // =========================================================
                     // DEPTH DISTORTION OUTPUT
                     //
-                    // In detached mode explicitly write only position/rotation.
                     // =========================================================
                     float3 depthRotationGradient{0.0f};
                     if (useDepthDistortion) {
@@ -3147,11 +3127,10 @@ namespace Pale {
                         depthRotationGradient = computeLocalRotationGradientFromTangentGradients(
                             surfel.tanU, surfel.tanV, depthGradient.tangentU, depthGradient.tangentV);
                         atomicAddFloat3(depthGradients.gradRotation[hit.primitiveIndex], depthRotationGradient);
-                        if (!kDetachDepthDistortionWeights) {
-                            atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex], float2{depthGradient.scaleU, depthGradient.scaleV});
-                            //atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
-                            //atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
-                        }
+                        atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex], float2{depthGradient.scaleU, depthGradient.scaleV});
+                        //atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
+                        //atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
+
                     }
                     // =========================================================
                     // NORMAL CONSISTENCY OUTPUT
@@ -3168,24 +3147,11 @@ namespace Pale {
                         atomicAddFloat(normalGradients.gradBeta[hit.primitiveIndex], normalGradient.beta);
                     }
                     // =========================================================
-                    // VISIBILITY-WEIGHTED OPACITY PRIOR
-                    //
-                    // L = lambda / pixelCount * stopgrad(T_i alpha_geom_i)
-                    //     * (1 - eta_i)^2
-                    //
-                    // Only eta_i receives a gradient; T_i and alpha_geom_i are
-                    // visibility weights, not optimization paths for this prior.
-                    // =========================================================
-                    if (useVisibilityOpacity) {
-                        atomicAddFloat(visibilityGradients.gradOpacity[hit.primitiveIndex],
-                                       visibilityOpacityGradient);
-                    }
-                    // =========================================================
                     // DEBUG
                     // =========================================================
                     if (writeDebugImages) {
-                        const float appliedDepthScaleU = kDetachDepthDistortionWeights ? 0.0f : depthGradient.scaleU;
-                        const float appliedDepthScaleV = kDetachDepthDistortionWeights ? 0.0f : depthGradient.scaleV;
+                        const float appliedDepthScaleU = depthGradient.scaleU;
+                        const float appliedDepthScaleV = depthGradient.scaleV;
                         const float appliedDepthOpacity = 0.0f;
                         const float appliedDepthBeta =    0.0f;
                         const float3 totalPosition = depthGradient.position + normalGradient.position;
@@ -3200,7 +3166,7 @@ namespace Pale {
                         debugRecord.gradRotationX = totalRotation.x();
                         debugRecord.gradRotationY = totalRotation.y();
                         debugRecord.gradRotationZ = totalRotation.z();
-                        debugRecord.gradEta = appliedDepthOpacity + normalGradient.opacity + visibilityOpacityGradient;
+                        debugRecord.gradEta = appliedDepthOpacity + normalGradient.opacity;
                         debugRecord.gradBeta = appliedDepthBeta + normalGradient.beta;
                         accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                           settings.surfelIndexForDebugImages, pixelIndex, debugRecord);

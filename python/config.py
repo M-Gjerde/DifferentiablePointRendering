@@ -28,11 +28,8 @@ class RendererSettingsConfig:
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
             "depth_distort_world_space": config.depth_distort_world_space,
-            "depth_distort_gaussian": config.depth_distort_gaussian,
-            "depth_distort_half_strength_m": config.depth_distort_half_strength_m,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
-            "opacity_prior_weight": config.opacity_prior_weight,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
             "curvature_scale_weight": config.curvature_scale_weight,
             "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
@@ -68,9 +65,9 @@ class OptimizationConfig:
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.000055
+    learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0005
+    learning_rate_scale: float = 0.001
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -81,29 +78,23 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 50.0
-    position_lr_scale_final: float = 5.0
+    position_lr_scale_init: float = 10.0
+    position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 30_000
+    lr_decay_max_steps: int = 35_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.00
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
 
-    # Objective: geometric and parameter regularizers
-    depth_distort_weight: float = 0.01
-    # Absolute pairwise camera-forward depth differences in scene units.
-    depth_distort_world_space: bool = True
-    # Metric Gaussian loss overrides world/NDC choice and detaches pair weights.
-    depth_distort_gaussian: bool = True
-    depth_distort_half_strength_m: float = 0.50  # Camera-forward separation in metres at 50% attraction.
-    depth_distort_start_iteration: int = 0
+    # Objective: geometric regularizers
+    depth_distort_weight: float = 0.005
+    depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_start_iteration: int = 5_000
     normal_consistency_weight: float = 0.005
-    opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 5.0e-5
-    curvature_scale_weight: float = 1.0e-5
-
+    curvature_scale_weight: float = 0.0e-6
     # Rendering model
     share_local_layer_direct_lighting: bool = True
 
@@ -115,7 +106,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 400
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -130,22 +121,13 @@ class OptimizationConfig:
     densification_downweight_normal_gradients: bool = False
 
     # Densification: base selection threshold
-    # Absolute mode bypasses global and radiance-band score quantiles.
-    # Both modes retain the bounded brightness preference below.
-    densification_threshold_mode: str = "absolute"  # "absolute" or "quantile"
-    densification_grad_abs_min: float = 5.0e-4
+    # Scheduled absolute threshold with bounded brightness preference below.
+    densification_grad_abs_min: float = 1.0e-3
     densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 0
+    densification_grad_abs_min_decay_end_iteration: int = 30_000
 
-    # Densification: quantile selection (used only in "quantile" mode)
-    densification_grad_quantile: float = 1.0
-    # Apply the gradient quantile independently in log2 rendered/target
-    # radiance bands. Values <= 1 disable radiance stratification.
-    densification_radiance_quantile_bins: int = 16
-    densification_radiance_quantile_min_bin_size: int = 16
-
-    # Densification: radiance balancing (used in both threshold modes)
+    # Densification: radiance balancing
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
     densification_radiance_bias_strength: float=  0.8
@@ -167,24 +149,34 @@ class OptimizationConfig:
     densification_verbose: bool = False
 
     # Pruning and topology maintenance
-    prune_interval: int = 100
+    prune_interval: int = densification_interval
     prune_after: int = 0
-    opacity_prune_threshold: float = 0.0
-    max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 2.0e-5
-    inactive_transport_prune_cycles: int = 1
-    reset_opacity_interval: int = 0
-    reset_opacity_value: float = 0.025
-    reset_opacity_iterations: bool = False
+    inactive_transport_prune_cycles: int = 2
     rebuild_bvh_interval: int = densification_interval
+
+    # Mesh extraction and evaluation
+    mesh_extraction_interval: int = 2_000
+    mesh_extraction_depth_key: str = "median_depth"
+    mesh_extraction_mesh_res: int = 512
+    mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
+    mesh_albedo_texture_size: int = 1024
+    mesh_uv_partitions: int = 0
+    mesh_uv_threads: int = 0
+    save_final_mesh: bool = True
+    ground_truth: Path | None = None
+    geometry_samples: int = 500_000
+    geometry_seed: int = 0
+    geometry_scale: float = 1.0
+    geometry_use_vertices: bool = False
 
     # Output and monitoring
     log_interval: int = 25
     # When enabled (> 0), save images on the first iteration, immediately before
     # each scheduled densification, and on the final iteration.
-    save_interval: int = 100
+    save_interval: int = mesh_extraction_interval
     # When enabled (> 0), also save the first iteration, matching image snapshots.
-    save_ply_files_interval: int = save_interval
+    save_ply_files_interval: int = 200
     # Debug snapshots at the iteration immediately before the next scheduled
     # densification, replacing periodic PLY saves. Interval 0 still disables saves.
     save_ply_before_densification: bool = False
@@ -196,21 +188,6 @@ class OptimizationConfig:
     save_snapshot_grad: bool = False
     enable_metrics: bool = True
     enable_image_preview: bool = True
-
-    # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 1_000
-    mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 2048
-    mesh_extraction_num_cluster: int = 50
-    mesh_albedo_texture_size: int = 2048
-    mesh_uv_partitions: int = 0
-    mesh_uv_threads: int = 0
-    save_final_mesh: bool = True
-    ground_truth: Path | None = None
-    geometry_samples: int = 500_000
-    geometry_seed: int = 0
-    geometry_scale: float = 1.0
-    geometry_use_vertices: bool = False
 
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False
@@ -473,22 +450,15 @@ def parse_args() -> OptimizationConfig:
         "ssim_sigma",
         "normal_consistency_weight",
         "depth_distort_weight",
-        "depth_distort_half_strength_m",
-        "opacity_prior_weight",
         "intra_slab_depth_weight",
         "curvature_scale_weight",
     )
     _add_boolean_argument(
         objective,
         "--depth-distort-world-space",
-        help="Measure distortion using linear camera-forward depth in scene units instead of inverse-depth NDC; retune --depth-distort-weight when switching.",
+        help="Use absolute camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
     )
     objective.add_argument("--depth-distort-start-iteration", type=int)
-    _add_boolean_argument(
-        objective,
-        "--depth-distort-gaussian",
-        help="Use metric camera-forward depth distortion with Gaussian falloff and detached weights; overrides world/NDC mode.",
-    )
     _add_boolean_argument(
         objective,
         "--normal-from-depth-use-mean-depth",
@@ -545,10 +515,6 @@ def parse_args() -> OptimizationConfig:
     )
 
     densification_selection = parser.add_argument_group("densification: candidate selection")
-    densification_selection.add_argument(
-        "--densification-threshold-mode", choices=["absolute", "quantile"],
-        help="Use only the scheduled absolute threshold, or combine it with global/radiance-band quantiles; both retain brightness bias.",
-    )
     _add_typed_fields(
         densification_selection,
         float,
@@ -566,17 +532,6 @@ def parse_args() -> OptimizationConfig:
         "--densification-grad-abs-min-iter-end",
         dest="densification_grad_abs_min_decay_end_iteration",
         type=int,
-    )
-
-    densification_quantiles = parser.add_argument_group(
-        'densification: quantile selection (mode="quantile")'
-    )
-    densification_quantiles.add_argument("--densification-grad-quantile", type=float)
-    _add_typed_fields(
-        densification_quantiles,
-        int,
-        "densification_radiance_quantile_bins",
-        "densification_radiance_quantile_min_bin_size",
     )
 
     densification_radiance = parser.add_argument_group("densification: radiance balancing")
@@ -629,17 +584,13 @@ def parse_args() -> OptimizationConfig:
         int,
         "prune_interval",
         "prune_after",
-        "reset_opacity_interval",
         "rebuild_bvh_interval",
         "inactive_transport_prune_cycles",
     )
     _add_typed_fields(
         pruning,
         float,
-        "opacity_prune_threshold",
-        "max_prune_fraction",
         "min_surfel_area",
-        "reset_opacity_value",
     )
 
     output = parser.add_argument_group("output and monitoring")
@@ -715,15 +666,9 @@ def parse_args() -> OptimizationConfig:
 
     configure_checkpoint(config, cli_overrides)
 
-    if not math.isfinite(config.depth_distort_half_strength_m) or config.depth_distort_half_strength_m <= 0:
-        parser.error("--depth-distort-half-strength-m must be finite and positive")
 
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")
-    if config.densification_radiance_quantile_bins < 1:
-        parser.error("--densification-radiance-quantile-bins must be at least 1")
-    if config.densification_radiance_quantile_min_bin_size < 1:
-        parser.error("--densification-radiance-quantile-min-bin-size must be at least 1")
     if not math.isfinite(config.densification_radiance_bias_strength) or config.densification_radiance_bias_strength < 0:
         parser.error("--densification-radiance-bias-strength must be finite and non-negative")
     if not math.isfinite(config.densification_radiance_bias_min_weight) or not 0 < config.densification_radiance_bias_min_weight <= 1:

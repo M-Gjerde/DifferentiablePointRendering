@@ -17,8 +17,6 @@ METRICS_COLUMNS = (
     "loss_depth_distortion_weighted_mean",
     "loss_normal_consistency_raw_mean",
     "loss_normal_consistency_weighted_mean",
-    "loss_opacity_prior_raw_mean",
-    "loss_opacity_prior_weighted_mean",
     "loss_intra_slab_depth_raw_mean",
     "loss_intra_slab_depth_weighted_mean",
     "loss_curvature_scale_raw_mean",

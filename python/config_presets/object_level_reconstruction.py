@@ -28,7 +28,6 @@ class RendererSettingsConfig:
             "depth_distort_weight": config.depth_distort_weight,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
-            "opacity_prior_weight": config.opacity_prior_weight,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
             "curvature_scale_weight": config.curvature_scale_weight,
             "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
@@ -86,7 +85,6 @@ class OptimizationConfig:
     depth_distort_weight: float = 100.0
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
-    opacity_prior_weight: float = 0.0
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
@@ -106,7 +104,6 @@ class OptimizationConfig:
     # When false, position-triggered densification may displace children along
     # the full 3D gradient, including the surfel normal direction.
     densification_tangent_only: bool = False
-    densification_grad_quantile: float = 0.0
     densification_grad_abs_min: float = 7.0e-4
     densification_grad_abs_min_final: float = 1.5e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
@@ -126,13 +123,8 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
-    opacity_prune_threshold: float = 0.0
-    max_prune_fraction: float = 0.9
     min_surfel_area: float = math.pi * 2.0e-5
     inactive_transport_prune_cycles: int = 1
-    reset_opacity_interval: int = 0
-    reset_opacity_value: float = 0.025
-    reset_opacity_iterations: bool = False
     rebuild_bvh_interval: int = densification_interval
 
     # Output and monitoring
@@ -152,7 +144,7 @@ class OptimizationConfig:
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 512
-    mesh_extraction_num_cluster: int = 50
+    mesh_extraction_num_cluster: int = 0  # Preserve disconnected geometry by default.
     save_final_mesh: bool = True
     ground_truth: Path | None = None
     geometry_samples: int = 500_000
@@ -420,7 +412,6 @@ def parse_args() -> OptimizationConfig:
         "ssim_sigma",
         "normal_consistency_weight",
         "depth_distort_weight",
-        "opacity_prior_weight",
         "intra_slab_depth_weight",
         "curvature_scale_weight",
     )
@@ -444,7 +435,6 @@ def parse_args() -> OptimizationConfig:
     _add_typed_fields(
         densification,
         float,
-        "densification_grad_quantile",
         "densification_grad_abs_min",
         "densification_grad_abs_min_final",
         "densification_scale_min",
@@ -517,17 +507,13 @@ def parse_args() -> OptimizationConfig:
         int,
         "prune_interval",
         "prune_after",
-        "reset_opacity_interval",
         "rebuild_bvh_interval",
         "inactive_transport_prune_cycles",
     )
     _add_typed_fields(
         pruning,
         float,
-        "opacity_prune_threshold",
-        "max_prune_fraction",
         "min_surfel_area",
-        "reset_opacity_value",
     )
 
     output = parser.add_argument_group("output and monitoring")

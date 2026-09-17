@@ -1450,31 +1450,9 @@ namespace Pale {
         return ray.origin + ray.direction * t;
     }
 
-    // Integral of g(x)=2^(-(x/h)^2), where h is the half-strength distance.
-    // x is absolute camera-forward depth difference in metres.
-    SYCL_EXTERNAL inline float depthDistortionGaussianPenalty(float x, float halfStrength) {
-        constexpr float sqrtLn2 = 0.8325546111576977f;
-        constexpr float integralScale = 1.0644670194312262f; // sqrt(pi)/(2*sqrt(ln(2)))
-        return halfStrength * integralScale * sycl::erf(sqrtLn2 * (x / halfStrength));
-    }
-
-    SYCL_EXTERNAL inline float depthDistortionGaussianSlope(float x, float halfStrength) {
-        const float ratio = x / halfStrength;
-        return sycl::exp2(-ratio * ratio);
-    }
-
-    SYCL_EXTERNAL inline float depthDistortionGaussianSum(
-        const float *depths, const float *weights, uint32_t count,
-        const PathTracerSettings &settings) {
-        float loss = 0.0f;
-        for (uint32_t i = 0u; i < count; ++i) {
-            for (uint32_t j = 0u; j < i; ++j) {
-                const float x = sycl::fabs(depths[i] - depths[j]);
-                loss += weights[i] * weights[j] * depthDistortionGaussianPenalty(
-                    x, settings.depthDistortionHalfStrengthMeters);
-            }
-        }
-        return loss;
+    // Match the 2DGS intersection near cutoff for NDC distortion only.
+    SYCL_EXTERNAL inline bool depthDistortionDepthAccepted(float forwardDepth, bool metricDepth) {
+        return metricDepth || forwardDepth >= 0.2f;
     }
 
     // World-space mode keeps linear camera-forward depth in scene units.

@@ -260,7 +260,6 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         float accumulatedRegularizerWeight = 0.0f;
         float accumulatedWeightedDepth = 0.0f;
         float3 accumulatedWeightedNormal{0.0f};
-        float visibilityWeightedOpacityLoss = 0.0f;
         float intraSlabDepthLossSum = 0.0f;
         float intraSlabRayDepthLossSum = 0.0f;
         uint32_t intraSlabDepthActiveSlabCount = 0u;
@@ -290,9 +289,6 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             if (depth <= 0.0f) {
                 return true;
             }
-            const float opacityResidual = 1.0f - surfel.opacity;
-            visibilityWeightedOpacityLoss +=
-                    regularizerTransmittance * alphaGeom * opacityResidual * opacityResidual;
             if (alpha <= kAlphaEpsilon) {
                 return true;
             }
@@ -308,20 +304,24 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             }
             accumulatedCompositeWeight += compositeWeight;
 
-            const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
-            if (profileEnabled) {
-                profileRegularizerHits += 1u;
-                profileDepthPairIterations += previousDepthDistortionHitCount;
-            }
-            for (uint32_t previousIndex = 0u; !settings.depthDistortionGaussian && previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
-                const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
-                distortion += previousDepthDistortionWeights[previousIndex] * compositeWeight *
-                              sycl::fabs(depthDifference);
-            }
-            if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
-                previousDepthDistortionWeights[previousDepthDistortionHitCount] = compositeWeight;
-                previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
-                ++previousDepthDistortionHitCount;
+            if (depthDistortionDepthAccepted(depth, settings.depthDistortionWorldSpace)) {
+                const float ndcDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
+                if (profileEnabled) {
+                    profileRegularizerHits += 1u;
+                    profileDepthPairIterations += previousDepthDistortionHitCount;
+                }
+                for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
+                    const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
+                    distortion += previousDepthDistortionWeights[previousIndex] * compositeWeight *
+                                  (settings.depthDistortionWorldSpace
+                                      ? sycl::fabs(depthDifference)
+                                      : depthDifference * depthDifference);
+                }
+                if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
+                    previousDepthDistortionWeights[previousDepthDistortionHitCount] = compositeWeight;
+                    previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
+                    ++previousDepthDistortionHitCount;
+                }
             }
 
             float3 orientedNormalW = normalize(cross(surfel.tanU, surfel.tanV));
@@ -488,6 +488,21 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
 
                 const float distance = sycl::sqrt(distanceSquared);
                 const float3 lightDirection = toLight / distance;
+                float surfaceCosines[kMaxLocalSurfelHits]{};
+                bool hasLightFacingMember = false;
+                for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
+                    if (localLayer.weight[localHitIndex] <= 0.0f) continue;
+                    const Point &surfel = scene.points[localLayer.hits[localHitIndex].primitiveIndex];
+                    float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
+                    if (dot(normalW, -layerRay.direction) < 0.0f) normalW = -normalW;
+                    const float surfaceCosine = sycl::fmax(0.0f, dot(normalW, lightDirection));
+                    surfaceCosines[localHitIndex] = surfaceCosine;
+                    hasLightFacingMember |= surfaceCosine > 0.0f;
+                }
+                // Members can have different normals; reject only if none can receive this light.
+                if (!hasLightFacingMember) {
+                    continue;
+                }
                 const float shadowTransmission =
                     traceShadowTransmissionToPoint(
                         scene,
@@ -512,9 +527,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                     if (layerWeight <= 0.0f) continue;
                     const LocalSurfelLayerHit &localHit = localLayer.hits[localHitIndex];
                     const Point &surfel = scene.points[localHit.primitiveIndex];
-                    float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
-                    if (dot(normalW, -layerRay.direction) < 0.0f) normalW = -normalW;
-                    const float surfaceCosine = sycl::fmax(0.0f, dot(normalW, lightDirection));
+                    const float surfaceCosine = surfaceCosines[localHitIndex];
                     if (surfaceCosine <= 0.0f) {
                         continue;
                     }
@@ -724,9 +737,9 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         // =====================================================================
         // Every forward output is overwritten by its producing kernel. Reset
         // only the adjoint inputs here, avoiding 15 separate blocking clears.
-        sensor.depthDistortionAdjointBuffer[pixelIndex] = 0.0f;
-        sensor.intraSlabDepthAdjointBuffer[pixelIndex] = 0.0f;
-        sensor.curvatureScaleAdjointBuffer[pixelIndex] = 0.0f;
+        if (sensor.depthDistortionAdjointBuffer) sensor.depthDistortionAdjointBuffer[pixelIndex] = 0.0f;
+        if (sensor.intraSlabDepthAdjointBuffer) sensor.intraSlabDepthAdjointBuffer[pixelIndex] = 0.0f;
+        if (sensor.curvatureScaleAdjointBuffer) sensor.curvatureScaleAdjointBuffer[pixelIndex] = 0.0f;
         // These outputs must also be fresh when the optional curvature pass is skipped.
         sensor.curvatureScaleBuffer[pixelIndex] = 0.0f;
         if (sensor.surfaceCurvatureBuffer != nullptr) {
@@ -735,11 +748,6 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
         if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
             sensor.curvaturePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
-        }
-        if (settings.depthDistortionGaussian) {
-            distortion = depthDistortionGaussianSum(
-                previousDepthDistortionNdcDepths, previousDepthDistortionWeights,
-                previousDepthDistortionHitCount, settings);
         }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         sensor.intraSlabDepthBuffer[pixelIndex] = intraSlabDepthLossSum;
@@ -753,7 +761,6 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         } else {
             sensor.meanDepthBuffer[pixelIndex] = 0.0f;
         }
-        sensor.visibilityWeightedOpacityBuffer[pixelIndex] = visibilityWeightedOpacityLoss;
         // Old median semantics:
         // no 50% accumulated opacity -> no surface depth.
         if (medianFound) {
@@ -1085,18 +1092,18 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
     queue.fill(sensor.visibleNormalBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
     queue.fill(sensor.normalFromDepthBuffer, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
     queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount);
-    queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount);
+    if (sensor.depthDistortionAdjointBuffer) queue.fill(sensor.depthDistortionAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount);
     if (sensor.intraSlabRayDepthBuffer != nullptr) {
         queue.fill(sensor.intraSlabRayDepthBuffer, 0.0f, pixelCount);
     }
-    queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
+    if (sensor.intraSlabDepthAdjointBuffer) queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
     queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
     if (sensor.surfaceCurvatureBuffer != nullptr) {
         queue.fill(sensor.surfaceCurvatureBuffer, std::numeric_limits<float>::quiet_NaN(), pixelCount);
     }
-    queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
+    if (sensor.curvatureScaleAdjointBuffer) queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
     queue.wait();
     // -------------------------------------------------------------------------
@@ -1179,16 +1186,20 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                 medianWorldPosition = pointHit.hitPositionW;
                 medianNormalW = normalW;
             }
-            const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
-            for (uint32_t previousIndex = 0u; !settings.depthDistortionGaussian && previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
-                const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
-                distortion += previousDepthDistortionWeights[previousIndex] * wi *
-                              sycl::fabs(depthDifference);
-            }
-            if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
-                previousDepthDistortionWeights[previousDepthDistortionHitCount] = wi;
-                previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
-                ++previousDepthDistortionHitCount;
+            if (depthDistortionDepthAccepted(zi, settings.depthDistortionWorldSpace)) {
+                const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionWorldSpace);
+                for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
+                    const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
+                    distortion += previousDepthDistortionWeights[previousIndex] * wi *
+                                  (settings.depthDistortionWorldSpace
+                                      ? sycl::fabs(depthDifference)
+                                      : depthDifference * depthDifference);
+                }
+                if (previousDepthDistortionHitCount < kMaxSplatEventsPerRay) {
+                    previousDepthDistortionWeights[previousDepthDistortionHitCount] = wi;
+                    previousDepthDistortionNdcDepths[previousDepthDistortionHitCount] = ndcDepth;
+                    ++previousDepthDistortionHitCount;
+                }
             }
         };
 
@@ -1288,11 +1299,6 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         const float alpha = sycl::clamp(accumulatedCompositeWeight, 0.0f, 1.0f);
         const float4 currentValue(accumulatedRadianceRGB.x(), accumulatedRadianceRGB.y(), accumulatedRadianceRGB.z(), alpha);
         sensor.framebuffer[framebufferIndex] += currentValue;
-        if (settings.depthDistortionGaussian) {
-            distortion = depthDistortionGaussianSum(
-                previousDepthDistortionNdcDepths, previousDepthDistortionWeights,
-                previousDepthDistortionHitCount, settings);
-        }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         if (accumulatedMeanDepthWeight > 1.0e-6f) {
             sensor.meanDepthBuffer[pixelIndex] = accumulatedMeanDepth / accumulatedMeanDepthWeight;
@@ -1391,12 +1397,11 @@ void launchPointSampledPathTracingCameraKernel(
         queue.fill(sensor.visibleNormalBuffer, float4{0.0f}, pixelCount);
         queue.fill(sensor.normalFromDepthBuffer, float4{0.0f}, pixelCount);
         queue.fill(sensor.depthDistortionBuffer, 0.0f, pixelCount);
-        queue.fill(sensor.visibilityWeightedOpacityBuffer, 0.0f, pixelCount);
         queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount);
-        queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
+        if (sensor.intraSlabDepthAdjointBuffer) queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
         queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
         queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
-        queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
+        if (sensor.curvatureScaleAdjointBuffer) queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
         queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
         queue.wait();
     }
@@ -1426,10 +1431,6 @@ void launchPointSampledPathTracingCameraKernel(
                 float prefixWeight = 0.0f;
                 float prefixWeightDepth = 0.0f;
                 float prefixWeightDepthSquared = 0.0f;
-                float gaussianDepths[kMaxSplatEventsPerRay];
-                float gaussianWeights[kMaxSplatEventsPerRay];
-                uint32_t gaussianHitCount = 0u;
-                float visibilityWeightedOpacityLoss = 0.0f;
                 float accumulatedCompositeWeight = 0.0f;
                 bool medianFound = false;
                 float medianDepth = 0.0f;
@@ -1472,8 +1473,6 @@ void launchPointSampledPathTracingCameraKernel(
                     const float depth = dot(hit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
                     accumulatedMeanDepthWeight += compositeWeight;
                     accumulatedMeanDepth += compositeWeight * depth;
-                    const float opacityResidual = 1.0f - alphaEff;
-                    visibilityWeightedOpacityLoss += compositeWeight * opacityResidual * opacityResidual;
                     if (!medianFound && (accumulatedCompositeWeight + compositeWeight) >= 0.5f) {
                         medianFound = true;
                         medianDepth = depth;
@@ -1481,15 +1480,11 @@ void launchPointSampledPathTracingCameraKernel(
                         medianNormalW = normalW;
                     }
                     accumulatedCompositeWeight += compositeWeight;
-                    const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionGaussian || settings.depthDistortionWorldSpace);
+                    const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
                     distortion += compositeWeight * (
                         normalizedDepth * normalizedDepth * prefixWeight +
                         prefixWeightDepthSquared -
                         2.0f * normalizedDepth * prefixWeightDepth);
-                    if (settings.depthDistortionGaussian) {
-                        gaussianDepths[gaussianHitCount] = depth;
-                        gaussianWeights[gaussianHitCount++] = compositeWeight;
-                    }
                     prefixWeight += compositeWeight;
                     prefixWeightDepth += compositeWeight * normalizedDepth;
                     prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
@@ -1507,13 +1502,7 @@ void launchPointSampledPathTracingCameraKernel(
                     accumulatedRadianceRGB.z() * inverseTotalSamples,
                     1.0f);
                 sensor.framebuffer[framebufferIndex] += currentValue;
-                if (settings.depthDistortionGaussian) {
-                    distortion = depthDistortionGaussianSum(
-                        gaussianDepths, gaussianWeights, gaussianHitCount, settings);
-                }
                 sensor.depthDistortionBuffer[pixelIndex] += distortion * inverseTotalSamples;
-                sensor.visibilityWeightedOpacityBuffer[pixelIndex] +=
-                    visibilityWeightedOpacityLoss * inverseTotalSamples;
                 if (accumulatedMeanDepthWeight > 1.0e-6f) {
                     sensor.meanDepthBuffer[pixelIndex] = accumulatedMeanDepth / accumulatedMeanDepthWeight;
                 }

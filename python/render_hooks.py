@@ -75,14 +75,6 @@ def get_forward_depth_distortion(forward_out: dict[str, dict], camera_name: str)
     return np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def get_forward_opacity_prior(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "opacity_prior" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-
-    opacity_prior = np.asarray(camera_out["opacity_prior"], dtype=np.float32, order="C")
-    return np.nan_to_num(opacity_prior, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def get_forward_intra_slab_depth(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
@@ -213,15 +205,17 @@ def verify_positions_inplace(positions: torch.Tensor) -> dict[str, float]:
     In-place verification/clamping of position values.
 
     Enforces:
-        -10.0 <= x, y, z <= 10.0
+        -20.0 <= x, y, z <= 20.0
+
+    Keep aligned with the device optimizer position clamp in Pale/pale_bindings.cpp.
     """
     with torch.no_grad():
         p = positions.data
         before_min, before_max = _finite_min_max(p)
         nonfinite_count = int(torch.count_nonzero(~torch.isfinite(p)).item())
 
-        p_clean = torch.nan_to_num(p, nan=0.0, posinf=5.0, neginf=-5.0)
-        p_clamped = torch.clamp(p_clean, min=-5.0, max=5.0)
+        p_clean = torch.nan_to_num(p, nan=0.0, posinf=20.0, neginf=-20.0)
+        p_clamped = torch.clamp(p_clean, min=-20.0, max=20.0)
         p.copy_(p_clamped)
 
         after_min, after_max = _finite_min_max(p)

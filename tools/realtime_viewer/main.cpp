@@ -60,6 +60,38 @@ import Pale.SceneSerializer;
 #endif
 
 namespace {
+    // Walk mode drains input each frame instead of replaying old key states.
+    // Preserve one-shot actions even when a press and release both arrived
+    // during a slow render and the final held state is already released.
+    bool viewerKeyPressed(ImGuiKey key) {
+        if (ImGui::IsKeyPressed(key, false)) {
+            return true;
+        }
+        if (!ImGui::GetIO().ConfigInputTrickleEventQueue) {
+            for (const ImGuiInputEvent& event : ImGui::GetCurrentContext()->InputEventsTrail) {
+                if (event.Type == ImGuiInputEventType_Key && event.Key.Key == key && event.Key.Down) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool walkMouseClicked(ImGuiMouseButton button) {
+        if (ImGui::IsMouseClicked(button)) {
+            return true;
+        }
+        if (!ImGui::GetIO().ConfigInputTrickleEventQueue) {
+            for (const ImGuiInputEvent& event : ImGui::GetCurrentContext()->InputEventsTrail) {
+                if (event.Type == ImGuiInputEventType_MouseButton &&
+                    event.MouseButton.Button == button && event.MouseButton.Down) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     const glm::vec3 kWorldUp{0.0f, 0.0f, 1.0f};
     const glm::vec3 kDefaultLookAt{0.0f, 0.0f, 0.2f};
     constexpr ImVec4 kBlenderViewportBackground{0.215f, 0.215f, 0.215f, 1.0f};
@@ -378,7 +410,7 @@ namespace {
         float distance = 3.0f;
         float yaw = 0.0f;
         float pitch = 0.0f;
-        float fovyDegrees = 45.0f;
+        float fovyDegrees = 60.0f;
         float nearClip = 0.01f;
         float farClip = 1000.0f;
 
@@ -416,6 +448,24 @@ namespace {
             yaw -= delta.x * 0.005f;
             pitch += delta.y * 0.005f;
             pitch = std::clamp(pitch, -1.50f, 1.50f);
+        }
+
+        void lookAround(const ImVec2 delta) {
+            const glm::vec3 eye = position();
+            constexpr float walkLookSensitivity = 0.5f;
+            orbit({delta.x * walkLookSensitivity, delta.y * walkLookSensitivity});
+            target += eye - position();
+        }
+
+        void walk(const glm::vec3& localDirection, float travelDistance) {
+            const glm::vec3 forward = glm::normalize(target - position());
+            const glm::vec3 right = glm::normalize(glm::cross(forward, kWorldUp));
+            const glm::vec3 direction =
+                right * localDirection.x + forward * localDirection.y + kWorldUp * localDirection.z;
+            const float length = glm::length(direction);
+            if (length > 0.0f) {
+                target += direction * (travelDistance / length);
+            }
         }
 
         void pan(const ImVec2 delta) {
@@ -2084,12 +2134,7 @@ namespace {
             const glm::vec3 cameraPosition = Pale::sycl2glm(firstCamera.pos);
             cameraOffset = cameraPosition - orbit.target;
             orbit.distance = std::max(glm::length(cameraOffset), bounds.radius * 0.5f);
-            if (firstCamera.hasPinholeIntrinsics != 0u && firstCamera.fy > 0.0f && firstCamera.height > 0) {
-                orbit.fovyDegrees = glm::degrees(
-                    2.0f * std::atan(static_cast<float>(firstCamera.height) / (2.0f * firstCamera.fy)));
-            } else {
-                orbit.fovyDegrees = firstCamera.fovy;
-            }
+            // Keep the viewport's default FOV when borrowing the scene camera position.
         }
 
         const float safeDistance = std::max(glm::length(cameraOffset), 0.001f);
@@ -2213,7 +2258,6 @@ namespace {
         sensor.ldrFramebuffer = sycl::malloc_device<float>(pixelCount * 4u, queue);
         sensor.depthDistortionBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.depthDistortionAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.visibilityWeightedOpacityBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.intraSlabDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.intraSlabRayDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
         sensor.intraSlabDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
@@ -2251,7 +2295,6 @@ namespace {
         queue.memset(sensor.ldrFramebuffer, 0, pixelCount * 4u * sizeof(float));
         queue.memset(sensor.depthDistortionBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.depthDistortionAdjointBuffer, 0, pixelCount * sizeof(float));
-        queue.memset(sensor.visibilityWeightedOpacityBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.intraSlabDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.intraSlabRayDepthBuffer, 0, pixelCount * sizeof(float));
         queue.memset(sensor.intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
@@ -2286,7 +2329,6 @@ namespace {
         freeDevicePtr(queue, sensor.ldrFramebuffer);
         freeDevicePtr(queue, sensor.depthDistortionBuffer);
         freeDevicePtr(queue, sensor.depthDistortionAdjointBuffer);
-        freeDevicePtr(queue, sensor.visibilityWeightedOpacityBuffer);
         freeDevicePtr(queue, sensor.intraSlabDepthBuffer);
         freeDevicePtr(queue, sensor.intraSlabRayDepthBuffer);
         freeDevicePtr(queue, sensor.intraSlabDepthAdjointBuffer);
@@ -2435,7 +2477,6 @@ namespace {
         settings.numGatherPasses = 1u;
         settings.renderDebugGradientImages = false;
         settings.depthDistortionWorldSpace = true;
-        settings.depthDistortionGaussian = true;
         settings.enableAdjointDirectLight = true;
         settings.pointGeometrySupportRadius = 0.00f;
         settings.pointGeometryReconstructionLength = 0.0f;
@@ -3117,6 +3158,7 @@ int main(int argc, char** argv) {
 
         SceneBounds bounds = computeSceneBounds(buildProducts);
         OrbitCamera orbit = makeInitialOrbitCamera(buildProducts, bounds);
+        OrbitCamera initialOrbit = orbit;
         std::filesystem::path currentScenePath = args.scenePath;
         std::filesystem::path currentPointCloudPath = args.pointCloudPath;
         std::array<char, 1024> pointCloudPathBuffer{};
@@ -3173,6 +3215,12 @@ int main(int argc, char** argv) {
         bool renderRequested = true;
         CameraSource cameraSource = CameraSource::Viewport;
         int selectedSceneCameraIndex = 0;
+        bool walkNavigationActive = false;
+        OrbitCamera orbitBeforeWalk = orbit;
+        CameraSource cameraSourceBeforeWalk = cameraSource;
+        float walkSpeed = 0.5f;
+        double walkCursorX = 0.0;
+        double walkCursorY = 0.0;
         bool forceRenderOpacity = false;
         bool showViewportGrid = false;
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
@@ -3466,6 +3514,7 @@ int main(int argc, char** argv) {
             surfelLightStatus.clear();
             surfelEditorStatus.clear();
             rebuildSceneGpu();
+            initialOrbit = makeInitialOrbitCamera(buildProducts, bounds);
             orbit = preservedOrbit;
             orbit.farClip = std::max(orbit.farClip, std::max(1000.0f, bounds.radius * 20.0f));
             cameraSource = preservedCameraSource;
@@ -4692,7 +4741,6 @@ int main(int argc, char** argv) {
                 viewImageMode == ViewImageMode::DepthPositionGradient ? 1.0f : 0.0f;
             regularizerSettings.normalConsistencyWeight =
                 viewImageMode == ViewImageMode::NormalPositionGradient ? 1.0f : 0.0f;
-            regularizerSettings.visibilityWeightedOpacityRegularizerWeight = 0.0f;
             regularizerSettings.intraSlabDepthRegularizerWeight =
                 viewImageMode == ViewImageMode::IntraSlabPositionGradient ? 1.0f : 0.0f;
             regularizerSettings.curvatureScaleRegularizerWeight = 0.0f;
@@ -4703,7 +4751,6 @@ int main(int argc, char** argv) {
             unusedDepthGradients.numPoints = sceneGpu.pointCount;
             Pale::PointGradients unusedNormalGradients{};
             Pale::PointGradients unusedIntraSlabGradients{};
-            Pale::PointGradients unusedOpacityGradients{};
             Pale::PointGradients unusedCurvatureGradients{};
             tracer.renderSurfaceRegularizersBackward(
                 renderSensors,
@@ -4711,7 +4758,6 @@ int main(int argc, char** argv) {
                     ? viewerRegularizerGradients : unusedDepthGradients,
                 regularizerSettings.normalConsistencyWeight != 0.0f
                     ? viewerRegularizerGradients : unusedNormalGradients,
-                unusedOpacityGradients,
                 regularizerSettings.intraSlabDepthRegularizerWeight != 0.0f
                     ? viewerRegularizerGradients : unusedIntraSlabGradients,
                 unusedCurvatureGradients,
@@ -4952,17 +4998,46 @@ int main(int argc, char** argv) {
             renderRequested = false;
         };
 
+        const auto finishWalkNavigation = [&](bool cancel) {
+            if (!walkNavigationActive) {
+                return;
+            }
+            if (cancel) {
+                orbit = orbitBeforeWalk;
+                cameraSource = cameraSourceBeforeWalk;
+            }
+            walkNavigationActive = false;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            if (glfwRawMouseMotionSupported()) {
+                glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+            }
+            viewportPickArmed = false;
+            viewportGizmoMouseCapture = false;
+            cameraDirty = true;
+            tracerDirty = true;
+            renderRequested = true;
+        };
+
+        const auto resetOrbitView = [&]() {
+            finishWalkNavigation(false);
+            orbit = initialOrbit;
+            cameraSource = CameraSource::Viewport;
+            cameraDirty = true;
+            tracerDirty = true;
+            renderRequested = true;
+        };
+
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-                Pale::Log::PA_INFO("Viewer close requested by Escape");
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            if (walkNavigationActive && !glfwGetWindowAttrib(window, GLFW_FOCUSED)) {
+                finishWalkNavigation(true);
             }
             if (glfwWindowShouldClose(window)) { break; }
 
             if (dropState.hasPendingPlyPath) {
                 const std::filesystem::path droppedPath = dropState.pendingPlyPath;
                 dropState.hasPendingPlyPath = false;
+                finishWalkNavigation(false);
                 handleDroppedPly(droppedPath);
             }
 
@@ -4976,8 +5051,76 @@ int main(int argc, char** argv) {
 
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
+            // Avoid replaying stale movement over several expensive render frames.
+            io.ConfigInputTrickleEventQueue = !walkNavigationActive;
             ImGui::NewFrame();
 
+            bool navigationInputCaptured = walkNavigationActive;
+            const bool navigationShortcutAllowed =
+                !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper;
+            if ((walkNavigationActive || navigationShortcutAllowed) &&
+                viewerKeyPressed(ImGuiKey_Space)) {
+                resetOrbitView();
+                navigationInputCaptured = true;
+            } else if (walkNavigationActive) {
+                if (viewerKeyPressed(ImGuiKey_Escape) ||
+                    walkMouseClicked(ImGuiMouseButton_Right)) {
+                    finishWalkNavigation(true);
+                } else if (viewerKeyPressed(ImGuiKey_Enter) ||
+                           viewerKeyPressed(ImGuiKey_Backslash) ||
+                           walkMouseClicked(ImGuiMouseButton_Left)) {
+                    finishWalkNavigation(false);
+                } else {
+                    double cursorX = 0.0, cursorY = 0.0;
+                    glfwGetCursorPos(window, &cursorX, &cursorY);
+                    const ImVec2 lookDelta{
+                        static_cast<float>(cursorX - walkCursorX),
+                        static_cast<float>(cursorY - walkCursorY)};
+                    walkCursorX = cursorX;
+                    walkCursorY = cursorY;
+                    walkSpeed = std::clamp(walkSpeed * std::exp(io.MouseWheel * 0.2f), 0.01f, 1000.0f);
+                    const glm::vec3 direction{
+                        static_cast<float>(ImGui::IsKeyDown(ImGuiKey_D)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_A)),
+                        static_cast<float>(ImGui::IsKeyDown(ImGuiKey_W)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_S)),
+                        static_cast<float>(ImGui::IsKeyDown(ImGuiKey_E)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_Q))};
+                    if (lookDelta.x != 0.0f || lookDelta.y != 0.0f || glm::dot(direction, direction) > 0.0f) {
+                        orbit.lookAround(lookDelta);
+                        const float speedMultiplier = io.KeyShift ? 4.0f : (io.KeyAlt ? 0.25f : 1.0f);
+                        orbit.walk(direction, walkSpeed * speedMultiplier * std::min(io.DeltaTime, 0.1f));
+                        cameraDirty = true;
+                        renderRequested = true;
+                    }
+                }
+            } else if (navigationShortcutAllowed && viewerKeyPressed(ImGuiKey_Backslash)) {
+                orbitBeforeWalk = orbit;
+                cameraSourceBeforeWalk = cameraSource;
+                if (cameraSource == CameraSource::SceneXml && !buildProducts.cameraGPUs.empty()) {
+                    orbit = makeOrbitCameraFromSceneCamera(
+                        buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)], bounds, orbit);
+                }
+                cameraSource = CameraSource::Viewport;
+                walkNavigationActive = true;
+                navigationInputCaptured = true;
+                walkSpeed = std::clamp(bounds.radius * 0.5f, 0.1f, 50.0f);
+                viewportPickArmed = false;
+                viewportGizmoMouseCapture = false;
+                glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                if (glfwRawMouseMotionSupported()) {
+                    glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+                }
+                glfwGetCursorPos(window, &walkCursorX, &walkCursorY);
+                cameraDirty = true;
+                tracerDirty = true;
+                renderRequested = true;
+            } else if (viewerKeyPressed(ImGuiKey_Escape)) {
+                Pale::Log::PA_INFO("Viewer close requested by Escape");
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+
+            // Capture walk input without dimming the UI or the rendered image.
+            ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1.0f);
+            ImGui::BeginDisabled(navigationInputCaptured);
+            ImGui::PopStyleVar();
             if (ImGui::BeginMainMenuBar()) {
                 if (ImGui::BeginMenu("View")) {
                     ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
@@ -5024,27 +5167,28 @@ int main(int argc, char** argv) {
                 ImGuiDockNodeFlags_PassthruCentralNode);
             ImGuizmo::BeginFrame();
 
+            // Walk navigation owns mouse movement, but viewer shortcuts remain available.
             if (!io.WantTextInput &&
                 !io.KeyCtrl &&
                 !io.KeyAlt &&
                 !io.KeySuper) {
-                if (ImGui::IsKeyPressed(ImGuiKey_R, false)) {
+                if (viewerKeyPressed(ImGuiKey_R)) {
                     refreshLatestOptimizationPointCloud();
                 }
 
-                if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+                if (viewerKeyPressed(ImGuiKey_F)) {
                     jumpToOptimizationSnapshotBoundary(false);
                 }
 
-                if (ImGui::IsKeyPressed(ImGuiKey_L, false)) {
+                if (viewerKeyPressed(ImGuiKey_L)) {
                     jumpToOptimizationSnapshotBoundary(true);
                 }
 
-                if (ImGui::IsKeyPressed(ImGuiKey_N, false)) {
+                if (viewerKeyPressed(ImGuiKey_N)) {
                     stepLatestOptimizationSnapshot(-1, kSnapshotIterationStep);
                 }
 
-                if (ImGui::IsKeyPressed(ImGuiKey_M, false)) {
+                if (viewerKeyPressed(ImGuiKey_M)) {
                     stepLatestOptimizationSnapshot(1, kSnapshotIterationStep);
                 }
 
@@ -5056,12 +5200,22 @@ int main(int argc, char** argv) {
                     stepLatestOptimizationSnapshot(1);
                 }
 
-                if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false)) {
-                    stepLatestOptimizationSnapshot(1);
-                }
-
-                if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false)) {
-                    stepLatestOptimizationSnapshot(-1);
+                const int verticalArrowStep =
+                    static_cast<int>(viewerKeyPressed(ImGuiKey_UpArrow)) -
+                    static_cast<int>(viewerKeyPressed(ImGuiKey_DownArrow));
+                if (verticalArrowStep != 0) {
+                    if (cameraSource == CameraSource::SceneXml) {
+                        const int cameraCount = static_cast<int>(buildProducts.cameraGPUs.size());
+                        if (cameraCount > 1) {
+                            selectedSceneCameraIndex =
+                                (selectedSceneCameraIndex + verticalArrowStep + cameraCount) % cameraCount;
+                            cameraDirty = true;
+                            tracerDirty = true;
+                            renderRequested = true;
+                        }
+                    } else {
+                        stepLatestOptimizationSnapshot(verticalArrowStep);
+                    }
                 }
 
                 // The first ten menu/cycle entries map to 1..9, then 0.
@@ -5081,18 +5235,18 @@ int main(int argc, char** argv) {
                 for (std::size_t shortcutIndex = 0;
                      shortcutIndex < viewImageModeShortcutKeys.size();
                      ++shortcutIndex) {
-                    if (ImGui::IsKeyPressed(viewImageModeShortcutKeys[shortcutIndex], false)) {
+                    if (viewerKeyPressed(viewImageModeShortcutKeys[shortcutIndex])) {
                         setViewImageMode(kViewImageModeCycleOrder[shortcutIndex]);
                         break;
                     }
                 }
 
                 const bool nextViewModePressed =
-                    ImGui::IsKeyPressed(ImGuiKey_KeypadAdd, false) ||
-                    (io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_Equal, false));
+                    viewerKeyPressed(ImGuiKey_KeypadAdd) ||
+                    (io.KeyShift && viewerKeyPressed(ImGuiKey_Equal));
                 const bool previousViewModePressed =
-                    ImGui::IsKeyPressed(ImGuiKey_KeypadSubtract, false) ||
-                    ImGui::IsKeyPressed(ImGuiKey_Minus, false);
+                    viewerKeyPressed(ImGuiKey_KeypadSubtract) ||
+                    viewerKeyPressed(ImGuiKey_Minus);
                 if (nextViewModePressed) {
                     cycleViewImageMode(1);
                 } else if (previousViewModePressed) {
@@ -5199,28 +5353,11 @@ int main(int argc, char** argv) {
                 renderRequested = true;
             }
 
-            int distortionDepthMode = settings.depthDistortionGaussian ? 2 :
-                (settings.depthDistortionWorldSpace ? 0 : 1);
-            const char* distortionDepthModes[] = {"World distance", "Normalized depth (legacy)", "World distance + Gaussian falloff"};
-            if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 3)) {
-                settings.depthDistortionGaussian = distortionDepthMode == 2;
+            int distortionDepthMode = settings.depthDistortionWorldSpace ? 0 : 1;
+            const char* distortionDepthModes[] = {"World distance", "Normalized depth"};
+            if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 2)) {
                 settings.depthDistortionWorldSpace = distortionDepthMode == 0;
                 renderRequested = true;
-            }
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip(
-                    "Match the training run. Gaussian falloff uses metric camera-forward "
-                    "depth differences and detached weights, with no pixel-width normalization.");
-            }
-            if (settings.depthDistortionGaussian) {
-                if (ImGui::DragFloat("Half-strength distance (m)", &settings.depthDistortionHalfStrengthMeters,
-                                     0.001f, 0.0001f, 100.0f, "%.4f", ImGuiSliderFlags_AlwaysClamp)) {
-                    renderRequested = true;
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Attraction is 50%% at this distance, 6.25%% at twice this distance.");
-                }
-                ImGui::TextWrapped("Metric depth separation; independent of pixel width, focal length and reference depth.");
             }
 
             int cameraSourceIndex = cameraSource == CameraSource::SceneXml ? 1 : 0;
@@ -5236,6 +5373,7 @@ int main(int argc, char** argv) {
             }
 
             if (cameraSource == CameraSource::SceneXml) {
+                ImGui::TextDisabled("Up/Down: next/previous scene camera (wraps)");
                 if (buildProducts.cameraGPUs.empty()) {
                     ImGui::Text("No scene.xml cameras loaded");
                 } else if (ImGui::BeginCombo(
@@ -6249,9 +6387,13 @@ int main(int argc, char** argv) {
             }
             ImGui::SameLine();
             if (ImGui::Button("Reset view")) {
-                orbit = makeInitialOrbitCamera(buildProducts, bounds);
-                cameraDirty = true;
-                renderRequested = true;
+                resetOrbitView();
+            }
+            ImGui::TextDisabled("Space: reset orbit | Backslash: walk navigation");
+            if (walkNavigationActive) {
+                ImGui::TextWrapped("Walk: mouse look, WASD move, Q/E down/up; Shift fast, Alt slow; wheel changes speed.");
+                ImGui::TextWrapped("Enter / left click / Backslash: keep view. Escape / right click: cancel.");
+                ImGui::Text("Walk speed: %.2f units/s", walkSpeed);
             }
             ImGui::Text("Last render: %.2f ms", lastRenderMs);
             ImGui::Text("Camera: %.3f %.3f %.3f",
@@ -6289,7 +6431,7 @@ int main(int argc, char** argv) {
 
                 bool viewportGizmoHovered = false;
                 bool viewportGizmoUsing = false;
-                if (showLightGizmo && selectedLight && cameraSource == CameraSource::Viewport) {
+                if (!navigationInputCaptured && showLightGizmo && selectedLight && cameraSource == CameraSource::Viewport) {
                     auto& transform = selectedLight.getComponent<Pale::TransformComponent>();
                     glm::mat4 lightTransform = transform.getTransform();
                     glm::mat4 view = orbit.viewMatrix();
@@ -6313,7 +6455,7 @@ int main(int argc, char** argv) {
                     ImGuizmo::PopID();
                 }
 
-	                if (showSurfelGizmo && cameraSource == CameraSource::Viewport) {
+	                if (!navigationInputCaptured && showSurfelGizmo && cameraSource == CameraSource::Viewport) {
 	                    const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
 	                    const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
 	                        pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
@@ -6373,7 +6515,7 @@ int main(int argc, char** argv) {
 	                }
                 }
 
-                if (cameraSource == CameraSource::Viewport) {
+                if (!navigationInputCaptured && cameraSource == CameraSource::Viewport) {
                     glm::mat4 viewGizmoMatrix = orbit.viewMatrix();
                     const ImVec2 viewGizmoSize{92.0f, 92.0f};
                     const ImVec2 viewGizmoPosition{
@@ -6412,7 +6554,7 @@ int main(int argc, char** argv) {
                 }
 
 	                const bool viewportCameraInputBlocked =
-	                    viewportGizmoHovered || viewportGizmoUsing || viewportGizmoMouseCapture;
+	                    navigationInputCaptured || viewportGizmoHovered || viewportGizmoUsing || viewportGizmoMouseCapture;
 	                const ImVec2 imageMax{imageMin.x + imageSize.x, imageMin.y + imageSize.y};
 	                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
 	                    viewportPickArmed = imageHovered && !viewportCameraInputBlocked;
@@ -6489,6 +6631,7 @@ int main(int argc, char** argv) {
                 renderRequested = true;
             }
 
+            ImGui::EndDisabled();
             ImGui::Render();
             int displayW = 0;
             int displayH = 0;

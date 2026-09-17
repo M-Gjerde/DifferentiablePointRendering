@@ -215,6 +215,28 @@ def make_exponential_scale_func(
     return schedule
 
 
+def make_linear_scale_func(
+        scale_init: float,
+        scale_final: float,
+        max_steps: int,
+        start_iteration: int = 0,
+) -> Callable[[int], float]:
+    if scale_init <= 0.0:
+        raise ValueError(f"scale_init must be positive, got {scale_init}")
+    if scale_final <= 0.0:
+        raise ValueError(f"scale_final must be positive, got {scale_final}")
+    if max_steps < 0:
+        raise ValueError(f"max_steps must be non-negative, got {max_steps}")
+
+    def schedule(iteration: int) -> float:
+        if max_steps == 0:
+            return scale_init if iteration < start_iteration else scale_final
+        t = np.clip(float(iteration - start_iteration) / float(max_steps), 0.0, 1.0)
+        return float(scale_init * (1.0 - t) + scale_final * t)
+
+    return schedule
+
+
 def get_required_learning_rate(config: OptimizationConfig, attribute_name: str) -> float:
     learning_rate = getattr(config, attribute_name)
     if learning_rate is None:
@@ -247,7 +269,7 @@ def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, obje
         global_lr_scale_func = make_constant_scale_func()
 
     if bool(getattr(config, "use_position_lr_decay", False)):
-        position_lr_scale_func = make_exponential_scale_func(
+        position_lr_scale_func = make_linear_scale_func(
             scale_init=float(getattr(config, "position_lr_scale_init", 1.0)),
             scale_final=float(getattr(config, "position_lr_scale_final", 1.0)),
             start_iteration=decay_start_iteration,

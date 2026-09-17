@@ -198,6 +198,9 @@ def validate_spec(spec: dict[str, Any], check_paths: bool = True) -> None:
         if name in base_args:
             raise ValueError(f"Parameter '{name}' occurs in both base_args and search_space.")
         validate_dimension(name, dimension)
+        dependency = dimension.get("when_nonzero")
+        if dependency is not None and dependency not in list(search_space)[:list(search_space).index(name)]:
+            raise ValueError(f"Conditional parameter '{name}' requires an earlier search dimension: {dependency}")
 
     iterations = int(effective_optimization_setting(spec, "iterations", 0))
     mesh_interval = int(
@@ -289,7 +292,13 @@ def validate_spec(spec: dict[str, Any], check_paths: bool = True) -> None:
         if not isinstance(initial, dict):
             raise TypeError(f"initial_trials[{index}] must be an object.")
         unknown = set(initial) - set(search_space)
-        missing_initial = set(search_space) - set(initial)
+        missing_initial = {
+            name for name, dimension in search_space.items()
+            if name not in initial and (
+                dimension.get("when_nonzero") is None
+                or initial.get(dimension["when_nonzero"], 0) != 0
+            )
+        }
         if unknown or missing_initial:
             raise ValueError(
                 f"initial_trials[{index}] must specify every search dimension; "
@@ -323,6 +332,9 @@ def representative_value(dimension: dict[str, Any]) -> Any:
 def suggest_parameters(trial: Any, search_space: dict[str, Any]) -> dict[str, Any]:
     parameters: dict[str, Any] = {}
     for name, dimension in search_space.items():
+        dependency = dimension.get("when_nonzero")
+        if dependency is not None and parameters[dependency] == 0:
+            continue
         dimension_type = dimension["type"]
         if dimension_type == "categorical":
             value = trial.suggest_categorical(name, dimension["choices"])

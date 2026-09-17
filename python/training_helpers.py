@@ -38,8 +38,6 @@ LOSS_VALUE_KEYS = (
     "total_depth_distortion_loss_weighted",
     "total_normal_loss_raw",
     "total_normal_loss_weighted",
-    "total_opacity_prior_loss_raw",
-    "total_opacity_prior_loss_weighted",
     "total_intra_slab_depth_loss_raw",
     "total_intra_slab_depth_loss_weighted",
     "total_curvature_scale_loss_raw",
@@ -640,7 +638,7 @@ def scheduled_densification_grad_abs_min(
         iteration: int,
         start_iteration: int,
         end_iteration: int,
-        decay_power: float = 2.0,
+        decay_power: float = 1.5, # 1 = linear
 ) -> float:
     initial_threshold = float(initial_threshold)
     final_threshold = float(final_threshold)
@@ -658,6 +656,10 @@ def scheduled_densification_grad_abs_min(
 
     t = float(int(iteration) - start_iteration) / float(end_iteration - start_iteration)
 
+    # With decay_power=2.0, quadratic decay is fast early and slows toward the end:
+    # Progress through [start_iteration, end_iteration]:  0%    25%     50%    75%    100%
+    # Remaining fraction of (initial - final):          100%   56.25%  25%    6.25%   0%
+    # These percentages describe the gap, not the full threshold (unless final=0).
     return final_threshold + (initial_threshold - final_threshold) * (1.0 - t) ** decay_power
 
 def densification_scene_extent_for_positions(
@@ -718,18 +720,16 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     rgb_loss = float(loss_state["total_rgb_loss_value"])
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
-    opacity_weighted = float(loss_state["total_opacity_prior_loss_weighted"])
     intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
     curvature_scale_weighted = float(loss_state["total_curvature_scale_loss_weighted"])
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
-    after_opacity = after_normal + opacity_weighted
-    after_intra_slab = after_opacity + intra_slab_weighted
+    after_intra_slab = after_normal + intra_slab_weighted
     after_curvature_scale = after_intra_slab + curvature_scale_weighted
     regularizer_total = (
-        depth_weighted + normal_weighted + opacity_weighted +
+        depth_weighted + normal_weighted +
         intra_slab_weighted + curvature_scale_weighted
     )
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
@@ -744,8 +744,6 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
         f"(+{depth_weighted:.3e})\n"
         f"  {'+ normal consistency':<28} {after_normal:>12.3e}  "
         f"(+{normal_weighted:.3e})\n"
-        f"  {'+ opacity prior':<28} {after_opacity:>12.3e}  "
-        f"(+{opacity_weighted:.3e})\n"
         f"  {'+ intra-slab depth':<28} {after_intra_slab:>12.3e}  "
         f"(+{intra_slab_weighted:.3e})\n"
         f"  {'+ curvature scale':<28} {after_curvature_scale:>12.3e}  "
@@ -780,7 +778,6 @@ def format_training_iteration_log(
         active_densification_grad_abs_min: float,
         active_depth_distortion_weight: float,
         active_normal_consistency_weight: float,
-        active_opacity_prior_weight: float,
         exact_clone_scale_threshold: float,
         minimum_splittable_scale: float,
         grad_pos_rms: float,
@@ -821,13 +818,10 @@ def format_training_iteration_log(
         f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
         f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
-        f" opacity_raw={loss_state['total_opacity_prior_loss_raw']:.3e}"
-        f" opacity_w={loss_state['total_opacity_prior_loss_weighted']:.3e}"
         f" intra_slab_raw={loss_state['total_intra_slab_depth_loss_raw']:.3e}"
         f" intra_slab_w={loss_state['total_intra_slab_depth_loss_weighted']:.3e}"
         f" curvature_scale_raw={loss_state['total_curvature_scale_loss_raw']:.3e}"
         f" curvature_scale_w={loss_state['total_curvature_scale_loss_weighted']:.3e}"
-        f" opacity_active_w={active_opacity_prior_weight:.3e}"
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
         f" pos={grad_pos_rms:.2e}"
@@ -850,7 +844,6 @@ def format_gradient_source_balance(
         loss_gradients: dict[str, np.ndarray],
         depth_regularizer_gradients: dict[str, np.ndarray],
         normal_regularizer_gradients: dict[str, np.ndarray],
-        opacity_prior_gradients: dict[str, np.ndarray],
         intra_slab_depth_gradients: dict[str, np.ndarray],
         curvature_scale_gradients: dict[str, np.ndarray],
         surface_regularizer_gradients: dict[str, np.ndarray],
@@ -875,7 +868,6 @@ def format_gradient_source_balance(
         f"{'loss%':>8}"
         f"{'depth%':>8}"
         f"{'normal%':>9}"
-        f"{'opacity%':>10}"
         f"{'intra%':>9}"
         f"{'curv%':>8}"
         f"   {'source norms'}",
@@ -886,7 +878,6 @@ def format_gradient_source_balance(
 
         depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
         normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
-        opacity_norm = gradient_norm_for_key(opacity_prior_gradients, key)
         intra_slab_norm = gradient_norm_for_key(intra_slab_depth_gradients, key)
         curvature_scale_norm = gradient_norm_for_key(curvature_scale_gradients, key)
 
@@ -900,7 +891,6 @@ def format_gradient_source_balance(
                 loss_norm
                 + depth_norm
                 + normal_norm
-                + opacity_norm
                 + intra_slab_norm
                 + curvature_scale_norm
         )
@@ -917,11 +907,6 @@ def format_gradient_source_balance(
         )
         normal_percent = (
             100.0 * normal_norm / source_norm_denom
-            if source_norm_denom > 1.0e-20
-            else 0.0
-        )
-        opacity_percent = (
-            100.0 * opacity_norm / source_norm_denom
             if source_norm_denom > 1.0e-20
             else 0.0
         )
@@ -945,13 +930,11 @@ def format_gradient_source_balance(
             f"{loss_percent:>7.1f}%"
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
-            f"{opacity_percent:>9.1f}%"
             f"{intra_slab_percent:>8.1f}%"
             f"{curvature_scale_percent:>7.1f}%"
             f"   "
             f"depth={depth_norm:.2e}, "
             f"normal={normal_norm:.2e}, "
-            f"opacity={opacity_norm:.2e}, "
             f"intra={intra_slab_norm:.2e}, "
             f"curvature={curvature_scale_norm:.2e}"
         )
@@ -1440,12 +1423,10 @@ def compute_initial_losses_and_save_outputs(
         ssim_sigma: float,
         depth_distortion_weight: float,
         normal_consistency_weight: float,
-        opacity_prior_weight: float,
         intra_slab_depth_weight: float,
         curvature_scale_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
-        use_opacity_prior: bool,
         use_intra_slab_depth: bool,
         use_curvature_scale: bool,
 ) -> tuple[float, ...]:
@@ -1466,7 +1447,6 @@ def compute_initial_losses_and_save_outputs(
     initial_rgb_loss = 0.0
     initial_depth_distortion_loss_raw = 0.0
     initial_normal_loss_raw = 0.0
-    initial_opacity_prior_loss_raw = 0.0
     initial_intra_slab_depth_loss_raw = 0.0
     initial_curvature_scale_loss_raw = 0.0
 
@@ -1508,8 +1488,6 @@ def compute_initial_losses_and_save_outputs(
             )
             initial_normal_loss_raw += raw_normal_loss_value
 
-        if use_opacity_prior:
-            initial_opacity_prior_loss_raw += float(render.get_forward_opacity_prior(initial_images, camera_name).mean())
 
         if use_intra_slab_depth:
             loss_map = render.get_forward_intra_slab_depth(initial_images, camera_name)
@@ -1533,7 +1511,6 @@ def compute_initial_losses_and_save_outputs(
 
     initial_depth_distortion_loss_weighted = depth_distortion_weight * initial_depth_distortion_loss_raw
     initial_normal_loss_weighted = normal_consistency_weight * initial_normal_loss_raw
-    initial_opacity_prior_loss_weighted = opacity_prior_weight * initial_opacity_prior_loss_raw
     initial_intra_slab_depth_loss_weighted = (
         intra_slab_depth_weight * initial_intra_slab_depth_loss_raw
     )
@@ -1545,7 +1522,6 @@ def compute_initial_losses_and_save_outputs(
             initial_rgb_loss
             + initial_depth_distortion_loss_weighted
             + initial_normal_loss_weighted
-            + initial_opacity_prior_loss_weighted
             + initial_intra_slab_depth_loss_weighted
             + initial_curvature_scale_loss_weighted
     )
@@ -1556,8 +1532,6 @@ def compute_initial_losses_and_save_outputs(
         initial_depth_distortion_loss_weighted,
         initial_normal_loss_raw,
         initial_normal_loss_weighted,
-        initial_opacity_prior_loss_raw,
-        initial_opacity_prior_loss_weighted,
         initial_intra_slab_depth_loss_raw,
         initial_intra_slab_depth_loss_weighted,
         initial_curvature_scale_loss_raw,
@@ -1573,8 +1547,6 @@ def print_loss_summary(
         depth_distortion_loss_weighted: float,
         normal_loss_raw: float,
         normal_loss_weighted: float,
-        opacity_prior_loss_raw: float,
-        opacity_prior_loss_weighted: float,
         intra_slab_depth_loss_raw: float,
         intra_slab_depth_loss_weighted: float,
         curvature_scale_loss_raw: float,
@@ -1586,8 +1558,6 @@ def print_loss_summary(
     print(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
     print(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
     print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
-    print(f"{prefix} opacity prior loss (raw)               : {opacity_prior_loss_raw:.6e}")
-    print(f"{prefix} opacity prior loss (weighted)          : {opacity_prior_loss_weighted:.6e}")
     print(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
     print(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
     print(f"{prefix} curvature scale loss (raw)             : {curvature_scale_loss_raw:.6e}")
@@ -1600,12 +1570,10 @@ def compute_surface_regularizer_losses_and_adjoints(
         training_camera_ids: list[str],
         depth_distortion_weight: float,
         normal_consistency_weight: float,
-        opacity_prior_weight: float,
         intra_slab_depth_weight: float,
         curvature_scale_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
-        use_opacity_prior: bool,
         use_intra_slab_depth: bool,
         use_curvature_scale: bool,
 ) -> dict[str, Any]:
@@ -1666,14 +1634,6 @@ def compute_surface_regularizer_losses_and_adjoints(
                     normal_consistency_weight * depth_normal_adjoint
             ).astype(np.float32, copy=False)
 
-        if use_opacity_prior:
-            opacity_prior_np = render.get_forward_opacity_prior(forward_out, camera_name)
-            opacity_prior_loss_raw = float(opacity_prior_np.mean())
-            opacity_prior_loss_weighted = opacity_prior_weight * opacity_prior_loss_raw
-
-            camera_loss_values["total_opacity_prior_loss_raw"] = opacity_prior_loss_raw
-            camera_loss_values["total_opacity_prior_loss_weighted"] = opacity_prior_loss_weighted
-            camera_loss_values["total_loss_value"] += opacity_prior_loss_weighted
 
         if use_intra_slab_depth:
             intra_slab_depth_np = render.get_forward_intra_slab_depth(forward_out, camera_name)
@@ -2102,21 +2062,14 @@ def position_densification_snapshot_statistics(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         trainable_surfel_mask: torch.Tensor,
-        densification_grad_quantile: float,
         densification_grad_abs_min: float,
         densify_radiance_rms_accum_np: np.ndarray | None = None,
         densification_radiance_floor: float = 1.0e-3,
-        densification_radiance_quantile_bins: int = 1,
-        densification_radiance_quantile_min_bin_size: int = 16,
         densification_radiance_bias_strength: float = 0.0,
         densification_radiance_bias_min_weight: float = 0.8,
         densification_radiance_bias_max_weight: float = 1.5,
-        densification_threshold_mode: str = "quantile",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
-    """Return signals and selection thresholds; unused quantile diagnostics are NaN."""
-    if densification_threshold_mode not in ("absolute", "quantile"):
-        raise ValueError(f"Unknown densification threshold mode: {densification_threshold_mode}")
-    use_quantiles = densification_threshold_mode == "quantile"
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Return signals, sample counts, and brightness-adjusted absolute thresholds."""
     accum = np.asarray(densify_position_grad_accum_np, dtype=np.float32).reshape(-1)
     denom = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
     trainable = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
@@ -2135,20 +2088,8 @@ def position_densification_snapshot_statistics(
         float(densification_grad_abs_min),
         float(np.finfo(np.float32).tiny),
     )
-    quantile_population = (
-        valid
-        & finite_signal
-        & trainable
-    )
-    if use_quantiles and np.any(quantile_population):
-        quantile_threshold = float(np.quantile(
-            signal[quantile_population],
-            float(densification_grad_quantile),
-        ))
-        threshold = max(absolute_minimum, quantile_threshold)
-    else:
-        quantile_threshold = float("nan")
-        threshold = absolute_minimum
+    observed_population = valid & finite_signal & trainable
+    threshold = absolute_minimum
 
     sample_counts = np.clip(
         np.rint(np.nan_to_num(denom, nan=0.0, posinf=0.0, neginf=0.0)),
@@ -2160,10 +2101,8 @@ def position_densification_snapshot_statistics(
     threshold = float(np.float32(threshold))
     effective_thresholds = np.full(signal.shape, threshold, dtype=np.float32)
 
-    radiance_bin_count = max(1, int(densification_radiance_quantile_bins)) if use_quantiles else 1
-    minimum_bin_size = max(1, int(densification_radiance_quantile_min_bin_size))
     bias_strength = float(densification_radiance_bias_strength)
-    if densify_radiance_rms_accum_np is not None and (radiance_bin_count > 1 or bias_strength > 0.0):
+    if densify_radiance_rms_accum_np is not None and bias_strength > 0.0:
         radiance_accum = np.asarray(
             densify_radiance_rms_accum_np, dtype=np.float32
         ).reshape(-1)
@@ -2174,7 +2113,7 @@ def position_densification_snapshot_statistics(
             )
         radiance_rms = np.zeros(signal.shape, dtype=np.float32)
         radiance_rms[valid] = radiance_accum[valid] / denom[valid]
-        observed_radiance = quantile_population & np.isfinite(radiance_rms) & (radiance_rms > 0.0)
+        observed_radiance = observed_population & np.isfinite(radiance_rms) & (radiance_rms > 0.0)
         radiance_rms = np.nan_to_num(
             radiance_rms, nan=0.0, posinf=0.0, neginf=0.0
         )
@@ -2182,30 +2121,8 @@ def position_densification_snapshot_statistics(
             float(densification_radiance_floor),
             float(np.finfo(np.float32).tiny),
         )
-        if radiance_bin_count > 1:
-            radiance_ratio = np.maximum(radiance_rms, radiance_reference) / radiance_reference
-            radiance_bin_indices = np.floor(np.log2(radiance_ratio)).astype(np.int32)
-            radiance_bin_indices = np.clip(
-                radiance_bin_indices, 0, radiance_bin_count - 1
-            )
-
-            for bin_index in range(radiance_bin_count):
-                bin_population = quantile_population & (radiance_bin_indices == bin_index)
-                if int(np.count_nonzero(bin_population)) < minimum_bin_size:
-                    continue
-                bin_quantile_threshold = float(np.quantile(
-                    signal[bin_population],
-                    float(densification_grad_quantile),
-                ))
-                bin_threshold = float(np.float32(max(
-                    absolute_minimum,
-                    bin_quantile_threshold,
-                )))
-                effective_thresholds[bin_population] = bin_threshold
-
         if bias_strength > 0.0 and np.any(observed_radiance):
-            # Apply the preference AFTER quantiles: scaling each band's input
-            # scores first would largely cancel against its scaled quantile.
+            # Scale the absolute threshold by bounded relative brightness.
             # Missing/invalid radiance stays neutral and cannot set the median.
             brightness = np.maximum(
                 radiance_rms[observed_radiance].astype(np.float64), radiance_reference
@@ -2221,7 +2138,7 @@ def position_densification_snapshot_statistics(
                 effective_thresholds[observed_radiance] / weights
             ).astype(np.float32)
 
-    return signal, sample_counts, effective_thresholds, threshold, quantile_threshold
+    return signal, sample_counts, effective_thresholds, threshold
 
 
 def position_densification_radiance_rms_snapshot(
@@ -2263,7 +2180,6 @@ def maybe_make_densification_result(
         densify_after: int,
         densification_interval: int,
         densification_verbose: bool,
-        densification_grad_quantile: float,
         densification_grad_abs_min: float,
         densify_curvature_stats_accum: dict[str, np.ndarray] | None = None,
         force_densification: bool = False,
@@ -2289,25 +2205,16 @@ def maybe_make_densification_result(
             _position_sample_counts_np,
             grad_thresholds_np,
             grad_threshold,
-            grad_quantile_threshold,
         ) = position_densification_snapshot_statistics(
             densify_position_grad_accum_np=densify_position_grad_accum_np,
             densify_position_grad_denom_np=densify_position_grad_denom_np,
             trainable_surfel_mask=trainable_surfel_mask,
-            densification_grad_quantile=densification_grad_quantile,
             densification_grad_abs_min=densification_grad_abs_min,
             densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
             densification_radiance_floor=float(config.densification_radiance_floor),
-            densification_radiance_quantile_bins=int(
-                config.densification_radiance_quantile_bins
-            ),
-            densification_radiance_quantile_min_bin_size=int(
-                config.densification_radiance_quantile_min_bin_size
-            ),
             densification_radiance_bias_strength=float(config.densification_radiance_bias_strength),
             densification_radiance_bias_min_weight=float(config.densification_radiance_bias_min_weight),
             densification_radiance_bias_max_weight=float(config.densification_radiance_bias_max_weight),
-            densification_threshold_mode=config.densification_threshold_mode,
         )
         valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
         avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
@@ -2562,8 +2469,6 @@ def maybe_make_densification_result(
                 f"signal_p95={signal_p95:.3e}, "
                 f"signal_p98={signal_p98:.3e}, "
                 f"signal_max={signal_max:.3e}, "
-                f"grad_q_thr={grad_quantile_threshold:.3e}, "
-                f"threshold_mode={config.densification_threshold_mode}, "
                 f"grad_thr={grad_threshold:.3e}, "
                 f"abs_thr={densification_grad_abs_min:.3e}, "
                 f"curvature_thr={curvature_violation_threshold:.3e}, "
@@ -2602,49 +2507,19 @@ def maybe_make_prune_indices(
         iteration: int,
         config: OptimizationConfig,
         scales: torch.Tensor,
-        opacities: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
         prune_after: int,
         prune_interval: int,
-        reset_opacity_interval: int,
-        opacity_prune_threshold: float,
-        max_prune_fraction: float,
-) -> tuple[np.ndarray, np.ndarray, list[int]]:
-    scale_prune_indices = np.zeros((0,), dtype=np.int64)
-    opacity_prune_indices = np.zeros((0,), dtype=np.int64)
-    indices_to_remove_list: list[int] = []
+) -> tuple[np.ndarray, list[int]]:
+    if prune_interval <= 0 or iteration < prune_after or iteration % prune_interval != 0:
+        return np.zeros((0,), dtype=np.int64), []
 
-    is_reset_iteration = (
-            reset_opacity_interval > 0
-            and iteration % reset_opacity_interval == 0
-    )
-
-    if prune_interval <= 0:
-        return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
-
-    if not (iteration >= prune_after and iteration % prune_interval == 0 and not is_reset_iteration):
-        return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
-
-    area_prune_indices = density.compute_prune_indices_by_degenerate_area(
+    scale_prune_indices = density.compute_prune_indices_by_degenerate_area(
         scales,
         min_area=config.min_surfel_area,
         trainable_mask=trainable_surfel_mask,
     )
-
-    scale_prune_indices = area_prune_indices
-    if scale_prune_indices.size > 0:
-        indices_to_remove_list.extend(int(i) for i in scale_prune_indices)
-
-    opacity_prune_indices = density.compute_prune_indices_by_opacity(
-        opacities,
-        min_opacity=opacity_prune_threshold,
-        use_quantile=False,
-        max_fraction_to_prune=max_prune_fraction,
-    )
-    if opacity_prune_indices.size > 0:
-        indices_to_remove_list.extend(int(i) for i in opacity_prune_indices)
-
-    return scale_prune_indices, opacity_prune_indices, indices_to_remove_list
+    return scale_prune_indices, scale_prune_indices.tolist()
 
 
 def save_iteration_outputs(

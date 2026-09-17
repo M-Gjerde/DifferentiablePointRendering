@@ -26,7 +26,6 @@ namespace Pale {
         // Depth distortion buffer
         float* depthDistortionBuffer = nullptr;
         float* depthDistortionAdjointBuffer = nullptr;
-        float* visibilityWeightedOpacityBuffer = nullptr;
         float* intraSlabDepthBuffer = nullptr;
         // Optional forward-only comparison: unweighted variance of ray hit depths / h^2.
         float* intraSlabRayDepthBuffer = nullptr;
@@ -147,7 +146,6 @@ namespace Pale {
         PointGradients gradients{}; // photometric
         PointGradients depthDistortionGradients{};
         PointGradients normalConsistencyGradients{};
-        PointGradients visibilityOpacityGradients{};
         PointGradients intraSlabDepthGradients{};
         PointGradients curvatureScaleGradients{};
         CurvatureDensificationStats curvatureDensificationStats{};

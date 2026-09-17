@@ -163,86 +163,22 @@ they need calibration in the new statistic's units.
 frozen relative source, tests common radiometric gains, checks optimizer
 isolation with and without SSIM, and verifies that albedo compensation is replaced.
 
-### World-space depth distortion
+### Depth distortion
 
-#### Metric Gaussian falloff
+`depth_distort_world_space=True` uses absolute camera-forward depth differences
+in scene units: `sum_{i<j} w_i*w_j*abs(z_i-z_j)`. Setting it to `False` uses
+squared NDC inverse-depth differences. Match the mode and retune
+`depth_distort_weight` when switching between these losses.
 
-Select with `--depth-distort-gaussian` (or
-`OptimizationConfig.depth_distort_gaussian=True`). This mode takes precedence
-over `depth_distort_world_space`. Use `--no-depth-distort-gaussian` for the
-legacy absolute world/NDC losses. Training values are configured in
-`python/config.py`; match them explicitly in the viewer.
+The world-space depth derivative uses the sign of each pair's difference, with
+a zero subgradient at coincident depths. Backward differentiates compositing
+weights for position, rotation, and scale; opacity and beta updates from depth
+distortion remain suppressed.
 
-The single range control is `depth_distort_half_strength_m` /
-`--depth-distort-half-strength-m`, default 0.10, finite and positive.
-This assumes scene coordinates are in metres. Attraction is 50% at that
-separation, 6.25% at twice that distance, and about 0.2% at three times that
-distance. `depth_distort_weight` is the independent overall coefficient.
-
-For `d=abs(z_i-z_j)` and half-strength distance `a`, use
-`g(d)=2^(-(d/a)^2)`. The implemented penalty is its integral:
-`rho(d)=a*sqrt(pi)/(2*sqrt(ln(2)))*erf(sqrt(ln(2))*d/a)`.
-The per-pixel loss is `sum_{i<j} stopgrad(w_i*w_j)*rho(d)`, averaged across
-pixels by training as before. All recorded pairs are included, across and
-within slabs. The direct depth slope is `g(d)`, with zero subgradient at
-coincident depths. The penalty has scene-distance units, saturates, and never
-decreases with separation.
-
-There is no pixel width, focal length, image resolution, reference depth,
-median selection, or mean-depth fallback in the loss formula. Depth is still
-camera-forward depth, not Euclidean distance along off-axis rays. Camera changes
-can change ray intersections and compositing weights, so full images need not be
-view-invariant. Backward does not differentiate pair weights. Position and
-rotation receive hit-depth derivatives; scale, opacity, and beta receive no
-gradient from this regularizer.
-
-The near-zero derivative matches the original absolute world-space penalty
-for equal weights. When migrating a pixel-normalized coefficient, divide it by
-the chosen reference pixel width to preserve local direct depth-gradient strength.
-For example, 0.000025 at a reference pixel width of 3.3 mm converts to
-approximately 0.0076. This is an initialization for comparison, not a universal
-optimum.
-
-Pixel-footprint mode has been removed. In saved renderer settings, replace
-`depth_distort_pixel_footprint` with `depth_distort_gaussian`, replace
-`depth_distort_half_strength_pixels` with `depth_distort_half_strength_m`, and
-recalibrate the coefficient. A dictionary that still requests pixel-footprint
-mode without explicitly selecting the replacement reports an error instead of
-silently rendering a different loss. Historical world/NDC settings are unaffected.
-
-`test/test_absolute_depth_distortion.py` checks the erf penalty and its depth
-gradients, the half-strength point and tail, invariance of the central-ray loss
-and gradient to distance/focal changes with fixed intersections/weights, valid
-pairs without a depth-map reference, inactive rays, fixed physical interaction
-range, detached weights, and parameter validation. Ordinary finite differences
-through changes in compositing weights intentionally do not match this
-stop-gradient objective.
-
-#### Legacy world-space and NDC modes
-
-`OptimizationConfig.depth_distort_world_space=True`
-uses camera-forward depth in scene units in the absolute pairwise distortion loss:
-`sum_{i<j} w_i*w_j*abs(z_i-z_j)`. Its depth-coordinate derivative is one, so the
-same layer separation is no longer attenuated with increasing camera distance.
-The depth derivative uses the sign of each pair's difference, with a zero
-subgradient at coincident depths. Compositing/visibility weights are retained;
-their gradient policy is controlled separately in the backward kernel. This measures
-camera-forward separation, not Euclidean ray length for off-axis pixels.
-
-The default is `True` in both Python training and C++. Explicitly setting
-`depth_distort_world_space=False` uses absolute differences in NDC inverse-depth
-coordinates instead. Direct renderer callers pass `depth_distort_world_space` in
-the constructor settings dictionary. Rebuild `pale` after changing the C++ code.
-The world-space loss now has scene-distance units, not squared distance units: retune
-`--depth-distort-weight` when switching rather than assuming the old weight is
-comparable.
-
-`test/test_absolute_depth_distortion.py` checks the default world-space loss,
-linear gap scaling, camera-distance invariance, coincident depths, and
-finite-difference position/scale gradients. It exercises scalar and batched
-traversal and the explicit NDC option. Run from the repository root with the
-rebuilt module first on `PYTHONPATH`:
+`test/test_world_space_distortion.py` checks camera-distance behavior, the NDC
+near plane, and finite-difference position gradients. Run from `python/` with
+the rebuilt module first on `PYTHONPATH`:
 
 ```bash
-PYTHONPATH=/path/to/build python -m unittest discover -s test -p 'test_absolute_depth_distortion.py' -v
+PYTHONPATH=/path/to/build python -m unittest test.test_world_space_distortion -v
 ```

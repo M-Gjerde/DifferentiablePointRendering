@@ -218,14 +218,6 @@ static void saveCameraAuxiliaryBuffers(
         imageHeight,
         imageDir / (fileName + "_depth_distortion.exr"),
         true);
-
-    saveScalarFloatBufferAsEXR(
-        deviceSelector,
-        sensor.visibilityWeightedOpacityBuffer,
-        imageWidth,
-        imageHeight,
-        imageDir / (fileName + "_visibility_weighted_opacity.exr"),
-        true);
     {
         std::vector<float> medianWorldPositionRGBA =
             Pale::downloadFloat4Buffer(
@@ -916,7 +908,6 @@ int main(int argc, char** argv) {
     if (renderCylinderRay) {
         const float depthDistortionWeight = 500.0f;
         const float normalConsistencyWeight = 0.05f;
-        const float visibilityWeightedOpacityWeight = 0.01f;
         Pale::PathTracerSettings settings{};
         settings.integratorKind = Pale::IntegratorKind::lightTracingCylinderRay;
         settings.photonsPerLaunch = 1e6;
@@ -933,7 +924,6 @@ int main(int argc, char** argv) {
         settings.depthDistortionWeight = depthDistortionWeight;
         settings.normalConsistencyWeight = normalConsistencyWeight;
         settings.normalFromDepthUseMeanDepth = true;
-        settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
 
 
         settings.pointGeometrySupportRadius = 0.01f;
@@ -961,7 +951,6 @@ int main(int argc, char** argv) {
     if (renderPhotonMapping) {
         const float depthDistortionWeight = 500.0f;
         const float normalConsistencyWeight = 0.05f;
-        const float visibilityWeightedOpacityWeight = 0.01f;
 
         Pale::PathTracerSettings settings{};
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
@@ -982,7 +971,6 @@ int main(int argc, char** argv) {
         settings.depthDistortionWeight = depthDistortionWeight;
         settings.normalConsistencyWeight = normalConsistencyWeight;
         settings.normalFromDepthUseMeanDepth = true;
-        settings.visibilityWeightedOpacityRegularizerWeight = visibilityWeightedOpacityWeight;
 
         Pale::PathTracer tracer(deviceSelector.getQueue(), settings);
         tracer.setScene(sceneGpu, buildProducts);
@@ -1186,7 +1174,6 @@ int main(int argc, char** argv) {
                     buildProducts,
                     nullptr);
 
-            Pale::PointGradients visibilityOpacityGradients =
                 Pale::makeGradientsForScene(
                     deviceSelector.getQueue(),
                     buildProducts,
@@ -1219,7 +1206,6 @@ int main(int argc, char** argv) {
                 adjointSensors,
                 depthDistortionGradients,
                 normalConsistencyGradients,
-                visibilityOpacityGradients,
                 intraSlabDepthGradients,
                 curvatureScaleGradients,
                 surfaceDebugImagesSelected.data());
@@ -1235,11 +1221,6 @@ int main(int argc, char** argv) {
                 deviceSelector,
                 normalConsistencyGradients,
                 surfaceGradientDir / "normal_consistency_gradients.csv");
-
-            savePointGradientsAsCsv(
-                deviceSelector,
-                visibilityOpacityGradients,
-                surfaceGradientDir / "visibility_weighted_opacity_gradients.csv");
             */
 
             logSinglePointGradient(
@@ -1260,11 +1241,6 @@ int main(int argc, char** argv) {
                 settings.surfelIndexForDebugImages,
                 "normal consistency");
 
-            logSinglePointGradient(
-                deviceSelector,
-                visibilityOpacityGradients,
-                settings.surfelIndexForDebugImages,
-                "visibility opacity");
 
             for (std::size_t sensorIndex = 0; sensorIndex < adjointSensors.size(); ++sensorIndex) {
                 const Pale::SensorGPU& adjointSensor = adjointSensors[sensorIndex];

@@ -34,30 +34,48 @@ namespace Pale {
     void PathTracer::setScene(const GPUSceneBuffers &scene, const SceneBuild::BuildProducts &bp) {
         m_sceneGPU = scene;
 
-        uint32_t requiredRayQueueCapacity = m_settings.photonsPerLaunch;
-        for (const CameraGPU &camera: bp.cameras()) {
-            const uint32_t cameraPixelCount = camera.width * camera.height;
-            requiredRayQueueCapacity = std::max(requiredRayQueueCapacity, cameraPixelCount);
-        }
-        ensureRayCapacity(requiredRayQueueCapacity);
-
         // Photon-map construction is currently disabled: the camera gather path
         // only uses direct lighting while the photon-grid build is inactive.
         freePhotonMap();
         freePhotonGridBuffers();
     }
 
-    // Call this before first render, or inside submitKernel() after computing capacity.
-    void PathTracer::ensureRayCapacity(uint32_t requiredRayQueueCapacity) {
-        if (requiredRayQueueCapacity <= m_rayQueueCapacity) return;
-        // grow to next power of two to avoid frequent reallocations
-        uint32_t newCapacity = 1u;
-        while (newCapacity < requiredRayQueueCapacity)
-            newCapacity <<= 1u;
+    PathTracer::~PathTracer() {
+        m_queue.wait();
+        freeIntermediates();
+        freePhotonMap();
+        freePhotonGridBuffers();
+    }
 
-        Log::PA_INFO("Required RayQueueCapacity {}M, Allocated {}M", std::round(requiredRayQueueCapacity / 1e6),
-                     std::round(newCapacity / 1e6));
-        allocateIntermediates(newCapacity);
+    void PathTracer::ensureRayCapacity(uint32_t requiredRayQueueCapacity, bool adjoint) {
+        if (requiredRayQueueCapacity > m_rayQueueCapacity) {
+            uint32_t newCapacity = 1u;
+            while (newCapacity < requiredRayQueueCapacity) {
+                if (newCapacity > std::numeric_limits<uint32_t>::max() / 2u) {
+                    throw std::runtime_error("Ray queue capacity exceeds the counter range");
+                }
+                newCapacity <<= 1u;
+            }
+            // Preserve an existing adjoint allocation when a forward queue grows.
+            adjoint = adjoint || m_intermediates.gradientRecords != nullptr;
+            m_queue.wait_and_throw();
+            try {
+                allocateIntermediates(newCapacity);
+            } catch (...) {
+                m_queue.wait();
+                freeIntermediates();
+                throw;
+            }
+        }
+        if (adjoint && m_rayQueueCapacity != 0u && m_intermediates.gradientRecords == nullptr) {
+            try {
+                allocateAdjointIntermediates();
+            } catch (...) {
+                m_queue.wait();
+                freeIntermediates();
+                throw;
+            }
+        }
     }
 
     void PathTracer::ensureMeasurementTwoPointEventCapacity(uint32_t cameraRayCount) {
@@ -110,6 +128,27 @@ namespace Pale {
         Log::PA_TRACE("Allocated hitContribution records: {}", Utils::formatBytes(sizeContributionRecordsBytes));
         m_intermediates.maxHitContributionCount = m_rayQueueCapacity;
 
+        m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
+        m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
+        if (!m_intermediates.primaryRays || !m_intermediates.extensionRaysA ||
+            !m_intermediates.hitRecords || !m_intermediates.hitContribution ||
+            !m_intermediates.countPrimary || !m_intermediates.countContributions ||
+            !m_intermediates.countExtensionOut) {
+            freeIntermediates();
+            throw std::bad_alloc();
+        }
+        m_queue.fill(m_intermediates.countPrimary, 0u, 1);
+        m_queue.fill(m_intermediates.countContributions, 0u, 1);
+        m_queue.fill(m_intermediates.countExtensionOut, 0u, 1);
+        m_queue.wait_and_throw();
+        Log::PA_INFO("Ray queue capacity: {}, memory: {}", m_rayQueueCapacity,
+                     Utils::formatBytes((2u * sizeof(RayState) + sizeof(WorldHit) +
+                                         sizeof(HitInfoContribution)) * m_rayQueueCapacity +
+                                        3u * sizeof(uint32_t)));
+    }
+
+    void PathTracer::allocateAdjointIntermediates() {
         // --- compact adjoint event buffers ---
         const std::size_t sizeMeasurementEventsBytes =
                 sizeof(MeasurementGradientEvent) * m_rayQueueCapacity;
@@ -182,77 +221,34 @@ namespace Pale {
         Log::PA_INFO("sizeof(SurfelGradientRecord) = {}, Count: {}", sizeof(SurfelGradientRecord),
                      gradientRecordCapacity);
 
-        // --- counters ---
-        m_intermediates.countPrimary = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countContributions = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMaterialVertexEvents = sycl::malloc_device<uint32_t>(1, m_queue);
-        m_intermediates.countExtensionOut = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMeasurementTwoPointEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMaterialEndEdgeEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countMaterialStartEdgeEvents = sycl::malloc_device<uint32_t>(1, m_queue);
         m_intermediates.countGradientRecords = sycl::malloc_device<uint32_t>(1, m_queue);
-
-        m_queue.memset(m_intermediates.countPrimary, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countContributions, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countMaterialVertexEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countExtensionOut, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countMeasurementEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countMeasurementTwoPointEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countMaterialEndEdgeEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countMaterialStartEdgeEvents, 0, sizeof(uint32_t));
-        m_queue.memset(m_intermediates.countGradientRecords, 0, sizeof(uint32_t));
-        m_queue.wait();
-
-        const std::size_t counterAllocationBytes = sizeof(uint32_t);
-        const std::size_t counterBytes = counterAllocationBytes * 9;
-
-        const std::size_t intermediatesTotalBytes =
-                sizePrimaryRaysBytes +
-                sizeExtensionRaysBytes +
-                sizeHitRecordsBytes +
-                sizeContributionRecordsBytes +
-                sizeMeasurementEventsBytes +
-                sizeMeasurementEventsTwoPointBytes +
-                cameraAttachedBridgeEventSize +
-                materialStartEdgeEventsSize +
-                materialEndEdgeEventsSize +
-                sizePendingAdjointStatesXBytes +
-                sizePendingCameraSegmentBytes +
-                sizeGradientRecordsBytes +
-                counterBytes;
-
-        Log::PA_INFO("Total intermediates memory: {}", Utils::formatBytes(intermediatesTotalBytes));
-        logAllocationMemory("Intermediates", "primaryRays", sizePrimaryRaysBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "extensionRaysA", sizeExtensionRaysBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "hitRecords", sizeHitRecordsBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "hitContribution", sizeContributionRecordsBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "measurementEvents", sizeMeasurementEventsBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "measurementTwoPointEvents", sizeMeasurementEventsTwoPointBytes,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "materialVertexEvents", cameraAttachedBridgeEventSize,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "materialEndEdgeEvents", materialEndEdgeEventsSize,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "materialStartEdgeEvents", materialStartEdgeEventsSize,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "pendingStageX", sizePendingAdjointStatesXBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "pendingCameraSegments", sizePendingCameraSegmentBytes,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "gradientRecords", sizeGradientRecordsBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countPrimary", counterAllocationBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countContributions", counterAllocationBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countMaterialVertexEvents", counterAllocationBytes,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countExtensionOut", counterAllocationBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countMeasurementEvents", counterAllocationBytes, intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countMeasurementTwoPointEvents", counterAllocationBytes,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countMaterialEndEdgeEvents", counterAllocationBytes,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countMaterialStartEdgeEvents", counterAllocationBytes,
-                            intermediatesTotalBytes);
-        logAllocationMemory("Intermediates", "countGradientRecords", counterAllocationBytes, intermediatesTotalBytes);
+        if (!m_intermediates.measurementEvents || !m_intermediates.measurementTwoPointEvents ||
+            !m_intermediates.materialVertexEvents || !m_intermediates.materialEndEdgeEvents ||
+            !m_intermediates.materialStartEdgeEvents || !m_intermediates.pendingStageX ||
+            !m_intermediates.pendingCameraSegments || !m_intermediates.gradientRecords ||
+            !m_intermediates.countMaterialVertexEvents || !m_intermediates.countMeasurementEvents ||
+            !m_intermediates.countMeasurementTwoPointEvents || !m_intermediates.countMaterialEndEdgeEvents ||
+            !m_intermediates.countMaterialStartEdgeEvents || !m_intermediates.countGradientRecords) {
+            freeIntermediates();
+            throw std::bad_alloc();
+        }
+        m_queue.fill(m_intermediates.countMaterialVertexEvents, 0u, 1);
+        m_queue.fill(m_intermediates.countMeasurementEvents, 0u, 1);
+        m_queue.fill(m_intermediates.countMeasurementTwoPointEvents, 0u, 1);
+        m_queue.fill(m_intermediates.countMaterialEndEdgeEvents, 0u, 1);
+        m_queue.fill(m_intermediates.countMaterialStartEdgeEvents, 0u, 1);
+        m_queue.fill(m_intermediates.countGradientRecords, 0u, 1);
+        m_queue.wait_and_throw();
+        Log::PA_INFO("Adjoint scratch memory: {}", Utils::formatBytes(
+            sizeMeasurementEventsBytes + sizeMeasurementEventsTwoPointBytes +
+            cameraAttachedBridgeEventSize + materialEndEdgeEventsSize + materialStartEdgeEventsSize +
+            sizePendingAdjointStatesXBytes + sizePendingCameraSegmentBytes + sizeGradientRecordsBytes +
+            6u * sizeof(uint32_t)));
     }
 
     void PathTracer::allocatePhotonMap() {
@@ -547,6 +543,9 @@ namespace Pale {
     void PathTracer::renderForward(std::vector<SensorGPU> &sensor) {
         ScopedTimer forwardTimer("Rendering time", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
+        if (m_settings.integratorKind == IntegratorKind::lightTracing) {
+            ensureRayCapacity(std::max(1u, m_settings.photonsPerLaunch));
+        }
 
         if (m_curvatureDensificationStats) {
             clearCurvatureDensificationStats(m_queue, *m_curvatureDensificationStats);
@@ -608,11 +607,8 @@ namespace Pale {
         for (const auto &sensor: sensors) {
             const uint32_t requiredRayCapacity = sensor.width * sensor.height;
             maximumCameraRayCount = std::max(maximumCameraRayCount, requiredRayCapacity);
-            if (requiredRayCapacity > m_rayQueueCapacity) {
-                Log::PA_INFO("RayQueue Capacity too small for per pixel adjoint pass. Resizing queue capacity..");
-                ensureRayCapacity(requiredRayCapacity);
-            }
         }
+        ensureRayCapacity(maximumCameraRayCount, true);
         ensureMeasurementTwoPointEventCapacity(maximumCameraRayCount);
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
@@ -680,7 +676,6 @@ namespace Pale {
         std::vector<SensorGPU> &sensors,
         PointGradients &depthDistortionGradients,
         PointGradients &normalConsistencyGradients,
-        PointGradients &visibilityOpacityGradients,
         PointGradients &intraSlabDepthGradients,
         PointGradients &curvatureScaleGradients,
         DebugImages *debugImages) {
@@ -697,7 +692,6 @@ namespace Pale {
             .gradients = depthDistortionGradients,
             .depthDistortionGradients = depthDistortionGradients,
             .normalConsistencyGradients = normalConsistencyGradients,
-            .visibilityOpacityGradients = visibilityOpacityGradients,
             .intraSlabDepthGradients = intraSlabDepthGradients,
             .curvatureScaleGradients = curvatureScaleGradients,
             .sensors = sensors,

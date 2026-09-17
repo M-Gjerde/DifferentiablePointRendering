@@ -828,13 +828,8 @@ namespace Pale {
         uint32_t surfelIndexForDebugImages = 1;
         float depthDistortionWeight = 0.0f;
         // Absolute pairwise camera-forward depth differences in scene units.
-        bool depthDistortionWorldSpace = true;
-        // Opt-in metric Gaussian loss; takes precedence over world/NDC mode.
-        bool depthDistortionGaussian = false;
-        // Gaussian attraction is 50% at this camera-forward separation in metres.
-        float depthDistortionHalfStrengthMeters = 0.10f;
+        bool depthDistortionWorldSpace = false;
         float normalConsistencyWeight = 0.0f;
-        float visibilityWeightedOpacityRegularizerWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
         float curvatureScaleRegularizerWeight = 0.0f;
         // Training retains surface outputs by default; RGB-only viewers can skip them.

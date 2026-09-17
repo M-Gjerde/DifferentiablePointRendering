@@ -1,6 +1,15 @@
 # Python bytecode and tool caches
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Local Python environments
+.venv/
+
+# CMake build directories (including the standalone viewer)
+build/
+build-*/
+cmake-build-*/
 
 # Local IDE metadata
 .idea/

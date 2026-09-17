@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,12 +108,20 @@ def has_matching_target_image(run_dir: Path, camera_name: str) -> bool:
     return (render_root_for_read(run_dir) / f"render_target_{camera_name}.png").exists()
 
 
+def camera_name_sort_key(path: Path) -> tuple:
+    parts = tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", path.name)
+    )
+    return parts, path.name
+
+
 def discover_camera_dirs(run_dir: Path) -> List[Path]:
     if not run_dir.is_dir():
         raise RuntimeError(f"output-path '{run_dir}' must be a directory.")
 
     camera_dirs: List[Path] = []
-    for path in sorted(render_root_for_read(run_dir).iterdir()):
+    for path in sorted(render_root_for_read(run_dir).iterdir(), key=camera_name_sort_key):
         if not path.is_dir():
             continue
 
@@ -394,14 +403,14 @@ def main() -> None:
                     active_tile_index = 9
                 continue
 
-            # Page cameras if more cameras than tiles
-            if key == ord("n") and len(camera_names) > tile_count:
-                camera_offset = (camera_offset - tile_count) % len(camera_names)
+            # Each column shows one camera, shared across the render/target rows.
+            if key in (ord("n"), ord("N")) and len(camera_names) > cols:
+                camera_offset = (camera_offset + cols) % len(camera_names)
                 selections = [None] * tile_count
                 continue
 
-            if key == ord("p") and len(camera_names) > tile_count:
-                camera_offset = (camera_offset + tile_count) % len(camera_names)
+            if key in (ord("p"), ord("P")) and len(camera_names) > cols:
+                camera_offset = (camera_offset - cols) % len(camera_names)
                 selections = [None] * tile_count
                 continue
 

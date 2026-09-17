@@ -175,16 +175,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--skip",
-        help=(
-            "Skip the first 100 iterations after each opacity reset at every "
-            "N iterations. For example, --skip 1000 removes 1000-1099, "
-            "2000-2099, etc. from loss plots."
-        ),
-        type=int,
-        default=0,
-    )
-    parser.add_argument(
         "--refresh-seconds",
         type=float,
         default=0.1,
@@ -384,7 +374,6 @@ def prepare_metrics_dataframe(
         dataframe: pd.DataFrame,
         from_iteration: int | None,
         last_iterations: int | None,
-        skip_opacity_reset_noise: int,
 ) -> pd.DataFrame:
     dataframe = filter_metrics_rows(dataframe)
 
@@ -406,13 +395,6 @@ def prepare_metrics_dataframe(
         dataframe = dataframe.loc[
             dataframe["iteration"] >= from_iteration
         ].reset_index(drop=True)
-
-    if skip_opacity_reset_noise:
-        opacity_reset_noise_mask = (
-            (dataframe["iteration"] >= skip_opacity_reset_noise)
-            & ((dataframe["iteration"] % skip_opacity_reset_noise) < 100)
-        )
-        dataframe = dataframe.loc[~opacity_reset_noise_mask].reset_index(drop=True)
 
     if last_iterations is not None:
         if last_iterations <= 0:
@@ -506,7 +488,6 @@ def select_loss_column(
         "loss_rgb_dssim_mean",
         "rgb_ssim_mean",
         "loss_bsdf_decay_weighted_mean",
-        "loss_opacity_prior_weighted_mean",
         "loss_intra_slab_depth_weighted_mean",
         "loss_curvature_scale_weighted_mean",
         "loss_normal_consistency_weighted_mean",
@@ -514,7 +495,6 @@ def select_loss_column(
         "loss_total_sum",
         "loss_rgb_sum",
         "loss_bsdf_decay_weighted_sum",
-        "loss_opacity_prior_weighted_sum",
         "loss_intra_slab_depth_weighted_sum",
         "loss_curvature_scale_weighted_sum",
         "loss_normal_consistency_weighted_sum",
@@ -833,7 +813,6 @@ def draw_metrics_figure(
         plot_all_losses: bool,
         from_iteration: int | None,
         last_iterations: int | None,
-        skip_opacity_reset_noise: int,
         point_count_windowed: bool,
         loss_y_scale: str,
         geometry_rows: list[dict[str, Any]],
@@ -842,14 +821,12 @@ def draw_metrics_figure(
         dataframe=dataframe,
         from_iteration=from_iteration,
         last_iterations=last_iterations,
-        skip_opacity_reset_noise=skip_opacity_reset_noise,
     )
 
     point_count_dataframe = prepare_metrics_dataframe(
         dataframe=dataframe,
         from_iteration=from_iteration,
         last_iterations=last_iterations if point_count_windowed else None,
-        skip_opacity_reset_noise=0,
     )
 
     if loss_dataframe.empty:
@@ -933,10 +910,6 @@ def draw_metrics_figure(
             (
                 "loss_normal_consistency_weighted_mean",
                 "loss_normal_consistency_weighted_sum",
-            ),
-            (
-                "loss_opacity_prior_weighted_mean",
-                "loss_opacity_prior_weighted_sum",
             ),
             (
                 "loss_intra_slab_depth_weighted_mean",
@@ -1075,11 +1048,6 @@ def draw_metrics_figure(
             linewidth=1.8,
             alpha=0.95,
         ),
-        "loss_opacity_prior_weighted_mean": dict(
-            color="#A020F0",
-            linewidth=1.8,
-            alpha=0.95,
-        ),
         "loss_intra_slab_depth_weighted_mean": dict(
             color="tab:cyan",
             linewidth=1.8,
@@ -1106,11 +1074,6 @@ def draw_metrics_figure(
         ),
         "loss_normal_consistency_weighted_sum": dict(
             color="tab:green",
-            linewidth=1.8,
-            alpha=0.95,
-        ),
-        "loss_opacity_prior_weighted_sum": dict(
-            color="#A020F0",
             linewidth=1.8,
             alpha=0.95,
         ),
@@ -1543,7 +1506,6 @@ def main() -> None:
     print(f"Refresh interval   : {args.refresh_seconds:.3f}s")
     print(f"Watch latest       : {args.watch_latest}")
     print(f"Save plot          : {args.save_plot}")
-    print(f"Skip reset noise   : {args.skip}")
     print(f"Loss y-scale       : {args.loss_y_scale}")
     print(f"Point count window : {args.point_count_windowed}")
     if args.ground_truth is not None:
@@ -1609,7 +1571,6 @@ def main() -> None:
                         plot_all_losses=args.plot_all_losses,
                         from_iteration=args.from_iteration,
                         last_iterations=args.iterations,
-                        skip_opacity_reset_noise=args.skip,
                         point_count_windowed=args.point_count_windowed,
                         loss_y_scale=args.loss_y_scale,
                         geometry_rows=geometry_state.rows,

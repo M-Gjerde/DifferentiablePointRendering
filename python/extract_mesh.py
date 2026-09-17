@@ -12,8 +12,10 @@ import numpy as np
 import open3d as o3d
 import imageio.v3 as iio
 
-import pale
-from render_hooks import get_training_camera_names
+from tsdf_settings import (
+    DepthFrame, add_tsdf_arguments, clean_depth, post_process_mesh,
+    print_tsdf_settings, resolve_tsdf_settings, validate_options,
+)
 
 def parse_vector3(value: str) -> np.ndarray:
     values = [float(part.strip()) for part in value.split(",")]
@@ -403,6 +405,7 @@ def validate_quaternion_surfel_ply(points_path: Path) -> None:
         )
 
 def load_renderer(run_dir: Path, points_path: Path):
+    import pale
     config_path = run_dir / "run_config.json"
     if not config_path.is_file():
         raise FileNotFoundError(f"Missing {config_path}")
@@ -423,82 +426,11 @@ def load_renderer(run_dir: Path, points_path: Path):
     ), run_config
 
 
-def estimate_2dgs_camera_radius(
-    cameras: dict[str, Open3DCamera],
-    camera_names: list[str],
-) -> tuple[np.ndarray, float]:
-    """Match 2DGS's focus-point and bounded-TSDF radius calculation.
-
-    2DGS finds the least-squares intersection of the training cameras' optical
-    axes, then uses the minimum camera-center distance to that focus point.
-    Flipping an optical-axis direction does not affect the line projection, so
-    the OpenCV camera convention used here is equivalent to 2DGS's OpenGL pose.
-    """
-    if not camera_names:
-        raise ValueError("Cannot estimate the 2DGS camera radius without cameras.")
-
-    camera_to_worlds: list[np.ndarray] = []
-    for camera_name in camera_names:
-        if camera_name not in cameras:
-            raise KeyError(f"Missing camera metadata for radius estimate: {camera_name}")
-        camera_to_world = np.linalg.inv(cameras[camera_name].world_to_camera)
-        camera_to_worlds.append(camera_to_world)
-
-    poses = np.stack(camera_to_worlds, axis=0)[:, :3, :]
-    directions = poses[:, :3, 2:3]
-    origins = poses[:, :3, 3:4]
-    line_projectors = np.eye(3, dtype=np.float64) - (
-        directions * np.transpose(directions, (0, 2, 1))
-    )
-    normal_matrices = np.transpose(line_projectors, (0, 2, 1)) @ line_projectors
-    mean_normal_matrix = normal_matrices.mean(axis=0)
-    mean_projected_origin = (normal_matrices @ origins).mean(axis=0)[:, 0]
-
-    try:
-        focus_point = np.linalg.solve(mean_normal_matrix, mean_projected_origin)
-    except np.linalg.LinAlgError as exception:
-        raise RuntimeError(
-            "Could not estimate the 2DGS camera focus point from the selected cameras."
-        ) from exception
-
-    camera_centers = poses[:, :3, 3]
-    radius = float(np.linalg.norm(camera_centers - focus_point, axis=1).min())
-    if not np.isfinite(focus_point).all() or not np.isfinite(radius) or radius <= 0.0:
-        raise RuntimeError(
-            f"Invalid 2DGS camera radius estimate: focus={focus_point}, radius={radius}"
-        )
-    return focus_point, radius
-
-
-def resolve_2dgs_tsdf_settings(
-    radius: float,
-    mesh_res: int,
-    requested_depth_trunc: float,
-    requested_voxel_size: float,
-    requested_sdf_trunc: float,
-) -> tuple[float, float, float]:
-    """Resolve bounded-TSDF defaults with the same formulas as 2DGS render.py."""
-    if mesh_res <= 0:
-        raise ValueError(f"mesh_res must be positive, got {mesh_res}")
-
-    depth_trunc = 2.0 * radius if requested_depth_trunc < 0.0 else requested_depth_trunc
-    voxel_size = depth_trunc / mesh_res if requested_voxel_size < 0.0 else requested_voxel_size
-    sdf_trunc = 5.0 * voxel_size if requested_sdf_trunc < 0.0 else requested_sdf_trunc
-
-    for name, value in (
-        ("depth_trunc", depth_trunc),
-        ("voxel_size", voxel_size),
-        ("sdf_trunc", sdf_trunc),
-    ):
-        if not np.isfinite(value) or value <= 0.0:
-            raise ValueError(f"{name} must be finite and positive, got {value}")
-    return depth_trunc, voxel_size, sdf_trunc
-
-
 def get_camera_names(renderer, args: argparse.Namespace) -> list[str]:
     if args.camera_names is not None:
         return [name.strip() for name in args.camera_names.split(",") if name.strip()]
 
+    from render_hooks import get_training_camera_names
     camera_names = get_training_camera_names(renderer)
     if isinstance(camera_names, dict):
         return list(camera_names.keys())
@@ -555,73 +487,37 @@ def save_extraction_render_images(
     iio.imwrite(depth_path.as_posix(), depth_to_visualization(depth))
 
 
-def post_process_mesh(mesh: o3d.geometry.TriangleMesh, cluster_to_keep: int) -> o3d.geometry.TriangleMesh:
-    mesh = o3d.geometry.TriangleMesh(mesh)
-
-    mesh.remove_duplicated_vertices()
-    mesh.remove_duplicated_triangles()
-    mesh.remove_degenerate_triangles()
-    mesh.remove_non_manifold_edges()
-
-    if len(mesh.triangles) == 0:
-        return mesh
-
-    triangle_clusters, cluster_triangle_counts, _ = mesh.cluster_connected_triangles()
-    triangle_clusters = np.asarray(triangle_clusters)
-    cluster_triangle_counts = np.asarray(cluster_triangle_counts)
-
-    keep_count = min(cluster_to_keep, len(cluster_triangle_counts))
-    keep_clusters = np.argsort(cluster_triangle_counts)[-keep_count:]
-
-    remove_mask = ~np.isin(triangle_clusters, keep_clusters)
-    mesh.remove_triangles_by_mask(remove_mask.tolist())
-    mesh.remove_unreferenced_vertices()
-    mesh.compute_vertex_normals()
-
-    return mesh
-
-
 class PaleExtractor:
     def __init__(
         self,
         renderer,
         cameras: dict[str, Open3DCamera],
         camera_names: list[str],
-        radius: float,
         depth_key: str,
     ):
         self.renderer = renderer
         self.cameras = cameras
         self.camera_names = camera_names
-        self.radius = radius
         self.depth_key = depth_key
         self.forward_out = None
 
     def reconstruction(self) -> None:
         self.forward_out = self.renderer.render_forward()
 
-    def infer_depth_trunc(self, margin: float = 1.05) -> float:
+    def depth_frames(self) -> list[DepthFrame]:
         if self.forward_out is None:
-            raise RuntimeError("Call reconstruction() before infer_depth_trunc().")
-
-        max_depth = 0.0
-
+            raise RuntimeError('Call reconstruction() before depth_frames().')
+        frames = []
         for camera_name in self.camera_names:
             camera_output = self.forward_out.get(camera_name)
             if camera_output is None or self.depth_key not in camera_output:
-                continue
-
+                raise RuntimeError(f'{camera_name}: missing {self.depth_key} renderer output')
+            camera = self.cameras[camera_name]
             depth = as_numpy(camera_output[self.depth_key])
-            valid_depth = depth[np.isfinite(depth) & (depth > 0.0)]
-            if valid_depth.size == 0:
-                continue
-
-            max_depth = max(max_depth, float(valid_depth.max(initial=max_depth)))
-
-        if max_depth <= 0.0:
-            raise RuntimeError(f"Could not infer depth_trunc: no positive finite {self.depth_key} values.")
-
-        return margin * max_depth
+            if depth.shape != (camera.height, camera.width):
+                raise RuntimeError(f'{camera_name}: depth/camera size mismatch: {depth.shape}')
+            frames.append(DepthFrame(camera_name, depth, camera.fx, camera.fy, camera.cx, camera.cy, camera.world_to_camera))
+        return frames
 
     def extract_mesh_bounded(
         self,
@@ -664,7 +560,7 @@ class PaleExtractor:
                 )
 
             color = sanitize_color(color)
-            depth = np.ascontiguousarray(depth, dtype=np.float32)
+            depth = clean_depth(depth, depth_trunc)
 
             if render_output_dir is not None:
                 save_extraction_render_images(
@@ -706,8 +602,8 @@ class PaleExtractor:
         return mesh
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PALE 2DGS-style mesh extraction")
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="PALE TSDF extraction with depth-driven scale selection for objects and scenes")
 
     parser.add_argument("--output-root", "-o", type=Path, default=Path("OptimizationOutput"))
     parser.add_argument("--index", type=int, default=0)
@@ -735,11 +631,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
 
-    parser.add_argument("--voxel-size", default=-1.0, type=float)
-    parser.add_argument("--depth-trunc", default=-1.0, type=float)
-    parser.add_argument("--sdf-trunc", default=-1.0, type=float)
-    parser.add_argument("--num-cluster", default=50, type=int)
-    parser.add_argument("--mesh-res", default=2048, type=int)
+    add_tsdf_arguments(parser)
     parser.add_argument("--export-gltf", action=argparse.BooleanOptionalAction, default=True,
                         help="Export reconstruction.glb with a UV albedo texture and point lights.")
     parser.add_argument("--texture-size", default=2048, type=int,
@@ -768,7 +660,12 @@ def parse_args() -> argparse.Namespace:
         help="Write a derived point cloud with this beta value for all surfels before rendering/extracting the mesh.",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    try:
+        validate_options(args)
+    except ValueError as error:
+        parser.error(str(error))
+    return args
 
 
 if __name__ == "__main__":
@@ -843,17 +740,10 @@ if __name__ == "__main__":
     #print(f"Using cameras {args.cameras_xml}")
     print(f"Rendering {len(camera_names)} cameras")
 
-    focus_point, radius = estimate_2dgs_camera_radius(cameras, camera_names)
-    print(
-        "2DGS TSDF scale: "
-        f"focus={np.array2string(focus_point, precision=6)}, camera_radius={radius:.6g}"
-    )
-
     pale_extractor = PaleExtractor(
         renderer=renderer,
         cameras=cameras,
         camera_names=camera_names,
-        radius=radius,
         depth_key=args.depth_key,
     )
 
@@ -862,35 +752,37 @@ if __name__ == "__main__":
 
         pale_extractor.reconstruction()
 
-        depth_trunc, voxel_size, sdf_trunc = resolve_2dgs_tsdf_settings(
-            radius=pale_extractor.radius,
-            mesh_res=args.mesh_res,
-            requested_depth_trunc=args.depth_trunc,
-            requested_voxel_size=args.voxel_size,
-            requested_sdf_trunc=args.sdf_trunc,
-        )
-        print(
-            f"TSDF settings: depth_trunc={depth_trunc:.6g}, "
-            f"voxel_size={voxel_size:.6g}, sdf_trunc={sdf_trunc:.6g}"
-        )
+        tsdf = resolve_tsdf_settings(pale_extractor.depth_frames(), args)
+        print_tsdf_settings(tsdf)
 
         mesh = pale_extractor.extract_mesh_bounded(
-            voxel_size=voxel_size,
-            sdf_trunc=sdf_trunc,
-            depth_trunc=depth_trunc,
+            voxel_size=tsdf['voxel_size'],
+            sdf_trunc=tsdf['sdf_trunc'],
+            depth_trunc=tsdf['depth_trunc'],
             render_output_dir=mesh_dir,
             render_name_suffix=mesh_name_suffix.lstrip("_"),
         )
 
         mesh_path = mesh_dir / f"fuse{mesh_name_suffix}.ply"
-        o3d.io.write_triangle_mesh(str(mesh_path), mesh)
+        if not len(mesh.triangles):
+            raise RuntimeError('TSDF produced an empty mesh; inspect rendered depths and extraction settings')
+        if not o3d.io.write_triangle_mesh(str(mesh_path), mesh):
+            raise RuntimeError(f'Could not save {mesh_path}')
         print(f"mesh saved at {mesh_path}")
 
-        mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
+        mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster,
+                                      min_cluster_triangles=args.min_cluster_triangles)
 
         mesh_post_path = mesh_dir / f"fuse_post{mesh_name_suffix}.ply"
-        o3d.io.write_triangle_mesh(str(mesh_post_path), mesh_post)
+        if not o3d.io.write_triangle_mesh(str(mesh_post_path), mesh_post):
+            raise RuntimeError(f'Could not save {mesh_post_path}')
         print(f"mesh post processed saved at {mesh_post_path}")
+        metadata = {'renderer': 'pale', 'points': str(points_path.resolve()), 'depth_key': args.depth_key,
+                    'tsdf': tsdf, 'num_cluster': args.num_cluster,
+                    'min_cluster_triangles': args.min_cluster_triangles,
+                    'raw_triangles': len(mesh.triangles), 'post_triangles': len(mesh_post.triangles)}
+        (mesh_dir / f'extraction{mesh_name_suffix}.json').write_text(json.dumps(metadata, indent=2))
+        print(f"Triangles: {len(mesh.triangles):,} raw, {len(mesh_post.triangles):,} after requested cleanup")
 
     if args.export_gltf and not args.skip_mesh:
         from gltf_export import export_reconstruction_glb

@@ -141,7 +141,6 @@ class IterationGradientResult:
     photo_gradients: dict[str, np.ndarray]
     depth_regularizer_gradients: dict[str, np.ndarray]
     normal_regularizer_gradients: dict[str, np.ndarray]
-    opacity_prior_gradients: dict[str, np.ndarray]
     intra_slab_depth_gradients: dict[str, np.ndarray]
     curvature_scale_gradients: dict[str, np.ndarray]
     surface_regularizer_gradients: dict[str, np.ndarray]
@@ -339,7 +338,6 @@ def make_device_training_step_options(
         return_gradient_stats: bool = False,
         include_depth_distortion: bool = False,
         include_normal_consistency: bool = False,
-        include_opacity_prior: bool = False,
         include_intra_slab_depth: bool = False,
         include_curvature_scale: bool = False,
 ) -> dict[str, Any]:
@@ -379,7 +377,6 @@ def make_device_training_step_options(
         "densification_full_position": bool(config.densification_full_position),
         "include_depth_distortion": include_depth_distortion,
         "include_normal_consistency": include_normal_consistency,
-        "include_opacity_prior": include_opacity_prior,
         "include_intra_slab_depth": include_intra_slab_depth,
         "include_curvature_scale": include_curvature_scale,
     }
@@ -426,7 +423,6 @@ def compute_iteration_gradients(
         use_depth_distortion_gradients: bool,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
-        use_opacity_prior: bool,
         use_intra_slab_depth: bool,
         use_curvature_scale: bool,
         ssim_weight: float,
@@ -434,7 +430,6 @@ def compute_iteration_gradients(
         ssim_sigma: float,
         active_depth_distortion_weight: float,
         normal_consistency_weight: float,
-        active_opacity_prior_weight: float,
         intra_slab_depth_weight: float,
         curvature_scale_weight: float,
         densification_relative_error: bool = False,
@@ -463,12 +458,11 @@ def compute_iteration_gradients(
     forward_out = None
     depth_regularizer_gradients: dict[str, np.ndarray] = {}
     normal_regularizer_gradients: dict[str, np.ndarray] = {}
-    opacity_prior_gradients: dict[str, np.ndarray] = {}
     intra_slab_depth_gradients: dict[str, np.ndarray] = {}
     curvature_scale_gradients: dict[str, np.ndarray] = {}
     surface_regularizer_gradients: dict[str, np.ndarray] = {}
 
-    if (use_depth_distortion_gradients or use_normal_consistency or use_opacity_prior or
+    if (use_depth_distortion_gradients or use_normal_consistency or
             use_intra_slab_depth or use_curvature_scale):
         if (
                 hasattr(renderer, "render_forward_surface_regularizer_loss_and_adjoint")
@@ -479,12 +473,10 @@ def compute_iteration_gradients(
                 {
                     "depth_distortion_weight": active_depth_distortion_weight,
                     "normal_consistency_weight": normal_consistency_weight,
-                    "opacity_prior_weight": active_opacity_prior_weight,
                     "intra_slab_depth_weight": intra_slab_depth_weight,
                     "curvature_scale_weight": curvature_scale_weight,
                     "use_depth_distortion": use_depth_distortion,
                     "use_normal_consistency": use_normal_consistency,
-                    "use_opacity_prior": use_opacity_prior,
                     "use_intra_slab_depth": use_intra_slab_depth,
                     "use_curvature_scale": use_curvature_scale,
                 },
@@ -507,12 +499,10 @@ def compute_iteration_gradients(
                 training_camera_ids=list(active_training_camera_ids),
                 depth_distortion_weight=active_depth_distortion_weight,
                 normal_consistency_weight=normal_consistency_weight,
-                opacity_prior_weight=active_opacity_prior_weight,
                 intra_slab_depth_weight=intra_slab_depth_weight,
                 curvature_scale_weight=curvature_scale_weight,
                 use_depth_distortion=use_depth_distortion,
                 use_normal_consistency=use_normal_consistency,
-                use_opacity_prior=use_opacity_prior,
                 use_intra_slab_depth=use_intra_slab_depth,
                 use_curvature_scale=use_curvature_scale,
             )
@@ -528,13 +518,11 @@ def compute_iteration_gradients(
             )
         depth_regularizer_gradients = surface_regularizer_components["depth_distortion"]
         normal_regularizer_gradients = surface_regularizer_components["normal_consistency"]
-        opacity_prior_gradients = surface_regularizer_components.get("opacity_prior", {})
         intra_slab_depth_gradients = surface_regularizer_components.get("intra_slab_depth", {})
         curvature_scale_gradients = surface_regularizer_components.get("curvature_scale", {})
 
         helpers.repair_nonfinite_gradient_dict_inplace("depth_regularizer_gradients", depth_regularizer_gradients, iteration)
         helpers.repair_nonfinite_gradient_dict_inplace("normal_regularizer_gradients", normal_regularizer_gradients, iteration)
-        helpers.repair_nonfinite_gradient_dict_inplace("opacity_prior_gradients", opacity_prior_gradients, iteration)
         helpers.repair_nonfinite_gradient_dict_inplace(
             "intra_slab_depth_gradients", intra_slab_depth_gradients, iteration
         )
@@ -544,7 +532,6 @@ def compute_iteration_gradients(
         surface_regularizer_gradients = helpers.sum_gradient_dicts(
             depth_regularizer_gradients,
             normal_regularizer_gradients,
-            opacity_prior_gradients,
             intra_slab_depth_gradients,
             curvature_scale_gradients,
         )
@@ -575,7 +562,6 @@ def compute_iteration_gradients(
         photo_gradients=photo_gradients,
         depth_regularizer_gradients=depth_regularizer_gradients,
         normal_regularizer_gradients=normal_regularizer_gradients,
-        opacity_prior_gradients=opacity_prior_gradients,
         intra_slab_depth_gradients=intra_slab_depth_gradients,
         curvature_scale_gradients=curvature_scale_gradients,
         surface_regularizer_gradients=surface_regularizer_gradients,
@@ -609,7 +595,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     depth_distortion_start_iteration = int(config.depth_distort_start_iteration)
 
     normal_consistency_weight = float(config.normal_consistency_weight)
-    opacity_prior_weight = float(config.opacity_prior_weight)
     intra_slab_depth_weight = float(config.intra_slab_depth_weight)
     curvature_scale_weight = float(config.curvature_scale_weight)
     curvature_violation_threshold = float(config.curvature_violation_threshold)
@@ -627,7 +612,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     use_depth_distortion = depth_distortion_base_weight != 0.0
     use_normal_consistency = normal_consistency_weight != 0.0
-    use_opacity_prior = opacity_prior_weight != 0.0
     use_intra_slab_depth = intra_slab_depth_weight != 0.0
     use_curvature_scale = curvature_scale_weight != 0.0
 
@@ -639,7 +623,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         f"base_weight={depth_distortion_base_weight:.3e} "
         f"start_iter={depth_distortion_start_iteration}, "
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e}, "
-        f"opacity_prior={use_opacity_prior} weight={opacity_prior_weight:.3e}, "
         f"intra_slab_depth={use_intra_slab_depth} weight={intra_slab_depth_weight:.3e}, "
         f"curvature_scale={use_curvature_scale} weight={curvature_scale_weight:.3e}, "
         f"curvature_densification={use_curvature_densification} "
@@ -730,12 +713,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         ssim_sigma=ssim_sigma,
         depth_distortion_weight=initial_depth_distortion_weight,
         normal_consistency_weight=normal_consistency_weight,
-        opacity_prior_weight=opacity_prior_weight,
         intra_slab_depth_weight=intra_slab_depth_weight,
         curvature_scale_weight=curvature_scale_weight,
         use_depth_distortion=use_depth_distortion,
         use_normal_consistency=use_normal_consistency,
-        use_opacity_prior=use_opacity_prior,
         use_intra_slab_depth=use_intra_slab_depth,
         use_curvature_scale=use_curvature_scale,
     )
@@ -760,13 +741,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         densification_interval=densification_interval,
     )
 
-    opacity_prune_threshold = float(config.opacity_prune_threshold)
-    max_prune_fraction = float(config.max_prune_fraction)
     inactive_transport_prune_cycles = int(config.inactive_transport_prune_cycles)
-    reset_opacity_interval = int(config.reset_opacity_interval)
-    reset_opacity_value = float(config.reset_opacity_value)
     densification_verbose = bool(config.densification_verbose)
-    densification_grad_quantile = helpers.as_config_float(config.densification_grad_quantile)
     densification_grad_abs_min = float(config.densification_grad_abs_min)
     densification_grad_abs_min_final = float(config.densification_grad_abs_min_final)
     densification_grad_abs_min_decay_start_iteration = int(config.densification_grad_abs_min_decay_start_iteration)
@@ -781,7 +757,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         "render_forward_surface_regularizer_loss_and_adjoint",
         "render_surface_regularizers_backward_from_current_adjoint",
         "apply_device_training_step",
-        "reset_trainable_opacity_on_gpu",
         "sync_point_parameters_from_gpu",
         "capture_device_adam_state",
         "upload_device_adam_state",
@@ -925,7 +900,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     iteration=global_iteration,
                     start_iteration=depth_distortion_start_iteration,
                 )
-                active_opacity_prior_weight = opacity_prior_weight
                 active_densification_grad_abs_min = helpers.scheduled_densification_grad_abs_min(
                     initial_threshold=densification_grad_abs_min,
                     final_threshold=densification_grad_abs_min_final,
@@ -953,7 +927,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_surface_regularizers = (
                             use_depth_distortion_gradients
                             or use_normal_consistency
-                            or use_opacity_prior
+
                             or use_intra_slab_depth
                             or use_curvature_scale
                     )
@@ -972,12 +946,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             {
                                 "depth_distortion_weight": active_depth_distortion_weight,
                                 "normal_consistency_weight": normal_consistency_weight,
-                                "opacity_prior_weight": active_opacity_prior_weight,
                                 "intra_slab_depth_weight": intra_slab_depth_weight,
                                 "curvature_scale_weight": curvature_scale_weight,
                                 "use_depth_distortion": use_depth_distortion,
                                 "use_normal_consistency": use_normal_consistency,
-                                "use_opacity_prior": use_opacity_prior,
                                 "use_intra_slab_depth": use_intra_slab_depth,
                                 "use_curvature_scale": use_curvature_scale,
                             },
@@ -1011,7 +983,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 camera_batch_scale=camera_batch_scale,
                                 include_depth_distortion=use_depth_distortion_gradients,
                                 include_normal_consistency=use_normal_consistency,
-                                include_opacity_prior=use_opacity_prior,
                                 include_intra_slab_depth=use_intra_slab_depth,
                                 include_curvature_scale=use_curvature_scale,
                             )
@@ -1079,33 +1050,21 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             accumulators=densify_curvature_stats_accum,
                         )
 
-                    scheduled_opacity_reset = (
-                            reset_opacity_interval > 0
-                            and global_iteration % reset_opacity_interval == 0
-                    )
-                    manual_opacity_reset = bool(config.reset_opacity_iterations)
-                    did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
 
-                    if did_reset_opacity:
-                        renderer.reset_trainable_opacity_on_gpu(float(reset_opacity_value))
-                        print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
-                        config.reset_opacity_iterations = False
 
                     densification_is_due = (
                             densification_interval > 0
                             and next_densification_iteration is not None
                             and global_iteration >= next_densification_iteration
                     )
-                    should_check_densification = not did_reset_opacity and densification_is_due
+                    should_check_densification = densification_is_due
                     should_check_prune = (
-                            not did_reset_opacity
-                            and prune_interval > 0
+                            prune_interval > 0
                             and global_iteration >= prune_after
                             and global_iteration % prune_interval == 0
                     )
                     should_check_inactive_prune = (
-                            not did_reset_opacity
-                            and camera_cycle_complete
+                            camera_cycle_complete
                             and global_iteration >= prune_after
                             and inactive_transport_prune_cycles > 0
                     )
@@ -1134,58 +1093,51 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     densification_result = None
                     scale_prune_indices = []
-                    opacity_prune_indices = []
                     indices_to_remove_list = []
                     inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                     prune_scale_area_points = 0
                     prune_inactive_transport_points = 0
 
-                    if not did_reset_opacity:
-                        if should_check_densification:
-                            densification_result = helpers.maybe_make_densification_result(
-                                iteration=global_iteration, config=config, positions=positions, rotations=rotations,
-                                scales=scales, albedos=albedos, opacities=opacities,
-                                betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
-                                densify_position_grad_accum_np=densify_position_grad_accum_np,
-                                densify_position_grad_denom_np=densify_position_grad_denom_np,
-                                densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                                densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
-                                densify_after=densify_after,
-                                densification_interval=densification_interval,
-                                densification_verbose=densification_verbose,
-                                densification_grad_quantile=densification_grad_quantile,
-                                densification_grad_abs_min=active_densification_grad_abs_min,
-                                densify_curvature_stats_accum=densify_curvature_stats_accum,
-                                force_densification=True,
-                            )
+                    if should_check_densification:
+                        densification_result = helpers.maybe_make_densification_result(
+                            iteration=global_iteration, config=config, positions=positions, rotations=rotations,
+                            scales=scales, albedos=albedos, opacities=opacities,
+                            betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
+                            densify_position_grad_accum_np=densify_position_grad_accum_np,
+                            densify_position_grad_denom_np=densify_position_grad_denom_np,
+                            densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                            densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+                            densify_after=densify_after,
+                            densification_interval=densification_interval,
+                            densification_verbose=densification_verbose,
+                            densification_grad_abs_min=active_densification_grad_abs_min,
+                            densify_curvature_stats_accum=densify_curvature_stats_accum,
+                            force_densification=True,
+                        )
 
-                        if should_check_prune:
-                            scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
-                                iteration=global_iteration, config=config, scales=scales, opacities=opacities,
-                                trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
-                                prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
-                                opacity_prune_threshold=opacity_prune_threshold,
-                                max_prune_fraction=max_prune_fraction,
-                            )
+                    if should_check_prune:
+                        scale_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
+                            iteration=global_iteration, config=config, scales=scales,
+                            trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
+                            prune_interval=prune_interval,
+                        )
 
-                        if should_check_inactive_prune:
-                            trainable_surfel_mask_np = (
-                                trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
-                            active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
-                            inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
-                            inactive_transport_cycle_count_np[active_this_cycle_np] = 0
-                            inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
-                                inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
-                                inactive_transport_prune_cycles,
-                            )
-                            inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
-                                    inactive_transport_cycle_count_np >= inactive_transport_prune_cycles)).astype(
-                                np.int64)
+                    if should_check_inactive_prune:
+                        trainable_surfel_mask_np = (
+                            trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
+                        active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
+                        inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
+                        inactive_transport_cycle_count_np[active_this_cycle_np] = 0
+                        inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                            inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
+                            inactive_transport_prune_cycles,
+                        )
+                        inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
+                                inactive_transport_cycle_count_np >= inactive_transport_prune_cycles)).astype(
+                            np.int64)
 
-                            if inactive_camera_cycle_indices.size > 0:
-                                indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
-                    else:
-                        print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
+                        if inactive_camera_cycle_indices.size > 0:
+                            indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
 
                     if indices_to_remove_list or densification_result is not None:
                         old_point_count_for_topology = int(positions.shape[0])
@@ -1231,8 +1183,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                         if indices_to_remove_list:
                             scale_prune_set = set(int(i) for i in scale_prune_indices)
-                            opacity_prune_set = set(int(i) for i in opacity_prune_indices)
-                            overlap_set = scale_prune_set & opacity_prune_set
                             indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                             inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
@@ -1244,12 +1194,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 print(
                                     f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                     f"scale={len(scale_prune_set)}, "
-                                    f"opacity={len(opacity_prune_set)}, "
                                     f"inactive_transport={len(inactive_cycle_prune_set)} "
-                                    f"(threshold={inactive_transport_prune_cycles} cycles), "
-                                    f"both_scale_opacity={len(overlap_set)}, "
-                                    f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
-                                    f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
+                                    f"(threshold={inactive_transport_prune_cycles} cycles)"
                                 )
 
                             keep_mask_np[indices_to_remove] = False
@@ -1408,23 +1354,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         snapshot_densification_position_sample_count_np,
                         snapshot_densification_position_threshold,
                         snapshot_densification_position_base_threshold,
-                        _,
                     ) = helpers.position_densification_snapshot_statistics(
                         densify_position_grad_accum_np=densify_position_grad_accum_np,
                         densify_position_grad_denom_np=densify_position_grad_denom_np,
                         trainable_surfel_mask=trainable_surfel_mask,
-                        densification_grad_quantile=densification_grad_quantile,
                         densification_grad_abs_min=active_densification_grad_abs_min,
                         densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
                         densification_radiance_floor=float(config.densification_radiance_floor),
-                        densification_radiance_quantile_bins=int(config.densification_radiance_quantile_bins),
-                        densification_radiance_quantile_min_bin_size=int(
-                            config.densification_radiance_quantile_min_bin_size
-                        ),
                         densification_radiance_bias_strength=float(config.densification_radiance_bias_strength),
                         densification_radiance_bias_min_weight=float(config.densification_radiance_bias_min_weight),
                         densification_radiance_bias_max_weight=float(config.densification_radiance_bias_max_weight),
-                        densification_threshold_mode=config.densification_threshold_mode,
                     )
                     snapshot_densification_position_radiance_rms_np = (
                         helpers.position_densification_radiance_rms_snapshot(
@@ -1643,8 +1582,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["total_depth_distortion_loss_weighted"],
                             averaged_loss_state["total_normal_loss_raw"],
                             averaged_loss_state["total_normal_loss_weighted"],
-                            averaged_loss_state["total_opacity_prior_loss_raw"],
-                            averaged_loss_state["total_opacity_prior_loss_weighted"],
                             averaged_loss_state["total_intra_slab_depth_loss_raw"],
                             averaged_loss_state["total_intra_slab_depth_loss_weighted"],
                             averaged_loss_state["total_curvature_scale_loss_raw"],
@@ -1753,7 +1690,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     use_depth_distortion_gradients=use_depth_distortion_gradients,
                     use_depth_distortion=use_depth_distortion,
                     use_normal_consistency=use_normal_consistency,
-                    use_opacity_prior=use_opacity_prior,
                     use_intra_slab_depth=use_intra_slab_depth,
                     use_curvature_scale=use_curvature_scale,
                     ssim_weight=ssim_weight,
@@ -1761,7 +1697,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     ssim_sigma=ssim_sigma,
                     active_depth_distortion_weight=active_depth_distortion_weight,
                     normal_consistency_weight=normal_consistency_weight,
-                    active_opacity_prior_weight=active_opacity_prior_weight,
                     intra_slab_depth_weight=intra_slab_depth_weight,
                     curvature_scale_weight=curvature_scale_weight,
                     densification_relative_error=bool(config.densification_relative_error and densification_interval > 0),
@@ -1776,7 +1711,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 photo_gradients = iteration_gradients.photo_gradients
                 depth_regularizer_gradients = iteration_gradients.depth_regularizer_gradients
                 normal_regularizer_gradients = iteration_gradients.normal_regularizer_gradients
-                opacity_prior_gradients = iteration_gradients.opacity_prior_gradients
                 intra_slab_depth_gradients = iteration_gradients.intra_slab_depth_gradients
                 curvature_scale_gradients = iteration_gradients.curvature_scale_gradients
                 surface_regularizer_gradients = iteration_gradients.surface_regularizer_gradients
@@ -1808,10 +1742,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
                     normal_regularizer_gradients = helpers.scale_gradient_dict(
                         normal_regularizer_gradients,
-                        camera_batch_scale,
-                    )
-                    opacity_prior_gradients = helpers.scale_gradient_dict(
-                        opacity_prior_gradients,
                         camera_batch_scale,
                     )
                     intra_slab_depth_gradients = helpers.scale_gradient_dict(
@@ -1913,19 +1843,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     trainable_surfel_mask=trainable_surfel_mask,
                 )
 
-                scheduled_opacity_reset = (
-                        reset_opacity_interval > 0
-                        and global_iteration % reset_opacity_interval == 0
-                )
-                manual_opacity_reset = bool(config.reset_opacity_iterations)
-                did_reset_opacity = scheduled_opacity_reset or manual_opacity_reset
 
-                if did_reset_opacity:
-                    with torch.no_grad():
-                        opacities[trainable_surfel_mask] = float(reset_opacity_value)
-
-                    print(f"[Iter {global_iteration:04d}] Resetting all opacities to {reset_opacity_value}")
-                    config.reset_opacity_iterations = False
 
                 densification_is_due = (
                         densification_interval > 0
@@ -1942,62 +1860,56 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 densification_result = None
                 scale_prune_indices = []
-                opacity_prune_indices = []
                 indices_to_remove_list = []
                 inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                 prune_scale_area_points = 0
                 prune_inactive_transport_points = 0
 
-                if not did_reset_opacity:
-                    if densification_is_due:
-                        densification_result = helpers.maybe_make_densification_result(
-                            iteration=global_iteration, config=config, positions=positions, rotations=rotations,
-                            scales=scales, albedos=albedos, opacities=opacities,
-                            betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
-                            densify_position_grad_accum_np=densify_position_grad_accum_np,
-                            densify_position_grad_denom_np=densify_position_grad_denom_np,
-                            densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
-                            densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
-                            densify_after=densify_after,
-                            densification_interval=densification_interval, densification_verbose=densification_verbose,
-                            densification_grad_quantile=densification_grad_quantile,
-                            densification_grad_abs_min=active_densification_grad_abs_min,
-                            densify_curvature_stats_accum=densify_curvature_stats_accum,
-                            force_densification=True,
-                        )
-
-                    scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
-                        iteration=global_iteration, config=config, scales=scales, opacities=opacities,
-                        trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
-                        prune_interval=prune_interval, reset_opacity_interval=reset_opacity_interval,
-                        opacity_prune_threshold=opacity_prune_threshold, max_prune_fraction=max_prune_fraction,
+                if densification_is_due:
+                    densification_result = helpers.maybe_make_densification_result(
+                        iteration=global_iteration, config=config, positions=positions, rotations=rotations,
+                        scales=scales, albedos=albedos, opacities=opacities,
+                        betas=betas, powers=powers, trainable_surfel_mask=trainable_surfel_mask,
+                        densify_position_grad_accum_np=densify_position_grad_accum_np,
+                        densify_position_grad_denom_np=densify_position_grad_denom_np,
+                        densify_position_grad_vector_accum_np=densify_position_grad_vector_accum_np,
+                        densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
+                        densify_after=densify_after,
+                        densification_interval=densification_interval, densification_verbose=densification_verbose,
+                        densification_grad_abs_min=active_densification_grad_abs_min,
+                        densify_curvature_stats_accum=densify_curvature_stats_accum,
+                        force_densification=True,
                     )
 
-                    if (
-                            camera_cycle_complete
-                            and global_iteration >= prune_after
-                            and inactive_transport_prune_cycles > 0
-                    ):
-                        trainable_surfel_mask_np = (
-                            trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
-                        active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
-                        inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
-                        # A surfel with any position-gradient record in this
-                        # complete camera cycle is no longer considered inactive.
-                        inactive_transport_cycle_count_np[active_this_cycle_np] = 0
-                        # Count consecutive complete cycles with no position-gradient
-                        # record. Saturate at the threshold; larger values are irrelevant.
-                        inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
-                            inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
-                            inactive_transport_prune_cycles, )
-                        inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
-                                inactive_transport_cycle_count_np >= inactive_transport_prune_cycles)).astype(
-                            np.int64)
+                scale_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
+                    iteration=global_iteration, config=config, scales=scales,
+                    trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
+                    prune_interval=prune_interval,
+                )
 
-                        if inactive_camera_cycle_indices.size > 0:
-                            indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
-                else:
-                    print(f"[Iter {global_iteration:04d}] Skipping densification/pruning due to opacity reset")
+                if (
+                        camera_cycle_complete
+                        and global_iteration >= prune_after
+                        and inactive_transport_prune_cycles > 0
+                ):
+                    trainable_surfel_mask_np = (
+                        trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
+                    active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
+                    inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
+                    # A surfel with any position-gradient record in this
+                    # complete camera cycle is no longer considered inactive.
+                    inactive_transport_cycle_count_np[active_this_cycle_np] = 0
+                    # Count consecutive complete cycles with no position-gradient
+                    # record. Saturate at the threshold; larger values are irrelevant.
+                    inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
+                        inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
+                        inactive_transport_prune_cycles, )
+                    inactive_camera_cycle_indices = np.flatnonzero(trainable_surfel_mask_np & (
+                            inactive_transport_cycle_count_np >= inactive_transport_prune_cycles)).astype(
+                        np.int64)
+
+                    if inactive_camera_cycle_indices.size > 0:
+                        indices_to_remove_list.extend(int(index) for index in inactive_camera_cycle_indices)
 
                 if indices_to_remove_list or densification_result is not None:
                     old_params_for_optimizer = helpers.make_named_parameter_dict(positions, rotation_delta, scales, albedos,
@@ -2030,8 +1942,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     if indices_to_remove_list:
                         scale_prune_set = set(int(i) for i in scale_prune_indices)
-                        opacity_prune_set = set(int(i) for i in opacity_prune_indices)
-                        overlap_set = scale_prune_set & opacity_prune_set
                         indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                         inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
@@ -2042,12 +1952,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             print(
                                 f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                 f"scale={len(scale_prune_set)}, "
-                                f"opacity={len(opacity_prune_set)}, "
                                 f"inactive_transport={len(inactive_cycle_prune_set)} "
-                                f"(threshold={inactive_transport_prune_cycles} cycles), "
-                                f"both_scale_opacity={len(overlap_set)}, "
-                                f"scale_only={len(scale_prune_set - opacity_prune_set)}, "
-                                f"opacity_only={len(opacity_prune_set - scale_prune_set)}"
+                                f"(threshold={inactive_transport_prune_cycles} cycles)"
                             )
 
                         keep_mask_np[indices_to_remove] = False
@@ -2191,23 +2097,16 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     snapshot_densification_position_sample_count_np,
                     snapshot_densification_position_threshold,
                     snapshot_densification_position_base_threshold,
-                    _,
                 ) = helpers.position_densification_snapshot_statistics(
                     densify_position_grad_accum_np=densify_position_grad_accum_np,
                     densify_position_grad_denom_np=densify_position_grad_denom_np,
                     trainable_surfel_mask=trainable_surfel_mask,
-                    densification_grad_quantile=densification_grad_quantile,
                     densification_grad_abs_min=active_densification_grad_abs_min,
                     densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
                     densification_radiance_floor=float(config.densification_radiance_floor),
-                    densification_radiance_quantile_bins=int(config.densification_radiance_quantile_bins),
-                    densification_radiance_quantile_min_bin_size=int(
-                        config.densification_radiance_quantile_min_bin_size
-                    ),
                     densification_radiance_bias_strength=float(config.densification_radiance_bias_strength),
                     densification_radiance_bias_min_weight=float(config.densification_radiance_bias_min_weight),
                     densification_radiance_bias_max_weight=float(config.densification_radiance_bias_max_weight),
-                    densification_threshold_mode=config.densification_threshold_mode,
                 )
                 snapshot_densification_position_radiance_rms_np = (
                     helpers.position_densification_radiance_rms_snapshot(
@@ -2400,8 +2299,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_depth_distortion_loss_weighted"],
                         averaged_loss_state["total_normal_loss_raw"],
                         averaged_loss_state["total_normal_loss_weighted"],
-                        averaged_loss_state["total_opacity_prior_loss_raw"],
-                        averaged_loss_state["total_opacity_prior_loss_weighted"],
                         averaged_loss_state["total_intra_slab_depth_loss_raw"],
                         averaged_loss_state["total_intra_slab_depth_loss_weighted"],
                         averaged_loss_state["total_curvature_scale_loss_raw"],
@@ -2519,8 +2416,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     final_depth_distortion_loss_weighted = 0.0
     final_normal_loss_raw = 0.0
     final_normal_loss_weighted = 0.0
-    final_opacity_prior_loss_raw = 0.0
-    final_opacity_prior_loss_weighted = 0.0
     final_intra_slab_depth_loss_raw = 0.0
     final_intra_slab_depth_loss_weighted = 0.0
     final_curvature_scale_loss_raw = 0.0
@@ -2578,13 +2473,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             helpers.save_normal_map_snapshot(renders_dir / f"normal_from_depth_final_{camera_name}.png",
                                      normal_from_depth, save_npy=False)
 
-        if use_opacity_prior:
-            opacity_prior_cam_raw = float(render.get_forward_opacity_prior(final_images, camera_name).mean())
-            opacity_prior_cam_weighted = opacity_prior_weight * opacity_prior_cam_raw
-
-            final_opacity_prior_loss_raw += opacity_prior_cam_raw
-            final_opacity_prior_loss_weighted += opacity_prior_cam_weighted
-            final_total_loss += opacity_prior_cam_weighted
 
         if use_intra_slab_depth:
             intra_slab_depth_map = render.get_forward_intra_slab_depth(final_images, camera_name)
@@ -2632,8 +2520,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_depth_distortion_loss_weighted,
         final_normal_loss_raw,
         final_normal_loss_weighted,
-        final_opacity_prior_loss_raw,
-        final_opacity_prior_loss_weighted,
         final_intra_slab_depth_loss_raw,
         final_intra_slab_depth_loss_weighted,
         final_curvature_scale_loss_raw,

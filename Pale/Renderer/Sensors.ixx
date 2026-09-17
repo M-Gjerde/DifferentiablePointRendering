@@ -3,6 +3,7 @@
 //
 module;
 #include <sycl/sycl.hpp>
+#include <type_traits>
 #include <Renderer/GPUDataStructures.h>
 #include <Renderer/RenderPackage.h>
 
@@ -16,7 +17,8 @@ export namespace Pale {
     std::vector<SensorGPU>
     makeSensorsForScene(sycl::queue queue,
                         const SceneBuild::BuildProducts &buildProducts,
-                        bool clearData = true, bool simulateAdjoint = false) {
+                        bool clearData = true, bool simulateAdjoint = false,
+                        bool allocateAdjoints = true) {
         std::vector<SensorGPU> sensorDevices;
         const auto &cameraList = buildProducts.cameras();
         if (cameraList.empty()) {
@@ -41,46 +43,43 @@ export namespace Pale {
                 pixelCount * sizeof(float) * 4, queue));
             float *depthDistortionBuffer = reinterpret_cast<float *>(sycl::malloc_device(
                 pixelCount * sizeof(float), queue));
-            float *depthDistortionAdjointBuffer = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
+            float *depthDistortionAdjointBuffer = allocateAdjoints ? reinterpret_cast<float *>(sycl::malloc_device(
+                pixelCount * sizeof(float), queue)) : nullptr;
             float *medianDepthBuffer = reinterpret_cast<float *>(
                 sycl::malloc_device(pixelCount * sizeof(float), queue));
-            float *visibilityWeightedOpacityBuffer = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
             float *intraSlabDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
-            float *intraSlabDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
+            float *intraSlabDepthAdjointBuffer = allocateAdjoints ? sycl::malloc_device<float>(pixelCount, queue) : nullptr;
             uint32_t *intraSlabDepthActiveSlabCountBuffer =
                     sycl::malloc_device<uint32_t>(pixelCount, queue);
             float *curvatureScaleBuffer = sycl::malloc_device<float>(pixelCount, queue);
-            float *curvatureScaleAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
+            float *curvatureScaleAdjointBuffer = allocateAdjoints ? sycl::malloc_device<float>(pixelCount, queue) : nullptr;
             uint32_t *curvatureScaleActiveSlabCountBuffer =
                     sycl::malloc_device<uint32_t>(pixelCount, queue);
             float *meanDepthBuffer = reinterpret_cast<float *>(sycl::malloc_device(pixelCount * sizeof(float), queue));
-            float *medianDepthAdjointBuffer = reinterpret_cast<float *>(sycl::malloc_device(
-                pixelCount * sizeof(float), queue));
+            float *medianDepthAdjointBuffer = allocateAdjoints ? reinterpret_cast<float *>(sycl::malloc_device(
+                pixelCount * sizeof(float), queue)) : nullptr;
             float4 *medianWorldPositionBuffer = reinterpret_cast<float4 *>(sycl::malloc_device(
                 pixelCount * sizeof(float) * 4, queue));
             float4 *visibleNormalBuffer = reinterpret_cast<float4 *>(sycl::malloc_device(
                 pixelCount * sizeof(float) * 4, queue));
             float4 *normalFromDepthBuffer = reinterpret_cast<float4 *>(sycl::malloc_device(
                 pixelCount * sizeof(float) * 4, queue));
-            float4 *normalFromDepthAdjointBuffer = reinterpret_cast<float4 *>(sycl::malloc_device(
-                pixelCount * sizeof(float) * 4, queue));
-            float4 *visibleNormalAdjointBuffer = reinterpret_cast<float4 *>(sycl::malloc_device(
-                pixelCount * sizeof(float) * 4, queue));
+            float4 *normalFromDepthAdjointBuffer = allocateAdjoints ? reinterpret_cast<float4 *>(sycl::malloc_device(
+                pixelCount * sizeof(float) * 4, queue)) : nullptr;
+            float4 *visibleNormalAdjointBuffer = allocateAdjoints ? reinterpret_cast<float4 *>(sycl::malloc_device(
+                pixelCount * sizeof(float) * 4, queue)) : nullptr;
 
             // Optional: check allocations
             if (deviceHighDynamicRangeFramebuffer == nullptr ||
                 deviceOutputFramebuffer == nullptr ||
                 deviceLdrFramebuffer == nullptr ||
                 depthDistortionBuffer == nullptr ||
-                depthDistortionAdjointBuffer == nullptr ||
-                visibilityWeightedOpacityBuffer == nullptr ||
+                (allocateAdjoints && depthDistortionAdjointBuffer == nullptr) ||
                 intraSlabDepthBuffer == nullptr ||
-                intraSlabDepthAdjointBuffer == nullptr ||
+                (allocateAdjoints && intraSlabDepthAdjointBuffer == nullptr) ||
                 intraSlabDepthActiveSlabCountBuffer == nullptr ||
                 curvatureScaleBuffer == nullptr ||
-                curvatureScaleAdjointBuffer == nullptr ||
+                (allocateAdjoints && curvatureScaleAdjointBuffer == nullptr) ||
                 curvatureScaleActiveSlabCountBuffer == nullptr) {
                 // Handle allocation failure: free what succeeded, skip this camera or throw
                 if (deviceHighDynamicRangeFramebuffer) {
@@ -94,7 +93,6 @@ export namespace Pale {
                 }
                 if (depthDistortionBuffer) sycl::free(depthDistortionBuffer, queue);
                 if (depthDistortionAdjointBuffer) sycl::free(depthDistortionAdjointBuffer, queue);
-                if (visibilityWeightedOpacityBuffer) sycl::free(visibilityWeightedOpacityBuffer, queue);
                 if (intraSlabDepthBuffer) sycl::free(intraSlabDepthBuffer, queue);
                 if (intraSlabDepthAdjointBuffer) sycl::free(intraSlabDepthAdjointBuffer, queue);
                 if (intraSlabDepthActiveSlabCountBuffer) {
@@ -119,22 +117,21 @@ export namespace Pale {
                 // LDR framebuffer initialized to zero
                 queue.memset(deviceLdrFramebuffer, 0, pixelCount * 4u * sizeof(float));
                 queue.memset(depthDistortionBuffer, 0, pixelCount * sizeof(float));
-                queue.memset(depthDistortionAdjointBuffer, 0, pixelCount * sizeof(float));
+                if (depthDistortionAdjointBuffer) queue.memset(depthDistortionAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(medianDepthBuffer, 0, pixelCount * sizeof(float));
-                queue.memset(visibilityWeightedOpacityBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(intraSlabDepthBuffer, 0, pixelCount * sizeof(float));
-                queue.memset(intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
+                if (intraSlabDepthAdjointBuffer) queue.memset(intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(intraSlabDepthActiveSlabCountBuffer, 0, pixelCount * sizeof(uint32_t));
                 queue.memset(curvatureScaleBuffer, 0, pixelCount * sizeof(float));
-                queue.memset(curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
+                if (curvatureScaleAdjointBuffer) queue.memset(curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(curvatureScaleActiveSlabCountBuffer, 0, pixelCount * sizeof(uint32_t));
                 queue.memset(meanDepthBuffer, 0, pixelCount * sizeof(float));
-                queue.memset(medianDepthAdjointBuffer, 0, pixelCount * sizeof(float));
+                if (medianDepthAdjointBuffer) queue.memset(medianDepthAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(medianWorldPositionBuffer, 0, pixelCount * 4u * sizeof(float));
                 queue.memset(visibleNormalBuffer, 0, pixelCount * 4u * sizeof(float));
                 queue.memset(normalFromDepthBuffer, 0, pixelCount * 4u * sizeof(float));
-                queue.memset(normalFromDepthAdjointBuffer, 0, pixelCount * 4u * sizeof(float));
-                queue.memset(visibleNormalAdjointBuffer, 0, pixelCount * 4u * sizeof(float));
+                if (normalFromDepthAdjointBuffer) queue.memset(normalFromDepthAdjointBuffer, 0, pixelCount * 4u * sizeof(float));
+                if (visibleNormalAdjointBuffer) queue.memset(visibleNormalAdjointBuffer, 0, pixelCount * 4u * sizeof(float));
                 queue.wait();
             }
 
@@ -146,7 +143,6 @@ export namespace Pale {
             sensorGpu.depthDistortionAdjointBuffer = depthDistortionAdjointBuffer;
             sensorGpu.medianDepthBuffer = medianDepthBuffer;
             sensorGpu.meanDepthBuffer = meanDepthBuffer;
-            sensorGpu.visibilityWeightedOpacityBuffer = visibilityWeightedOpacityBuffer;
             sensorGpu.intraSlabDepthBuffer = intraSlabDepthBuffer;
             sensorGpu.intraSlabDepthAdjointBuffer = intraSlabDepthAdjointBuffer;
             sensorGpu.intraSlabDepthActiveSlabCountBuffer = intraSlabDepthActiveSlabCountBuffer;
@@ -170,11 +166,146 @@ export namespace Pale {
         return sensorDevices;
     }
 
+    // The owning sensor retains these pointers when a selected camera batch is copied.
+    void ensureSensorAdjointBuffers(sycl::queue queue, SensorGPU &sensor) {
+        const size_t pixelCount = static_cast<size_t>(sensor.width) * sensor.height;
+        if (pixelCount == 0u) return;
+        bool allocated = false;
+        auto ensure = [&](auto *&buffer) {
+            using T = std::remove_pointer_t<std::remove_reference_t<decltype(buffer)>>;
+            if (buffer != nullptr) return;
+            buffer = sycl::malloc_device<T>(pixelCount, queue);
+            if (!buffer) throw std::bad_alloc();
+            queue.fill(buffer, T{0.0f}, pixelCount);
+            allocated = true;
+        };
+        ensure(sensor.depthDistortionAdjointBuffer);
+        ensure(sensor.intraSlabDepthAdjointBuffer);
+        ensure(sensor.curvatureScaleAdjointBuffer);
+        ensure(sensor.medianDepthAdjointBuffer);
+        ensure(sensor.visibleNormalAdjointBuffer);
+        ensure(sensor.normalFromDepthAdjointBuffer);
+        if (allocated) queue.wait_and_throw();
+    }
+
+    void freeSensorsForScene(sycl::queue queue, std::vector<SensorGPU> &sensors) {
+        queue.wait();
+        for (auto &sensor : sensors) {
+            auto free = [&](auto *&buffer) {
+                if (buffer) sycl::free(buffer, queue);
+                buffer = nullptr;
+            };
+            free(sensor.framebuffer);
+            free(sensor.outputFramebuffer);
+            free(sensor.ldrFramebuffer);
+            free(sensor.depthDistortionBuffer);
+            free(sensor.depthDistortionAdjointBuffer);
+            free(sensor.medianDepthBuffer);
+            free(sensor.intraSlabDepthBuffer);
+            free(sensor.intraSlabDepthAdjointBuffer);
+            free(sensor.intraSlabDepthActiveSlabCountBuffer);
+            free(sensor.intraSlabRayDepthBuffer);
+            free(sensor.curvatureScaleBuffer);
+            free(sensor.curvatureScaleAdjointBuffer);
+            free(sensor.curvatureScaleActiveSlabCountBuffer);
+            free(sensor.surfaceCurvatureBuffer);
+            free(sensor.meanDepthBuffer);
+            free(sensor.medianDepthAdjointBuffer);
+            free(sensor.medianWorldPositionBuffer);
+            free(sensor.visibleNormalBuffer);
+            free(sensor.normalFromDepthBuffer);
+            free(sensor.normalFromDepthAdjointBuffer);
+            free(sensor.visibleNormalAdjointBuffer);
+        }
+        sensors.clear();
+    }
+
     void setBackgroundColor(sycl::queue queue, std::vector<SensorGPU> sensors, float4 color) {
         for (auto &sensor: sensors) {
             queue.fill(sensor.framebuffer, color, sensor.width * sensor.height);
             queue.wait();
         }
+    }
+
+    void ensureDebugImagesForScene(sycl::queue queue,
+                                   const SceneBuild::BuildProducts &buildProducts,
+                                   DebugImages *debugImages) {
+        const auto &cameraList = buildProducts.cameras();
+        if (cameraList.empty()) {
+            Pale::Log::PA_WARN(
+                "makeGradientsForScene: no cameras in buildProducts; debug images will not be allocated");
+            return;
+        }
+
+        if (!debugImages) {
+            return;
+        }
+
+        bool allocated = false;
+        for (size_t cameraIndex = 0; cameraIndex < cameraList.size(); ++cameraIndex) {
+            const auto &camera = cameraList[cameraIndex];
+
+            DebugImages &debugImage = debugImages[cameraIndex];
+            if (debugImage.numPixels != 0u) continue;
+            debugImage = DebugImages{};
+
+            if (!camera.useForAdjointPass) {
+                continue;
+            }
+
+            const size_t pixelCount =
+                    static_cast<size_t>(camera.width) *
+                    static_cast<size_t>(camera.height);
+
+            Pale::Log::PA_INFO(
+                "makeGradientsForScene: allocating debug gradient images for camera '{}' {}x{} ({} pixels)",
+                camera.name,
+                camera.width,
+                camera.height,
+                pixelCount);
+
+            debugImage.framebufferPosX = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferPosY = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferPosZ = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferRotX = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferRotY = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferRotZ = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferScaleU = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferScaleV = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferOpacity = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferAlbedo = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferBeta = sycl::malloc_device<float>(pixelCount, queue);
+            debugImage.framebufferDepthLoss = sycl::malloc_device<float4>(pixelCount, queue);
+            debugImage.framebufferDepthLossPos = sycl::malloc_device<float4>(pixelCount, queue);
+            debugImage.framebufferNormalLoss = sycl::malloc_device<float4>(pixelCount, queue);
+            debugImage.numPixels = pixelCount;
+            allocated = true;
+
+            if (!debugImage.framebufferPosX || !debugImage.framebufferPosY || !debugImage.framebufferPosZ ||
+                !debugImage.framebufferRotX ||  !debugImage.framebufferRotY ||  !debugImage.framebufferRotZ || !debugImage.framebufferScaleU ||  !debugImage.framebufferScaleV || !debugImage.framebufferOpacity ||
+                !debugImage.framebufferAlbedo || !debugImage.framebufferBeta ||
+                !debugImage.framebufferDepthLoss || !debugImage.framebufferDepthLossPos ||
+                !debugImage.framebufferNormalLoss) {
+                throw std::runtime_error("makeGradientsForScene: failed to allocate one or more debug image buffers");
+            }
+
+            queue.fill(debugImage.framebufferPosX, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferPosY, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferPosZ, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferRotX, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferRotY, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferRotZ, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferScaleU, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferScaleV, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferOpacity, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferAlbedo, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferBeta, 0.0f, pixelCount);
+            queue.fill(debugImage.framebufferDepthLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+            queue.fill(debugImage.framebufferDepthLossPos, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+            queue.fill(debugImage.framebufferNormalLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
+        }
+
+        if (allocated) queue.wait_and_throw();
     }
 
     PointGradients makeGradientsForScene(
@@ -275,79 +406,7 @@ export namespace Pale {
                     sizeof(uint32_t) * static_cast<size_t>(numPoints)));
         }
 
-        if (cameraList.empty()) {
-            Pale::Log::PA_WARN(
-                "makeGradientsForScene: no cameras in buildProducts; debug images will not be allocated");
-            queue.wait();
-            return out;
-        }
-
-        if (!debugImages) {
-            queue.wait();
-            return out;
-        }
-
-        for (size_t cameraIndex = 0; cameraIndex < cameraList.size(); ++cameraIndex) {
-            const auto &camera = cameraList[cameraIndex];
-
-            DebugImages &debugImage = debugImages[cameraIndex];
-            debugImage = DebugImages{};
-
-            if (!camera.useForAdjointPass) {
-                continue;
-            }
-
-            const size_t pixelCount =
-                    static_cast<size_t>(camera.width) *
-                    static_cast<size_t>(camera.height);
-
-            Pale::Log::PA_INFO(
-                "makeGradientsForScene: allocating debug gradient images for camera '{}' {}x{} ({} pixels)",
-                camera.name,
-                camera.width,
-                camera.height,
-                pixelCount);
-
-            debugImage.framebufferPosX = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferPosY = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferPosZ = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferRotX = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferRotY = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferRotZ = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferScaleU = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferScaleV = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferOpacity = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferAlbedo = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferBeta = sycl::malloc_device<float>(pixelCount, queue);
-            debugImage.framebufferDepthLoss = sycl::malloc_device<float4>(pixelCount, queue);
-            debugImage.framebufferDepthLossPos = sycl::malloc_device<float4>(pixelCount, queue);
-            debugImage.framebufferNormalLoss = sycl::malloc_device<float4>(pixelCount, queue);
-            debugImage.numPixels = pixelCount;
-
-            if (!debugImage.framebufferPosX || !debugImage.framebufferPosY || !debugImage.framebufferPosZ ||
-                !debugImage.framebufferRotX ||  !debugImage.framebufferRotY ||  !debugImage.framebufferRotZ || !debugImage.framebufferScaleU ||  !debugImage.framebufferScaleV || !debugImage.framebufferOpacity ||
-                !debugImage.framebufferAlbedo || !debugImage.framebufferBeta ||
-                !debugImage.framebufferDepthLoss || !debugImage.framebufferDepthLossPos ||
-                !debugImage.framebufferNormalLoss) {
-                throw std::runtime_error("makeGradientsForScene: failed to allocate one or more debug image buffers");
-            }
-
-            queue.fill(debugImage.framebufferPosX, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferPosY, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferPosZ, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferRotX, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferRotY, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferRotZ, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferScaleU, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferScaleV, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferOpacity, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferAlbedo, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferBeta, 0.0f, pixelCount);
-            queue.fill(debugImage.framebufferDepthLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
-            queue.fill(debugImage.framebufferDepthLossPos, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
-            queue.fill(debugImage.framebufferNormalLoss, float4{0.0f, 0.0f, 0.0f, 0.0f}, pixelCount);
-        }
-
+        ensureDebugImagesForScene(queue, buildProducts, debugImages);
         queue.wait();
         return out;
     }
@@ -605,25 +664,6 @@ export namespace Pale {
         return hostSideFramebuffer;
     }
 
-    inline std::vector<float>
-    downloadSensorVisibilityOpacityRAW(sycl::queue queue, const SensorGPU &sensorGpu) {
-        // Total number of float elements = width * height * 4 (RGBA channels)
-        const size_t totalFloatCount = static_cast<size_t>(sensorGpu.width)
-                                       * static_cast<size_t>(sensorGpu.height);
-        std::vector<float> hostSideFramebuffer(totalFloatCount);
-
-
-        // Allocate host-side buffer
-        queue.wait();
-        // Copy device framebuffer → host buffer
-        queue.memcpy(
-            hostSideFramebuffer.data(), // destination
-            sensorGpu.visibilityWeightedOpacityBuffer, // source (device pointer)
-            totalFloatCount * sizeof(float) // size in bytes
-        ).wait();
-
-        return hostSideFramebuffer;
-    }
 
     struct DebugGradientImagesHost {
         // Each buffer has size: width * height * 4 (RGBA)

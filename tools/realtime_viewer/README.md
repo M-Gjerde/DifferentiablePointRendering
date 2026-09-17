@@ -65,14 +65,23 @@ Controls:
 - Left-drag over the rendered image: orbit camera
 - Right-drag or middle-drag: pan target
 - Mouse wheel: zoom
+- `Space`: restore the initial orbit view and switch to the viewport camera
+- `\`: enter walk navigation from the current viewport or selected scene camera
+- In walk mode: mouse look, `W/A/S/D` move, `Q/E` down/up, `Shift` faster, `Alt` slower, wheel adjusts speed
+- `Enter`, left-click, or `\`: finish walking and keep the view; `Escape` or right-click: cancel and restore the previous view
+- Walk navigation has no gravity or collision detection; losing window focus cancels it
+- Debug-view shortcuts (`1`–`0`, `+`/`-`) and point-cloud shortcuts (`R`, `F`, `L`, `N`, `M`, arrows) remain available while walking
+- Walk movement uses the latest input state after each render; released keys are not replayed across later frames. Short exit and viewer-shortcut taps still register.
 - `Render`: force a render
 - `Auto render`: render after camera/control changes
 - `R`: load the latest optimization run PLY
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
-- Left/right or down/up arrows: step through snapshots in the active optimization run
+- Left/right arrows: step through snapshots in the active optimization run
+- Up/down arrows with a scene camera selected: next/previous scene camera, wrapping at either end
+- Up/down arrows with the viewport camera selected: next/previous optimization snapshot
 
-Arrow-key navigation refreshes only the active run's `points` folder, including
+Snapshot navigation refreshes only the active run's `points` folder, including
 new snapshots written during training. It stays in that run until you use `R`
 or **Load latest run PLY** to search for the latest run again.
 
@@ -180,19 +189,10 @@ magenta candidate highlighting. SSIM debug defaults are weight `0`, window size
 
 ### Depth-distortion previews
 
-The viewer defaults to **World distance + Gaussian falloff**, matching training
-with `depth_distort_gaussian=True`. The **Half-strength distance (m)** control
-defaults to 0.10: attraction is 50% at a 10 cm camera-forward depth separation,
-6.25% at 20 cm, and about 0.2% at 30 cm. Both the loss image and position-gradient
-preview use this mode and distance. Pair weights are detached in backward.
-The loss has scene-distance units; geometry is assumed to be in metres.
-
-The formula has no pixel-width, focal-length, resolution, or reference-depth
-normalization. Viewing changes can still change intersections and visibility.
-This changes diagnostics/regularization only, not slab membership or RGB.
-Choose **World distance** for the original absolute depth loss or **Normalized
-depth (legacy)** for runs with `depth_distort_world_space=False` and Gaussian
-falloff disabled. Pixel-footprint mode has been removed.
+Choose **World distance** for absolute camera-forward depth differences or
+**Normalized depth** for squared NDC differences. Match the training run's
+`depth_distort_world_space` setting. Both the loss image and position-gradient
+preview use the selected mode.
 
 The loss image shows raw per-pixel distortion; the position-gradient image uses
 mean image loss with unit regularizer weight. Colors rescale separately each

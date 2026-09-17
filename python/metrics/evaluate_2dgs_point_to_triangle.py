@@ -404,7 +404,6 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--view-count",
         type=int,
-        default=10,
         help=(
             "2DGS dataset suffix (default: 10), selecting "
             "2dgs_<dataset>_<view-count>."
