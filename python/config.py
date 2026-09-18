@@ -65,11 +65,11 @@ class OptimizationConfig:
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.0005
-    learning_rate_rotation: float = 0.005
+    learning_rate_position: float = 0.00005
+    learning_rate_rotation: float = 0.01
     learning_rate_scale: float = 0.001
     learning_rate_albedo: float = 0.0005
-    learning_rate_opacity: float = 0.0002
+    learning_rate_opacity: float = 0.0005
     learning_rate_beta: float = 0.0005
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
@@ -81,7 +81,7 @@ class OptimizationConfig:
     position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 35_000
+    lr_decay_max_steps: int = 30_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.00
@@ -89,12 +89,12 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.005
+    depth_distort_weight: float = 0.1
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_start_iteration: int = 5_000
+    depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
-    intra_slab_depth_weight: float = 5.0e-5
-    curvature_scale_weight: float = 0.0e-6
+    intra_slab_depth_weight: float = 1.0e-5
+    curvature_scale_weight: float = 5.0e-7
     # Rendering model
     share_local_layer_direct_lighting: bool = True
 
@@ -106,7 +106,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 400
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -119,13 +119,18 @@ class OptimizationConfig:
     # visibility, shadowing, attenuation, and other transport effects.
     densification_full_position: bool = False
     densification_downweight_normal_gradients: bool = False
+    # When false, position-triggered splits may use the full 3D gradient,
+    # including the surfel-normal direction.
+    densification_tangent_only: bool = True
+    densification_max_new_fraction: float = 1.0
+    densification_verbose: bool = False
 
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
     densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min_final: float = 1.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 30_000
+    densification_grad_abs_min_decay_end_iteration: int = 0
 
     # Densification: radiance balancing
     # Divide final selection thresholds by a bounded, median-relative brightness
@@ -134,31 +139,30 @@ class OptimizationConfig:
     densification_radiance_bias_min_weight: float = 0.25
     densification_radiance_bias_max_weight: float = 1.5
 
+    # Pruning and topology maintenance
+    min_surfel_area: float = math.pi * 8.0e-5
+
     # Densification: curvature trigger and clone/split policy
-    # A non-positive value disables curvature-triggered densification.
+    # Minimum child semi-axis, in scene units (not area). The split selector
+    # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
+    # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_scale_min: float = 6.0e-3
+    densification_split_scale_factor: float = 1.3
+    densification_split_offset_scale: float = 0.15
+    densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
-    densification_split_offset_scale: float = 0.1
-    densification_split_scale_factor: float = math.sqrt(2)
-    # When false, position-triggered splits may use the full 3D gradient,
-    # including the surfel-normal direction.
-    densification_tangent_only: bool = False
-    densification_max_new_fraction: float = 1.0
-    densification_verbose: bool = False
 
     # Pruning and topology maintenance
     prune_interval: int = densification_interval
     prune_after: int = 0
-    min_surfel_area: float = math.pi * 2.0e-5
     inactive_transport_prune_cycles: int = 2
     rebuild_bvh_interval: int = densification_interval
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 2_000
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 512
+    mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
     mesh_albedo_texture_size: int = 1024
     mesh_uv_partitions: int = 0
@@ -176,7 +180,7 @@ class OptimizationConfig:
     # each scheduled densification, and on the final iteration.
     save_interval: int = mesh_extraction_interval
     # When enabled (> 0), also save the first iteration, matching image snapshots.
-    save_ply_files_interval: int = 200
+    save_ply_files_interval: int = 100
     # Debug snapshots at the iteration immediately before the next scheduled
     # densification, replacing periodic PLY saves. Interval 0 still disables saves.
     save_ply_before_densification: bool = False

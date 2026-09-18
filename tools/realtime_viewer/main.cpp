@@ -180,7 +180,7 @@ namespace {
         "6 Depth normal",
         "7 Intra-slab depth (plane distance)",
         "8 Surface curvature (magnitude)",
-        "9 Curvature scale",
+        "9 Curvature loss",
         "0 Curvature primitive score",
         "Position primitive score (saved)",
         "Intra-slab depth (mean ray depth)",

@@ -179,15 +179,17 @@ def verify_scales_inplace(scales: torch.Tensor) -> dict[str, float]:
     In-place verification/clamping of scale values.
 
     Enforces:
-        MIN_SURFEL_SCALE <= s_u, s_v <= 1.0
+        MIN_SURFEL_SCALE <= s_u, s_v <= 5.0
+
+    Keep aligned with the native log-scale optimizer in Pale/pale_bindings.cpp.
     """
     with torch.no_grad():
         s = scales.data
         before_min, before_max = _finite_min_max(s)
         nonfinite_count = int(torch.count_nonzero(~torch.isfinite(s)).item())
 
-        s_clean = torch.nan_to_num(s, nan=MIN_SURFEL_SCALE, posinf=1.0, neginf=MIN_SURFEL_SCALE)
-        s_clamped = torch.clamp(s_clean, min=MIN_SURFEL_SCALE, max=1.0)
+        s_clean = torch.nan_to_num(s, nan=MIN_SURFEL_SCALE, posinf=5.0, neginf=MIN_SURFEL_SCALE)
+        s_clamped = torch.clamp(s_clean, min=MIN_SURFEL_SCALE, max=5.0)
         s.copy_(s_clamped)
 
         after_min, after_max = _finite_min_max(s)

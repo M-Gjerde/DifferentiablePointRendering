@@ -111,9 +111,9 @@ the mean ray-depth alternative is a diagnostic preview only.
 ### Surface curvature map
 
 The display menu and **+/-** cycle group **Surface curvature (magnitude)**,
-**Curvature scale**, and **Curvature primitive score** consecutively. The first
+**Curvature loss**, and **Curvature primitive score** consecutively. The first
 ten views use number keys **1–9, then 0** in menu/cycle order: **8** is Surface
-curvature, **9** is Curvature scale, and **0** is Curvature primitive score.
+curvature, **9** is Curvature loss, and **0** is Curvature primitive score.
 Position primitive score follows them without a number shortcut.
 
 Choose **Display → Surface curvature (magnitude)** for an estimate of local
@@ -127,7 +127,7 @@ is enabled, using the existing curvature diagnostic's visible-slab search.
 This uses neighboring surfel centers and normals, rather than differentiating
 the depth image. Neighborhood coverage and slab membership affect the estimate;
 unobserved tangent directions cannot be recovered from a single neighbor.
-The existing **Curvature scale** map instead shows a footprint-size penalty,
+The existing **Curvature loss** map instead shows a footprint-size penalty,
 which can be zero on a curved surface with sufficiently small surfels.
 
 Valid flat estimates are zero and use the low end of the colormap. Black means

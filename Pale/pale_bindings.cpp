@@ -4888,19 +4888,29 @@ private:
                     point.tanV = updatedTangentV;
                 }
 
+                // Optimize rho = log(s): the adjoint returns dL/ds, so Adam's
+                // moments must accumulate dL/drho = s * dL/ds. Scene storage
+                // remains in physical radii for rendering, splitting and PLY IO.
+                constexpr float minSurfelScale = 1.0e-6f;
+                constexpr float maxSurfelScale = 5.0f;
+                const float scaleX = clampValue(cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale, maxSurfelScale);
+                const float scaleY = clampValue(cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale, maxSurfelScale);
                 const float scaleUpdateX = adamUpdate(
-                    cleanGradient(scaleGradientX * cameraBatchScale),
+                    cleanGradient(scaleGradientX * cameraBatchScale * scaleX),
                     scaleM[primitiveIndex].x(),
                     scaleV[primitiveIndex].x(),
                     lrScale);
                 const float scaleUpdateY = adamUpdate(
-                    cleanGradient(scaleGradientY * cameraBatchScale),
+                    cleanGradient(scaleGradientY * cameraBatchScale * scaleY),
                     scaleM[primitiveIndex].y(),
                     scaleV[primitiveIndex].y(),
                     lrScale);
-                constexpr float minSurfelScale = 1.0e-6f;
-                point.scale.x() = clampValue(cleanParameter(point.scale.x(), minSurfelScale) - scaleUpdateX, minSurfelScale, 1.0f);
-                point.scale.y() = clampValue(cleanParameter(point.scale.y(), minSurfelScale) - scaleUpdateY, minSurfelScale, 1.0f);
+                if (lrScale != 0.0f) {
+                    const float minLogScale = sycl::log(minSurfelScale);
+                    const float maxLogScale = sycl::log(maxSurfelScale);
+                    point.scale.x() = clampValue(sycl::exp(clampValue(sycl::log(scaleX) - scaleUpdateX, minLogScale, maxLogScale)), minSurfelScale, maxSurfelScale);
+                    point.scale.y() = clampValue(sycl::exp(clampValue(sycl::log(scaleY) - scaleUpdateY, minLogScale, maxLogScale)), minSurfelScale, maxSurfelScale);
+                }
 
                 const float albedoUpdateX = adamUpdate(
                     cleanGradient(albedoGradient.x() * cameraBatchScale),

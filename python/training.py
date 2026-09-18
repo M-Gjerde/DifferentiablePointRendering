@@ -1144,15 +1144,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         keep_mask_np = np.ones(old_point_count_for_topology, dtype=bool)
                         device_adam_state_snapshot = None
 
-                        if densification_result is not None:
-                            protected_src = np.asarray(
-                                densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
-                                dtype=np.int64).reshape(-1)
-                            if protected_src.size > 0 and indices_to_remove_list:
-                                protected_set = set(int(i) for i in protected_src)
-                                indices_to_remove_list = [int(i) for i in indices_to_remove_list if
-                                                          int(i) not in protected_set]
-
                         n_new_for_topology = 0
                         if densification_result is not None:
                             new_block_for_topology = densification_result.get("new", None)
@@ -1917,15 +1908,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     old_optimizer_for_migration = optimizer
                     old_point_count_for_migration = int(positions.shape[0])
                     keep_mask_np = np.ones(old_point_count_for_migration, dtype=bool)
-
-                    if densification_result is not None:
-                        protected_src = np.asarray(
-                            densification_result.get("source_index", np.zeros((0,), dtype=np.int64)),
-                            dtype=np.int64).reshape(-1)
-                        if protected_src.size > 0 and indices_to_remove_list:
-                            protected_set = set(int(i) for i in protected_src)
-                            indices_to_remove_list = [int(i) for i in indices_to_remove_list if
-                                                      int(i) not in protected_set]
 
                     if densification_result is not None:
                         helpers.apply_densification_source_updates_inplace(densification_result, positions, rotations, scales,

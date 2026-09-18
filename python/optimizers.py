@@ -1,11 +1,81 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+import math
 
 import numpy as np
 import torch
 
 from config import OptimizationConfig
+
+
+class _LogScaleStepMixin:
+    """Optimize log radii while exposing physical radii between optimizer steps.
+
+    Rendering, manual adjoints, splitting and PLY files all use physical scales.
+    Only the group named ``scale`` is transformed; its optimizer state therefore
+    contains moments of dL/d(log s), including across topology rebuilds.
+    """
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        # Closures must see the same physical parameters as the renderer.
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        transformed = []
+        gradients = []
+        try:
+            for group in self.param_groups:
+                if group.get("name") != "scale":
+                    continue
+                for param in group["params"]:
+                    if param.grad is None:
+                        continue
+                    if param.grad.is_sparse:
+                        raise RuntimeError("Log-scale optimization requires dense gradients.")
+                    physical_gradient = param.grad
+                    gradients.append((param, physical_gradient))
+                    if group["lr"] == 0.0:
+                        param.grad = None
+                        continue
+                    # Keep these physical bounds aligned with the device optimizer
+                    # and render_hooks.verify_scales_inplace.
+                    physical = torch.nan_to_num(
+                        param, nan=1e-6, posinf=5.0, neginf=1e-6,
+                    ).clamp(1e-6, 5.0)
+                    original = param.detach().clone()
+                    log_scale = physical.log()
+                    param.grad = physical_gradient * physical
+                    param.copy_(log_scale)
+                    transformed.append((param, original, log_scale))
+
+            result = super().step()
+        finally:
+            for param, original, log_scale in transformed:
+                # Bound before exp to avoid overflow, then bound again to remove
+                # roundoff at the physical endpoints.
+                unchanged = param == log_scale
+                param.clamp_(math.log(1e-6), math.log(5.0)).exp_().clamp_(1e-6, 5.0)
+                # Preserve masked/frozen entries exactly (including zero radii
+                # on point lights), rather than introducing log/exp roundoff.
+                param.copy_(torch.where(unchanged, original, param))
+            for param, physical_gradient in gradients:
+                param.grad = physical_gradient
+
+        return loss if closure is not None else result
+
+
+class LogScaleAdam(_LogScaleStepMixin, torch.optim.Adam):
+    pass
+
+
+class LogScaleSGD(_LogScaleStepMixin, torch.optim.SGD):
+    pass
+
+
 class MaskedAdam(torch.optim.Optimizer):
     """
     Adam that supports per-surfel masked updates.
@@ -147,6 +217,10 @@ class MaskedAdam(torch.optim.Optimizer):
         return loss
 
 
+class LogScaleMaskedAdam(_LogScaleStepMixin, MaskedAdam):
+    pass
+
+
 def create_masked_optimizer(
     config: OptimizationConfig,
     positions: torch.nn.Parameter,
@@ -157,6 +231,10 @@ def create_masked_optimizer(
     betas: torch.nn.Parameter,
     powers: torch.nn.Parameter,
 ) -> torch.optim.Optimizer:
+    """Build an optimizer whose scale learning rate acts on log radii.
+
+    Callers supply physical radii and physical-radius gradients as before.
+    """
     opt_type = config.optimizer_type.lower()
 
     param_groups = [
@@ -170,11 +248,11 @@ def create_masked_optimizer(
     ]
 
     if opt_type == "sgd":
-        return torch.optim.SGD(param_groups, momentum=0.8)
+        return LogScaleSGD(param_groups, momentum=0.8)
     if opt_type == "adam":
-        return torch.optim.Adam(param_groups)
+        return LogScaleAdam(param_groups)
     if opt_type in ("masked_adam", "nullgrad_adam", "sparse_adam"):
-        return MaskedAdam(param_groups)
+        return LogScaleMaskedAdam(param_groups)
     raise ValueError(f"Unknown optimizer_type: {config.optimizer_type}")
 
 def make_constant_scale_func() -> Callable[[int], float]:
