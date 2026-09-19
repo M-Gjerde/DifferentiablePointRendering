@@ -2199,6 +2199,18 @@ def maybe_make_densification_result(
     ):
         return None
 
+    # Do not append children of low-opacity parents being pruned in this iteration.
+    opacity_prune_interval = int(config.prune_interval)
+    opacity_prune_after = int(config.prune_after) if config.prune_after >= 0 else opacity_prune_interval
+    if (
+            config.min_surfel_opacity > 0.0
+            and opacity_prune_interval > 0
+            and iteration >= opacity_prune_after
+            and iteration % opacity_prune_interval == 0
+    ):
+        opacity_prune_mask = compute_opacity_prune_mask(opacities, trainable_surfel_mask, config.min_surfel_opacity)
+        trainable_surfel_mask = trainable_surfel_mask.detach().reshape(-1).to(dtype=torch.bool) & ~opacity_prune_mask.to(device=trainable_surfel_mask.device)
+
     with torch.no_grad():
         (
             avg_density_grad_norm_np,
@@ -2503,23 +2515,48 @@ def maybe_make_densification_result(
         return densification_result
 
 
+@torch.no_grad()
+def compute_opacity_prune_mask(opacities: torch.Tensor, trainable_surfel_mask: torch.Tensor, threshold: float) -> torch.Tensor:
+    """Select trainable surfels with stored opacity strictly below the threshold."""
+    threshold = float(threshold)
+    if not np.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"Opacity prune threshold must be finite and in [0, 1], got {threshold}")
+    if opacities.ndim != 1 and not (opacities.ndim == 2 and opacities.shape[1] == 1):
+        raise ValueError(f"Expected opacities with shape (N,) or (N, 1), got {tuple(opacities.shape)}")
+    opacity_values = opacities.detach().reshape(-1)
+    trainable_mask = trainable_surfel_mask.detach().to(device=opacity_values.device, dtype=torch.bool).reshape(-1)
+    if trainable_mask.shape != opacity_values.shape:
+        raise ValueError(f"Opacity/mask shape mismatch: {tuple(opacity_values.shape)} vs {tuple(trainable_mask.shape)}")
+    if threshold == 0.0:
+        return torch.zeros_like(trainable_mask)
+    if bool(torch.any(trainable_mask & ~torch.isfinite(opacity_values)).item()):
+        raise ValueError("Opacity pruning requires finite opacities for trainable surfels")
+    return trainable_mask & (opacity_values < threshold)
+
+
 def maybe_make_prune_indices(
         iteration: int,
         config: OptimizationConfig,
         scales: torch.Tensor,
+        opacities: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
         prune_after: int,
         prune_interval: int,
-) -> tuple[np.ndarray, list[int]]:
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """Return area indices, opacity indices, and their deduplicated union."""
     if prune_interval <= 0 or iteration < prune_after or iteration % prune_interval != 0:
-        return np.zeros((0,), dtype=np.int64), []
-
+        return np.zeros((0,), dtype=np.int64), np.zeros((0,), dtype=np.int64), []
+    if scales.shape[0] != opacities.shape[0]:
+        raise ValueError(f"Scale/opacity point-count mismatch: {scales.shape[0]} vs {opacities.shape[0]}")
     scale_prune_indices = density.compute_prune_indices_by_degenerate_area(
         scales,
         min_area=config.min_surfel_area,
         trainable_mask=trainable_surfel_mask,
     )
-    return scale_prune_indices, scale_prune_indices.tolist()
+    opacity_prune_mask = compute_opacity_prune_mask(opacities, trainable_surfel_mask, config.min_surfel_opacity)
+    opacity_prune_indices = torch.nonzero(opacity_prune_mask, as_tuple=False).reshape(-1).cpu().numpy().astype(np.int64, copy=False)
+    indices_to_remove = np.union1d(scale_prune_indices, opacity_prune_indices).astype(np.int64, copy=False)
+    return scale_prune_indices, opacity_prune_indices, indices_to_remove.tolist()
 
 
 def save_iteration_outputs(

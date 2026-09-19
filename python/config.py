@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -43,7 +43,6 @@ class RendererSettingsConfig:
         })
         return settings
 
-
 @dataclass
 class OptimizationConfig:
     # Inputs and run location
@@ -65,13 +64,13 @@ class OptimizationConfig:
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.00006
+    learning_rate_position: float = 0.0001
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.004
-    learning_rate_albedo: float = 0.001
-    learning_rate_opacity: float = 0.001
-    learning_rate_beta: float = 0.001
+    learning_rate_scale: float = 0.005
+    learning_rate_albedo: float = 0.0005
+    learning_rate_opacity: float = 0.0005
+    learning_rate_beta: float = 0.0005
+
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
@@ -79,23 +78,24 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
+    position_lr_scale_init: float = 30.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 30_000
 
     # Objective: photometric loss
-    ssim_weight: float = 0.00
+    ssim_weight: float = 0.0
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
     depth_distort_weight: float = 0.0005
-    depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 1.0e-6
+    curvature_scale_weight: float = 0.0
+
     # Rendering model
     share_local_layer_direct_lighting: bool = True
 
@@ -107,7 +107,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 1000
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -131,27 +131,28 @@ class OptimizationConfig:
     densification_grad_abs_min: float = 3.0e-3
     densification_grad_abs_min_final: float = 3.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 10_000
+    densification_grad_abs_min_decay_end_iteration: int = 0
 
     # Densification: radiance balancing
     # Divide final selection thresholds by a bounded, median-relative brightness
     # weight. Applied after threshold selection; strength 0 disables the bias.
-    densification_radiance_bias_strength: float=  0.8
+    densification_radiance_bias_strength: float = 0.8
     densification_radiance_bias_min_weight: float = 0.25
     densification_radiance_bias_max_weight: float = 1.5
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 8.0e-5
+    min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
 
     # Densification: curvature trigger and clone/split policy
     # Minimum child semi-axis, in scene units (not area). The split selector
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.1
+    densification_split_scale_factor: float = 1.2
     densification_split_offset_scale: float = 0.3
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
-    densification_exact_clone_percent_dense: float = 0.00
+    densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
 
     # Pruning and topology maintenance
@@ -199,7 +200,6 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
     resume_iteration_offset: int = 0
-
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     learning_rate_fields = (
@@ -589,6 +589,11 @@ def parse_args() -> OptimizationConfig:
     _add_boolean_argument(densification_split, "--densification-verbose")
 
     pruning = parser.add_argument_group("pruning and topology maintenance")
+    pruning.add_argument(
+        "--min-surfel-opacity",
+        type=float,
+        help="Prune trainable surfels with stored opacity strictly below this threshold (default: 0.3); 0 disables opacity pruning.",
+    )
     _add_typed_fields(
         pruning,
         int,
@@ -675,6 +680,8 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
+    if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
+        parser.error("--min-surfel-opacity must be finite and in [0, 1]")
 
 
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:

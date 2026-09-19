@@ -574,6 +574,8 @@ def compute_iteration_gradients(
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
+    if not np.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
+        raise ValueError(f"min_surfel_opacity must be finite and in [0, 1], got {config.min_surfel_opacity}")
     target_images, training_camera_ids, all_camera_ids = helpers.load_target_images(
         renderer,
         Path(config.dataset_path),
@@ -1110,6 +1112,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     densification_result = None
                     scale_prune_indices = []
+                    opacity_prune_indices = []
                     indices_to_remove_list = []
                     inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                     prune_scale_area_points = 0
@@ -1133,8 +1136,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
 
                     if should_check_prune:
-                        scale_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
-                            iteration=global_iteration, config=config, scales=scales,
+                        scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
+                            iteration=global_iteration, config=config, scales=scales, opacities=opacities,
                             trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
                             prune_interval=prune_interval,
                         )
@@ -1191,6 +1194,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                         if indices_to_remove_list:
                             scale_prune_set = set(int(i) for i in scale_prune_indices)
+                            opacity_prune_set = set(int(i) for i in opacity_prune_indices)
                             indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                             inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
@@ -1202,6 +1206,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 print(
                                     f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                     f"scale={len(scale_prune_set)}, "
+                                    f"opacity={len(opacity_prune_set)} (opacity < {config.min_surfel_opacity:g}), "
                                     f"inactive_transport={len(inactive_cycle_prune_set)} "
                                     f"(threshold={inactive_transport_prune_cycles} cycles)"
                                 )
@@ -1868,6 +1873,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 densification_result = None
                 scale_prune_indices = []
+                opacity_prune_indices = []
                 indices_to_remove_list = []
                 inactive_camera_cycle_indices = np.zeros((0,), dtype=np.int64)
                 prune_scale_area_points = 0
@@ -1889,8 +1895,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         force_densification=True,
                     )
 
-                scale_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
-                    iteration=global_iteration, config=config, scales=scales,
+                scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(
+                    iteration=global_iteration, config=config, scales=scales, opacities=opacities,
                     trainable_surfel_mask=trainable_surfel_mask, prune_after=prune_after,
                     prune_interval=prune_interval,
                 )
@@ -1941,6 +1947,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     if indices_to_remove_list:
                         scale_prune_set = set(int(i) for i in scale_prune_indices)
+                        opacity_prune_set = set(int(i) for i in opacity_prune_indices)
                         indices_to_remove = np.unique(np.asarray(indices_to_remove_list, dtype=np.int64))
 
                         inactive_cycle_prune_set = set(int(index) for index in inactive_camera_cycle_indices)
@@ -1951,6 +1958,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             print(
                                 f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                 f"scale={len(scale_prune_set)}, "
+                                f"opacity={len(opacity_prune_set)} (opacity < {config.min_surfel_opacity:g}), "
                                 f"inactive_transport={len(inactive_cycle_prune_set)} "
                                 f"(threshold={inactive_transport_prune_cycles} cycles)"
                             )
