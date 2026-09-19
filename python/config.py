@@ -65,8 +65,8 @@ class OptimizationConfig:
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.00005
-    learning_rate_rotation: float = 0.01
+    learning_rate_position: float = 0.00008
+    learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.001
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0005
@@ -78,7 +78,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
+    position_lr_scale_init: float = 50.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 30_000
@@ -89,12 +89,12 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.1
+    depth_distort_weight: float = 0.05
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 5.0e-7
+    curvature_scale_weight: float = 0.0e-7
     # Rendering model
     share_local_layer_direct_lighting: bool = True
 
@@ -106,7 +106,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 800
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
