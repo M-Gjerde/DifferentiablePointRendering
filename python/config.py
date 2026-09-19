@@ -89,11 +89,11 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0001
+    depth_distort_weight: float = 0.0005
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
-    intra_slab_depth_weight: float = 1.0e-5
+    intra_slab_depth_weight: float = 1.0e-3
     curvature_scale_weight: float = 0.0e-7
     # Rendering model
     share_local_layer_direct_lighting: bool = True
