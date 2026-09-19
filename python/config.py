@@ -78,7 +78,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 30.0
+    position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 30_000
@@ -89,7 +89,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0005
+    depth_distort_weight: float = 0.00075
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
@@ -127,10 +127,10 @@ class OptimizationConfig:
 
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 1.0e-3
+    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 0
+    densification_grad_abs_min_decay_end_iteration: int = 30_000
 
     # Densification: radiance balancing
     # Divide final selection thresholds by a bounded, median-relative brightness
