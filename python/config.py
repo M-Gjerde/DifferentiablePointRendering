@@ -67,7 +67,7 @@ class OptimizationConfig:
     # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.0001
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.005
+    learning_rate_scale: float = 0.0075
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0005
     learning_rate_beta: float = 0.0005
@@ -89,7 +89,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.00075
+    depth_distort_weight: float = 0.001
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
@@ -128,9 +128,9 @@ class OptimizationConfig:
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
     densification_grad_abs_min: float = 5.0e-3
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 30_000
+    densification_grad_abs_min_decay_end_iteration: int = 10_000
 
     # Densification: radiance balancing
     # Divide final selection thresholds by a bounded, median-relative brightness
