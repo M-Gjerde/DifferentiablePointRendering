@@ -60,6 +60,7 @@ class OptimizationConfig:
     iterations: int = 50_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
+    skip_zero_gradient_surfels: bool = True
 
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
@@ -67,7 +68,7 @@ class OptimizationConfig:
     # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.0001
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0075
+    learning_rate_scale: float = 0.005
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0005
     learning_rate_beta: float = 0.0005
@@ -89,10 +90,10 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.00075
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.0025
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-7
     # Rendering model
@@ -147,7 +148,7 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.2
+    densification_split_scale_factor: float = 1.1
     densification_split_offset_scale: float = 0.3
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.00
@@ -156,7 +157,7 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     prune_interval: int = densification_interval
     prune_after: int = 0
-    inactive_transport_prune_cycles: int = 2
+    inactive_transport_prune_cycles: int = 1
     rebuild_bvh_interval: int = densification_interval
 
     # Mesh extraction and evaluation
@@ -414,6 +415,11 @@ def parse_args() -> OptimizationConfig:
         optimizer.add_argument(f"--lr-{suffix}", dest=f"learning_rate_{field_name}", type=float)
     _add_boolean_argument(optimizer, "--global-lr-decay", dest="use_global_lr_decay")
     _add_boolean_argument(optimizer, "--position-lr-decay", dest="use_position_lr_decay")
+    _add_boolean_argument(
+        optimizer,
+        "--skip-zero-gradient-surfels",
+        help="Device Adam: preserve a surfel and its moments when all enabled parameter gradients are zero; retain global bias correction.",
+    )
     _add_typed_fields(
         optimizer,
         float,

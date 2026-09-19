@@ -343,6 +343,7 @@ def make_device_training_step_options(
 ) -> dict[str, Any]:
     return {
         "optimizer": config.optimizer_type,
+        "skip_zero_gradient_surfels": bool(config.skip_zero_gradient_surfels),
         "learning_rate_position": active_learning_rates.get(
             "position",
             float(config.learning_rate_position),
@@ -774,8 +775,24 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     if str(config.optimizer_type).lower() != "adam":
         device_training_disabled_reasons.append("device path currently matches Adam only")
     use_device_training_step = use_device_training_step and not device_training_disabled_reasons
+    if config.skip_zero_gradient_surfels:
+        if not use_device_training_step:
+            raise RuntimeError(
+                "--skip-zero-gradient-surfels requires the device training path with "
+                "--optimizer adam; refusing to fall back to dense host Adam."
+            )
+        supports_skipping = getattr(renderer, "supports_zero_gradient_surfel_skipping", None)
+        if not callable(supports_skipping) or not supports_skipping():
+            raise RuntimeError(
+                "The loaded pale module does not support zero-gradient surfel skipping. "
+                "Rebuild and load the updated C++ binding."
+            )
     if use_device_training_step:
         print("[device-training-step] Enabled device-resident optimizer path.")
+        print(
+            f"[device-training-step] skip_zero_gradient_surfels={config.skip_zero_gradient_surfels}; "
+            "global Adam bias correction retained."
+        )
     elif config.use_device_training_step:
         print(
             "[device-training-step] Disabled: "

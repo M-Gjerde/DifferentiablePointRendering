@@ -46,48 +46,70 @@ import Pale.Scene;
 namespace py = pybind11;
 
 // replace your get_u64 with this
-static inline uint64_t get_u64(const py::dict &d, const char *k, uint64_t def) {
+static inline uint64_t get_u64(const py::dict& d, const char* k, uint64_t def)
+{
     if (!d.contains(k)) return def;
     py::int_ v = d[k];
-    try {
+    try
+    {
         // Coerce anything numeric (float, numpy scalar) via Python int()
         return py::int_(v).cast<uint64_t>();
-    } catch (const py::error_already_set &) {
+    }
+    catch (const py::error_already_set&)
+    {
         return def; // or throw if you prefer strict
     }
 }
 
-static inline int get_i(const py::dict &d, const char *k, int def) {
+static inline int get_i(const py::dict& d, const char* k, int def)
+{
     if (d.contains(k)) return py::cast<int>(d[k]);
     return def;
 }
 
-static inline bool get_b(const py::dict &d, const char *k, bool def) {
+static inline bool get_b(const py::dict& d, const char* k, bool def)
+{
     if (d.contains(k)) return py::cast<bool>(d[k]);
     return def;
 }
 
-static inline float get_f(const py::dict &d, const char *k, float def) {
+static inline float get_f(const py::dict& d, const char* k, float def)
+{
     if (d.contains(k)) return py::cast<float>(d[k]);
     return def;
 }
 
-static inline std::string get_s(const py::dict &d, const char *k, const std::string &def) {
+static inline std::string get_s(const py::dict& d, const char* k, const std::string& def)
+{
     if (d.contains(k)) return py::cast<std::string>(d[k]);
     return def;
 }
 
-static inline glm::quat normalizeQuaternionOrIdentity(glm::quat q) {
+static inline glm::quat normalizeQuaternionOrIdentity(glm::quat q)
+{
     const bool finite = std::isfinite(q.w) && std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z);
     const float lengthSquared = q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z;
     if (!finite || lengthSquared <= 1.0e-20f) return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
     const float invLength = 1.0f / std::sqrt(lengthSquared);
-    q.w *= invLength; q.x *= invLength; q.y *= invLength; q.z *= invLength;
-    if (q.w < 0.0f) { q.w = -q.w; q.x = -q.x; q.y = -q.y; q.z = -q.z; }
+    q.w *= invLength;
+    q.x *= invLength;
+    q.y *= invLength;
+    q.z *= invLength;
+    if (q.w < 0.0f)
+    {
+        q.w = -q.w;
+        q.x = -q.x;
+        q.y = -q.y;
+        q.z = -q.z;
+    }
     return q;
 }
-static inline float glmLengthSquared(const glm::vec3 &v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
-static inline void frameFromQuaternion(const glm::quat &inputQuaternion, Pale::float3 &tangentUOut, Pale::float3 &tangentVOut) {
+
+static inline float glmLengthSquared(const glm::vec3& v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
+
+static inline void frameFromQuaternion(const glm::quat& inputQuaternion, Pale::float3& tangentUOut,
+                                       Pale::float3& tangentVOut)
+{
     const glm::quat q = normalizeQuaternionOrIdentity(inputQuaternion);
     const glm::mat3 rotation = glm::mat3_cast(q);
     glm::vec3 tangentU = glm::vec3(rotation[0]);
@@ -95,8 +117,11 @@ static inline void frameFromQuaternion(const glm::quat &inputQuaternion, Pale::f
     if (glmLengthSquared(tangentU) <= 1.0e-20f) tangentU = glm::vec3(1.0f, 0.0f, 0.0f);
     tangentU = glm::normalize(tangentU);
     tangentV -= glm::dot(tangentV, tangentU) * tangentU;
-    if (glmLengthSquared(tangentV) <= 1.0e-20f) {
-        const glm::vec3 fallback = std::abs(tangentU.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
+    if (glmLengthSquared(tangentV) <= 1.0e-20f)
+    {
+        const glm::vec3 fallback = std::abs(tangentU.y) < 0.9f
+                                       ? glm::vec3(0.0f, 1.0f, 0.0f)
+                                       : glm::vec3(1.0f, 0.0f, 0.0f);
         tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
     }
     tangentV = glm::normalize(tangentV);
@@ -104,22 +129,25 @@ static inline void frameFromQuaternion(const glm::quat &inputQuaternion, Pale::f
     tangentVOut = tangentV;
 }
 
-static inline glm::quat quaternionFromFrame(const Pale::float3 &tangentUIn,
-                                            const Pale::float3 &tangentVIn) {
+static inline glm::quat quaternionFromFrame(const Pale::float3& tangentUIn,
+                                            const Pale::float3& tangentVIn)
+{
     glm::vec3 tangentU(tangentUIn.x(), tangentUIn.y(), tangentUIn.z());
     glm::vec3 tangentV(tangentVIn.x(), tangentVIn.y(), tangentVIn.z());
 
-    if (glmLengthSquared(tangentU) <= 1.0e-20f) {
+    if (glmLengthSquared(tangentU) <= 1.0e-20f)
+    {
         tangentU = glm::vec3(1.0f, 0.0f, 0.0f);
     }
     tangentU = glm::normalize(tangentU);
 
     tangentV -= glm::dot(tangentV, tangentU) * tangentU;
-    if (glmLengthSquared(tangentV) <= 1.0e-20f) {
+    if (glmLengthSquared(tangentV) <= 1.0e-20f)
+    {
         const glm::vec3 fallback =
-                std::abs(tangentU.y) < 0.9f
-                    ? glm::vec3(0.0f, 1.0f, 0.0f)
-                    : glm::vec3(1.0f, 0.0f, 0.0f);
+            std::abs(tangentU.y) < 0.9f
+                ? glm::vec3(0.0f, 1.0f, 0.0f)
+                : glm::vec3(1.0f, 0.0f, 0.0f);
         tangentV = fallback - glm::dot(fallback, tangentU) * tangentU;
     }
     tangentV = glm::normalize(tangentV);
@@ -134,18 +162,21 @@ static inline glm::quat quaternionFromFrame(const Pale::float3 &tangentUIn,
 }
 
 
-class PythonRenderer {
-    struct TrainingTargetDevice {
+class PythonRenderer
+{
+    struct TrainingTargetDevice
+    {
         std::string cameraName;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
-        Pale::float4 *rgba = nullptr;
-        Pale::float4 *relativeDensificationAdjoint = nullptr;
+        Pale::float4* rgba = nullptr;
+        Pale::float4* relativeDensificationAdjoint = nullptr;
         // [combined RGB objective, half-MSE, DSSIM].
-        float *loss = nullptr;
+        float* loss = nullptr;
     };
 
-    struct RgbLossOptions {
+    struct RgbLossOptions
+    {
         float ssimWeight = 0.0f;
         int ssimWindowSize = 11;
         float ssimSigma = 1.5f;
@@ -154,23 +185,27 @@ class PythonRenderer {
         float densificationRadianceFloor = 0.01f;
     };
 
-    struct RgbSsimScratch {
+    struct RgbSsimScratch
+    {
         std::size_t pixelCapacity = 0;
-        Pale::float4 *renderedMean = nullptr;
-        Pale::float4 *targetMean = nullptr;
-        Pale::float4 *derivativeMean = nullptr;
-        Pale::float4 *derivativeVariance = nullptr;
-        Pale::float4 *derivativeCovariance = nullptr;
+        Pale::float4* renderedMean = nullptr;
+        Pale::float4* targetMean = nullptr;
+        Pale::float4* derivativeMean = nullptr;
+        Pale::float4* derivativeVariance = nullptr;
+        Pale::float4* derivativeCovariance = nullptr;
     };
 
-    struct SurfaceRegularizerScratch {
+    struct SurfaceRegularizerScratch
+    {
         std::size_t cameraCapacity = 0;
-        float *sums = nullptr;
-        std::uint32_t *counts = nullptr;
+        float* sums = nullptr;
+        std::uint32_t* counts = nullptr;
     };
 
-    struct DeviceTrainingStepOptions {
+    struct DeviceTrainingStepOptions
+    {
         std::string optimizer = "adam";
+        bool skipZeroGradientSurfels = false;
         float learningRatePosition = 0.0f;
         float learningRateRotation = 0.0f;
         float learningRateScale = 0.0f;
@@ -184,39 +219,43 @@ class PythonRenderer {
         float maxRotationStepRadians = 0.01f;
     };
 
-    struct DeviceAdamState {
+    struct DeviceAdamState
+    {
         std::size_t pointCount = 0;
         std::uint32_t step = 0;
 
-        Pale::float3 *positionM = nullptr;
-        Pale::float3 *positionV = nullptr;
-        Pale::float3 *rotationM = nullptr;
-        Pale::float3 *rotationV = nullptr;
-        Pale::float2 *scaleM = nullptr;
-        Pale::float2 *scaleV = nullptr;
-        Pale::float3 *albedoM = nullptr;
-        Pale::float3 *albedoV = nullptr;
-        float *opacityM = nullptr;
-        float *opacityV = nullptr;
-        float *betaM = nullptr;
-        float *betaV = nullptr;
+        Pale::float3* positionM = nullptr;
+        Pale::float3* positionV = nullptr;
+        Pale::float3* rotationM = nullptr;
+        Pale::float3* rotationV = nullptr;
+        Pale::float2* scaleM = nullptr;
+        Pale::float2* scaleV = nullptr;
+        Pale::float3* albedoM = nullptr;
+        Pale::float3* albedoV = nullptr;
+        float* opacityM = nullptr;
+        float* opacityV = nullptr;
+        float* betaM = nullptr;
+        float* betaV = nullptr;
     };
 
-    struct SelectedTrainingBatch {
+    struct SelectedTrainingBatch
+    {
         std::vector<Pale::SensorGPU> sensors;
         std::vector<Pale::DebugImages> debugImages;
-        std::vector<TrainingTargetDevice *> targets;
+        std::vector<TrainingTargetDevice*> targets;
     };
 
 public:
-    PythonRenderer(const std::string &assetRootDir,
-                   const std::string &sceneXml,
-                   const std::string &pointCloudFile,
-                   const py::dict &settingsDict // <-- accept dict
-    ) {
+    PythonRenderer(const std::string& assetRootDir,
+                   const std::string& sceneXml,
+                   const std::string& pointCloudFile,
+                   const py::dict& settingsDict // <-- accept dict
+    )
+    {
         std::filesystem::current_path(assetRootDir);
         int level = 2;
-        if (!settingsDict.is_none()) {
+        if (!settingsDict.is_none())
+        {
             // use integer types consistent with your struct
             level = (get_i(settingsDict, "logging", 2));
         }
@@ -264,92 +303,101 @@ public:
         // Example mappings based on your dict:
         //   "photons": 1e6, "bounces": 6, "gather_passes": 6,
         //   "adjoint_bounces": 1, "adjoint_passes": 6
-        if (!settingsDict.is_none()) {
+        if (!settingsDict.is_none())
+        {
             // use integer types consistent with your struct
             m_settings.photonsPerLaunch = get_u64(settingsDict, "photons", m_settings.photonsPerLaunch);
             m_settings.maxBounces = get_i(settingsDict, "bounces", m_settings.maxBounces);
             m_settings.numForwardPasses = get_i(settingsDict, "forward_passes", m_settings.numForwardPasses);
             m_settings.numShadowRays = get_i(settingsDict, "primal_shadow_rays", m_settings.numShadowRays);
-            m_settings.numAdjointShadowRays = get_i(settingsDict, "adjoint_shadow_rays", m_settings.numAdjointShadowRays);
+            m_settings.numAdjointShadowRays = get_i(settingsDict, "adjoint_shadow_rays",
+                                                    m_settings.numAdjointShadowRays);
             m_settings.maxAdjointBounces = get_i(settingsDict, "adjoint_bounces", m_settings.maxAdjointBounces);
-            m_settings.adjointSamplesPerPixel = get_i(settingsDict, "adjoint_passes", m_settings.adjointSamplesPerPixel);
+            m_settings.adjointSamplesPerPixel =
+                get_i(settingsDict, "adjoint_passes", m_settings.adjointSamplesPerPixel);
             m_settings.random.seed = get_i(settingsDict, "seed", m_settings.random.seed);
             m_settings.renderDebugGradientImages =
-                    get_b(settingsDict, "debug_images", m_settings.renderDebugGradientImages);
+                get_b(settingsDict, "debug_images", m_settings.renderDebugGradientImages);
             m_settings.enableAdjointDirectLight =
-                    get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
+                get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
             m_settings.numAdjointPathShadowRays =
-                    get_i(settingsDict, "adjoint_shadow_path_rays", m_settings.numAdjointPathShadowRays);
+                get_i(settingsDict, "adjoint_shadow_path_rays", m_settings.numAdjointPathShadowRays);
             m_settings.sampling.qNull =
-                    get_f(settingsDict, "adjoint_q_null", m_settings.sampling.qNull);
+                get_f(settingsDict, "adjoint_q_null", m_settings.sampling.qNull);
             m_settings.sampling.qReflect =
-                    get_f(settingsDict, "adjoint_q_reflect", m_settings.sampling.qReflect);
+                get_f(settingsDict, "adjoint_q_reflect", m_settings.sampling.qReflect);
             m_settings.depthDistortionWeight =
-                    get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
+                get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
             m_settings.depthDistortionWorldSpace =
-                    get_b(settingsDict, "depth_distort_world_space", m_settings.depthDistortionWorldSpace);
+                get_b(settingsDict, "depth_distort_world_space", m_settings.depthDistortionWorldSpace);
             m_settings.normalConsistencyWeight =
-                    get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
+                get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
             m_settings.normalFromDepthUseMeanDepth =
-                    get_b(settingsDict, "normal_from_depth_use_mean_depth", m_settings.normalFromDepthUseMeanDepth);
+                get_b(settingsDict, "normal_from_depth_use_mean_depth", m_settings.normalFromDepthUseMeanDepth);
 
             m_settings.intraSlabDepthRegularizerWeight =
-                    get_f(settingsDict,
-                          "intra_slab_depth_weight",
-                          m_settings.intraSlabDepthRegularizerWeight);
+                get_f(settingsDict,
+                      "intra_slab_depth_weight",
+                      m_settings.intraSlabDepthRegularizerWeight);
             m_settings.curvatureScaleRegularizerWeight =
-                    get_f(settingsDict,
-                          "curvature_scale_weight",
-                          m_settings.curvatureScaleRegularizerWeight);
+                get_f(settingsDict,
+                      "curvature_scale_weight",
+                      m_settings.curvatureScaleRegularizerWeight);
             m_settings.computeCurvatureDiagnostics =
-                    get_b(settingsDict, "compute_curvature_diagnostics", false);
+                get_b(settingsDict, "compute_curvature_diagnostics", false);
             m_settings.rendererDebugShareLocalLayerDirectLighting =
-                    get_b(settingsDict,
-                          "share_local_layer_direct_lighting",
-                          m_settings.rendererDebugShareLocalLayerDirectLighting);
+                get_b(settingsDict,
+                      "share_local_layer_direct_lighting",
+                      m_settings.rendererDebugShareLocalLayerDirectLighting);
             parallelBvhRefit = get_b(settingsDict, "parallel_bvh_refit", true);
             curvatureDensificationEnabled =
-                    get_b(settingsDict, "enable_curvature_densification", false);
+                get_b(settingsDict, "enable_curvature_densification", false);
             primalActivityTrackingEnabled =
-                    get_b(settingsDict, "enable_primal_activity_tracking", false);
+                get_b(settingsDict, "enable_primal_activity_tracking", false);
             // Finite-difference/debug controls. Exposing these through the
             // regular settings dictionary lets tests exercise both the batched
             // and scalar intersection paths with identical scene data.
             m_settings.rendererDebugLocalLayerDepthEpsilon =
-                    get_f(settingsDict,
-                          "local_layer_depth_epsilon",
-                          m_settings.rendererDebugLocalLayerDepthEpsilon);
-            if (settingsDict.contains("local_layer_depth_mode")) {
+                get_f(settingsDict,
+                      "local_layer_depth_epsilon",
+                      m_settings.rendererDebugLocalLayerDepthEpsilon);
+            if (settingsDict.contains("local_layer_depth_mode"))
+            {
                 const std::string mode = settingsDict["local_layer_depth_mode"].cast<std::string>();
-                if (mode == "normal_distance") {
+                if (mode == "normal_distance")
+                {
                     m_settings.rendererDebugLocalLayerDepthMode = Pale::LocalLayerDepthMode::NormalDistance;
-                } else if (mode == "symmetric_ray_depth") {
+                }
+                else if (mode == "symmetric_ray_depth")
+                {
                     m_settings.rendererDebugLocalLayerDepthMode = Pale::LocalLayerDepthMode::SymmetricRayDepth;
-                } else {
+                }
+                else
+                {
                     throw std::invalid_argument(
                         "local_layer_depth_mode must be 'normal_distance' or 'symmetric_ray_depth'");
                 }
             }
             m_settings.rendererDebugLocalLayerNormalCosineThreshold =
-                    get_f(settingsDict,
-                          "local_layer_normal_cosine_threshold",
-                          m_settings.rendererDebugLocalLayerNormalCosineThreshold);
+                get_f(settingsDict,
+                      "local_layer_normal_cosine_threshold",
+                      m_settings.rendererDebugLocalLayerNormalCosineThreshold);
             m_settings.rendererDebugMaxSplatEventsPerRay =
-                    get_i(settingsDict,
-                          "max_splat_events_per_ray",
-                          m_settings.rendererDebugMaxSplatEventsPerRay);
+                get_i(settingsDict,
+                      "max_splat_events_per_ray",
+                      m_settings.rendererDebugMaxSplatEventsPerRay);
             m_settings.rendererDebugMaxLocalSurfelHits =
-                    get_i(settingsDict,
-                          "max_local_surfel_hits",
-                          m_settings.rendererDebugMaxLocalSurfelHits);
+                get_i(settingsDict,
+                      "max_local_surfel_hits",
+                      m_settings.rendererDebugMaxLocalSurfelHits);
             m_settings.rendererDebugPointHitBatchSize =
-                    get_i(settingsDict,
-                          "point_hit_batch_size",
-                          m_settings.rendererDebugPointHitBatchSize);
+                get_i(settingsDict,
+                      "point_hit_batch_size",
+                      m_settings.rendererDebugPointHitBatchSize);
             m_settings.rendererDebugPointHitBatchLookahead =
-                    get_b(settingsDict,
-                          "point_hit_batch_lookahead",
-                          m_settings.rendererDebugPointHitBatchLookahead);
+                get_b(settingsDict,
+                      "point_hit_batch_lookahead",
+                      m_settings.rendererDebugPointHitBatchLookahead);
             // add other keys as needed, e.g., samplesPerPixel, exposure, etc.
         }
 
@@ -360,27 +408,35 @@ public:
         const bool previewRayDepth = get_b(settingsDict, "preview_intra_slab_ray_depth", false);
         const bool previewCurvature = get_b(settingsDict, "preview_surface_curvature", false);
         if (previewCurvature) m_settings.computeCurvatureDiagnostics = true;
-        if (previewRayDepth || previewCurvature) {
+        if (previewRayDepth || previewCurvature)
+        {
             auto queue = deviceSelector->getQueue();
-            try {
-                for (auto &sensor : sensorsForward) {
+            try
+            {
+                for (auto& sensor : sensorsForward)
+                {
                     const size_t pixelCount = static_cast<size_t>(sensor.width) * sensor.height;
-                    if (previewRayDepth) {
+                    if (previewRayDepth)
+                    {
                         sensor.intraSlabRayDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
                         if (!sensor.intraSlabRayDepthBuffer) throw std::bad_alloc();
                         queue.fill(sensor.intraSlabRayDepthBuffer, 0.0f, pixelCount);
                     }
-                    if (previewCurvature) {
+                    if (previewCurvature)
+                    {
                         sensor.surfaceCurvatureBuffer = sycl::malloc_device<float>(pixelCount, queue);
                         if (!sensor.surfaceCurvatureBuffer) throw std::bad_alloc();
                         queue.fill(sensor.surfaceCurvatureBuffer,
-                            std::numeric_limits<float>::quiet_NaN(), pixelCount);
+                                   std::numeric_limits<float>::quiet_NaN(), pixelCount);
                     }
                 }
                 queue.wait();
-            } catch (...) {
+            }
+            catch (...)
+            {
                 queue.wait();
-                for (auto &sensor : sensorsForward) {
+                for (auto& sensor : sensorsForward)
+                {
                     if (sensor.intraSlabRayDepthBuffer) sycl::free(sensor.intraSlabRayDepthBuffer, queue);
                     sensor.intraSlabRayDepthBuffer = nullptr;
                     if (sensor.surfaceCurvatureBuffer) sycl::free(sensor.surfaceCurvatureBuffer, queue);
@@ -394,11 +450,13 @@ public:
 
         debugImages.resize(sensorsForward.size());
         // Backward buffers are allocated on first use, including after a topology change.
-        if (curvatureDensificationEnabled) {
+        if (curvatureDensificationEnabled)
+        {
             curvatureDensificationStats = Pale::makeCurvatureDensificationStatsForScene(
                 deviceSelector->getQueue(), buildProducts);
         }
-        if (primalActivityTrackingEnabled) {
+        if (primalActivityTrackingEnabled)
+        {
             primalActivityStats = Pale::makePrimalActivityStatsForScene(
                 deviceSelector->getQueue(), buildProducts);
         }
@@ -431,8 +489,9 @@ public:
         Pale::Log::PA_INFO("  Point-hit batch size      : {}", m_settings.rendererDebugPointHitBatchSize);
         Pale::Log::PA_INFO("  Point-hit lookahead       : {}", m_settings.rendererDebugPointHitBatchLookahead);
         Pale::Log::PA_INFO("=== Sensors (Forward) ===");
-        for (size_t i = 0; i < sensorsForward.size(); ++i) {
-            const auto &s = sensorsForward[i];
+        for (size_t i = 0; i < sensorsForward.size(); ++i)
+        {
+            const auto& s = sensorsForward[i];
 
             Pale::Log::PA_INFO("  --- Sensor {} ---", i);
             Pale::Log::PA_INFO("      Name                : {}", s.name);
@@ -456,8 +515,10 @@ public:
             primalActivityTrackingEnabled ? &primalActivityStats : nullptr);
     }
 
-    ~PythonRenderer() {
-        if (deviceSelector) {
+    ~PythonRenderer()
+    {
+        if (deviceSelector)
+        {
             auto queue = deviceSelector->getQueue();
             queue.wait();
             pathTracer.reset();
@@ -482,19 +543,24 @@ public:
             Pale::SceneUpload::freeBuffers(sceneGpu, queue);
         }
 
-        if (assetManager) {
+        if (assetManager)
+        {
             assetManager->registry().save("asset_registry.yaml");
         }
     }
 
-    py::dict get_backward_allocation_stats() const {
+    py::dict get_backward_allocation_stats() const
+    {
         py::dict gradientBytes;
-        auto addGradients = [&](const char *name, const Pale::PointGradients &g) {
-            const size_t perPointBytes = g.gradPosition ?
-                4u * sizeof(Pale::float3) + sizeof(Pale::float2) +
-                7u * sizeof(float) + sizeof(uint32_t) : 0u;
-            const size_t perCameraBytes = g.gradPositionPerPrimitivePerCamera ?
-                2u * sizeof(Pale::float3) + 2u * sizeof(uint32_t) + sizeof(float) : 0u;
+        auto addGradients = [&](const char* name, const Pale::PointGradients& g)
+        {
+            const size_t perPointBytes = g.gradPosition
+                                             ? 4u * sizeof(Pale::float3) + sizeof(Pale::float2) +
+                                             7u * sizeof(float) + sizeof(uint32_t)
+                                             : 0u;
+            const size_t perCameraBytes = g.gradPositionPerPrimitivePerCamera
+                                              ? 2u * sizeof(Pale::float3) + 2u * sizeof(uint32_t) + sizeof(float)
+                                              : 0u;
             gradientBytes[name] = g.numPoints * (perPointBytes + g.cameraSlotCount * perCameraBytes);
         };
         addGradients("rgb", gradients);
@@ -504,15 +570,16 @@ public:
         addGradients("curvature_scale", curvatureScaleGradients);
         addGradients("densification", densificationGradients);
         size_t sensorBytes = 0u;
-        for (const auto &sensor : sensorsForward) {
+        for (const auto& sensor : sensorsForward)
+        {
             const size_t pixelCount = static_cast<size_t>(sensor.width) * sensor.height;
             sensorBytes += pixelCount * (
                 sizeof(float) * (static_cast<size_t>(sensor.depthDistortionAdjointBuffer != nullptr) +
-                                 static_cast<size_t>(sensor.intraSlabDepthAdjointBuffer != nullptr) +
-                                 static_cast<size_t>(sensor.curvatureScaleAdjointBuffer != nullptr) +
-                                 static_cast<size_t>(sensor.medianDepthAdjointBuffer != nullptr)) +
+                    static_cast<size_t>(sensor.intraSlabDepthAdjointBuffer != nullptr) +
+                    static_cast<size_t>(sensor.curvatureScaleAdjointBuffer != nullptr) +
+                    static_cast<size_t>(sensor.medianDepthAdjointBuffer != nullptr)) +
                 sizeof(Pale::float4) * (static_cast<size_t>(sensor.visibleNormalAdjointBuffer != nullptr) +
-                                       static_cast<size_t>(sensor.normalFromDepthAdjointBuffer != nullptr)));
+                    static_cast<size_t>(sensor.normalFromDepthAdjointBuffer != nullptr)));
         }
         py::dict result;
         result["ray_queue_capacity"] = pathTracer->rayQueueCapacity();
@@ -520,26 +587,29 @@ public:
         result["gradient_bytes"] = std::move(gradientBytes);
         result["sensor_adjoint_bytes"] = sensorBytes;
         size_t debugBytes = 0u;
-        for (const auto &debug : debugImages) {
+        for (const auto& debug : debugImages)
+        {
             debugBytes += debug.numPixels * (11u * sizeof(float) + 3u * sizeof(Pale::float4));
         }
         result["debug_image_bytes"] = debugBytes;
         return result;
     }
 
-    py::dict render_forward(std::string cameraName) {
+    py::dict render_forward(std::string cameraName)
+    {
         py::gil_scoped_release release;
 
         std::vector<Pale::SensorGPU> selectedSensors =
             selectSensorsByName(cameraName.empty()
-                ? std::optional<std::string>{}
-                : std::optional<std::string>{cameraName});
+                                    ? std::optional<std::string>{}
+                                    : std::optional<std::string>{cameraName});
 
         pathTracer->renderForward(selectedSensors);
 
         auto queue = deviceSelector->getQueue();
 
-        struct HostImage {
+        struct HostImage
+        {
             std::string cameraName;
             std::uint32_t imageWidth;
             std::uint32_t imageHeight;
@@ -564,58 +634,61 @@ public:
         std::vector<HostImage> hostImages;
         hostImages.reserve(selectedSensors.size());
 
-        for (const auto &sensor: selectedSensors) {
+        for (const auto& sensor : selectedSensors)
+        {
             HostImage hostImage;
 
             hostImage.cameraName =
-                    std::string(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
+                std::string(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
             hostImage.imageWidth = sensor.width;
             hostImage.imageHeight = sensor.height;
 
             const std::size_t pixelCount =
-                    static_cast<std::size_t>(hostImage.imageWidth) *
-                    static_cast<std::size_t>(hostImage.imageHeight);
+                static_cast<std::size_t>(hostImage.imageWidth) *
+                static_cast<std::size_t>(hostImage.imageHeight);
 
             hostImage.imageData = Pale::downloadSensorLDR(queue, sensor);
             hostImage.imageDataRAW = Pale::downloadSensorRGBARAW(queue, sensor);
 
             hostImage.depthDistortionData =
-                    Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
+                Pale::downloadFloatBuffer(queue, sensor.depthDistortionBuffer, pixelCount);
 
             hostImage.intraSlabDepthData =
-                    Pale::downloadFloatBuffer(queue, sensor.intraSlabDepthBuffer, pixelCount);
-            if (sensor.surfaceCurvatureBuffer) {
+                Pale::downloadFloatBuffer(queue, sensor.intraSlabDepthBuffer, pixelCount);
+            if (sensor.surfaceCurvatureBuffer)
+            {
                 hostImage.surfaceCurvatureData =
-                        Pale::downloadFloatBuffer(queue, sensor.surfaceCurvatureBuffer, pixelCount);
+                    Pale::downloadFloatBuffer(queue, sensor.surfaceCurvatureBuffer, pixelCount);
             }
-            if (sensor.intraSlabRayDepthBuffer) {
+            if (sensor.intraSlabRayDepthBuffer)
+            {
                 hostImage.intraSlabRayDepthData =
-                        Pale::downloadFloatBuffer(queue, sensor.intraSlabRayDepthBuffer, pixelCount);
+                    Pale::downloadFloatBuffer(queue, sensor.intraSlabRayDepthBuffer, pixelCount);
             }
             hostImage.intraSlabDepthActiveSlabCountData =
-                    Pale::downloadUint32Buffer(
-                        queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
+                Pale::downloadUint32Buffer(
+                    queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
             hostImage.curvatureScaleData =
-                    Pale::downloadFloatBuffer(queue, sensor.curvatureScaleBuffer, pixelCount);
+                Pale::downloadFloatBuffer(queue, sensor.curvatureScaleBuffer, pixelCount);
             hostImage.curvatureScaleActiveSlabCountData =
-                    Pale::downloadUint32Buffer(
-                        queue, sensor.curvatureScaleActiveSlabCountBuffer, pixelCount);
+                Pale::downloadUint32Buffer(
+                    queue, sensor.curvatureScaleActiveSlabCountBuffer, pixelCount);
 
             hostImage.medianDepthData =
-                    Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
+                Pale::downloadFloatBuffer(queue, sensor.medianDepthBuffer, pixelCount);
 
             hostImage.meanDepthData =
-                    Pale::downloadFloatBuffer(queue, sensor.meanDepthBuffer, pixelCount);
+                Pale::downloadFloatBuffer(queue, sensor.meanDepthBuffer, pixelCount);
 
             hostImage.medianWorldPositionData =
-                    Pale::downloadFloat4Buffer(queue, sensor.medianWorldPositionBuffer, pixelCount);
+                Pale::downloadFloat4Buffer(queue, sensor.medianWorldPositionBuffer, pixelCount);
 
             hostImage.visibleNormalData =
-                    Pale::downloadFloat4Buffer(queue, sensor.visibleNormalBuffer, pixelCount);
+                Pale::downloadFloat4Buffer(queue, sensor.visibleNormalBuffer, pixelCount);
 
             hostImage.normalFromDepthData =
-                    Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
+                Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
 
 
             hostImages.push_back(std::move(hostImage));
@@ -625,7 +698,8 @@ public:
 
         py::dict result;
 
-        for (auto &hostImage: hostImages) {
+        for (auto& hostImage : hostImages)
+        {
             const std::uint32_t imageWidth = hostImage.imageWidth;
             const std::uint32_t imageHeight = hostImage.imageHeight;
 
@@ -651,33 +725,38 @@ public:
                 static_cast<ssize_t>(sizeof(float))
             };
 
-            auto makeRGBAArray = [&](std::vector<float> &buffer) -> py::array_t<float> {
-                auto *ownedBuffer = new std::vector<float>(std::move(buffer));
+            auto makeRGBAArray = [&](std::vector<float>& buffer) -> py::array_t<float>
+            {
+                auto* ownedBuffer = new std::vector<float>(std::move(buffer));
                 return py::array_t<float>(
                     rgbaShape,
                     rgbaStrides,
                     ownedBuffer->data(),
-                    py::capsule(ownedBuffer, [](void *ptr) {
-                        delete static_cast<std::vector<float> *>(ptr);
+                    py::capsule(ownedBuffer, [](void* ptr)
+                    {
+                        delete static_cast<std::vector<float>*>(ptr);
                     })
                 );
             };
 
-            auto makeScalarArray = [&](std::vector<float> &buffer) -> py::array_t<float> {
-                auto *ownedBuffer = new std::vector<float>(std::move(buffer));
+            auto makeScalarArray = [&](std::vector<float>& buffer) -> py::array_t<float>
+            {
+                auto* ownedBuffer = new std::vector<float>(std::move(buffer));
                 return py::array_t<float>(
                     scalarShape,
                     scalarStrides,
                     ownedBuffer->data(),
-                    py::capsule(ownedBuffer, [](void *ptr) {
-                        delete static_cast<std::vector<float> *>(ptr);
+                    py::capsule(ownedBuffer, [](void* ptr)
+                    {
+                        delete static_cast<std::vector<float>*>(ptr);
                     })
                 );
             };
 
-            auto makeUintScalarArray = [&](std::vector<std::uint32_t> &buffer)
-                    -> py::array_t<std::uint32_t> {
-                auto *ownedBuffer = new std::vector<std::uint32_t>(std::move(buffer));
+            auto makeUintScalarArray = [&](std::vector<std::uint32_t>& buffer)
+                -> py::array_t<std::uint32_t>
+            {
+                auto* ownedBuffer = new std::vector<std::uint32_t>(std::move(buffer));
                 std::vector<ssize_t> uintScalarStrides{
                     static_cast<ssize_t>(imageWidth * sizeof(std::uint32_t)),
                     static_cast<ssize_t>(sizeof(std::uint32_t))
@@ -686,8 +765,9 @@ public:
                     scalarShape,
                     uintScalarStrides,
                     ownedBuffer->data(),
-                    py::capsule(ownedBuffer, [](void *ptr) {
-                        delete static_cast<std::vector<std::uint32_t> *>(ptr);
+                    py::capsule(ownedBuffer, [](void* ptr)
+                    {
+                        delete static_cast<std::vector<std::uint32_t>*>(ptr);
                     })
                 );
             };
@@ -697,37 +777,39 @@ public:
             cameraResult[py::str("raw")] = makeRGBAArray(hostImage.imageDataRAW);
 
             cameraResult[py::str("depth_distortion")] =
-                    makeScalarArray(hostImage.depthDistortionData);
+                makeScalarArray(hostImage.depthDistortionData);
 
             cameraResult[py::str("intra_slab_depth")] =
-                    makeScalarArray(hostImage.intraSlabDepthData);
-            if (!hostImage.surfaceCurvatureData.empty()) {
+                makeScalarArray(hostImage.intraSlabDepthData);
+            if (!hostImage.surfaceCurvatureData.empty())
+            {
                 cameraResult[py::str("surface_curvature")] =
-                        makeScalarArray(hostImage.surfaceCurvatureData);
+                    makeScalarArray(hostImage.surfaceCurvatureData);
             }
-            if (!hostImage.intraSlabRayDepthData.empty()) {
+            if (!hostImage.intraSlabRayDepthData.empty())
+            {
                 cameraResult[py::str("intra_slab_ray_depth_preview")] =
-                        makeScalarArray(hostImage.intraSlabRayDepthData);
+                    makeScalarArray(hostImage.intraSlabRayDepthData);
             }
             cameraResult[py::str("intra_slab_depth_active_slab_count")] =
-                    makeUintScalarArray(hostImage.intraSlabDepthActiveSlabCountData);
+                makeUintScalarArray(hostImage.intraSlabDepthActiveSlabCountData);
             cameraResult[py::str("curvature_scale")] =
-                    makeScalarArray(hostImage.curvatureScaleData);
+                makeScalarArray(hostImage.curvatureScaleData);
             cameraResult[py::str("curvature_scale_active_slab_count")] =
-                    makeUintScalarArray(hostImage.curvatureScaleActiveSlabCountData);
+                makeUintScalarArray(hostImage.curvatureScaleActiveSlabCountData);
 
             cameraResult[py::str("median_depth")] =
-                    makeScalarArray(hostImage.medianDepthData);
+                makeScalarArray(hostImage.medianDepthData);
             cameraResult[py::str("mean_depth")] =
-                    makeScalarArray(hostImage.meanDepthData);
+                makeScalarArray(hostImage.meanDepthData);
             cameraResult[py::str("median_world_position")] =
-                    makeRGBAArray(hostImage.medianWorldPositionData);
+                makeRGBAArray(hostImage.medianWorldPositionData);
 
             cameraResult[py::str("visible_normal")] =
-                    makeRGBAArray(hostImage.visibleNormalData);
+                makeRGBAArray(hostImage.visibleNormalData);
 
             cameraResult[py::str("normal_from_depth")] =
-                    makeRGBAArray(hostImage.normalFromDepthData);
+                makeRGBAArray(hostImage.normalFromDepthData);
 
             result[py::str(hostImage.cameraName)] = std::move(cameraResult);
         }
@@ -735,23 +817,28 @@ public:
         return result;
     }
 
-    void upload_training_targets(const py::dict &targetImagesDictionary) {
+    void upload_training_targets(const py::dict& targetImagesDictionary)
+    {
         auto syclQueue = deviceSelector->getQueue();
 
-        for (const auto &sensor: sensorsForward) {
+        for (const auto& sensor : sensorsForward)
+        {
             const std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
-            if (!targetImagesDictionary.contains(py::str(cameraName))) {
+            if (!targetImagesDictionary.contains(py::str(cameraName)))
+            {
                 continue;
             }
 
             py::array targetRgbArray = targetImagesDictionary[py::str(cameraName)].cast<py::array>();
             py::buffer_info bufferInfo = targetRgbArray.request();
-            if (bufferInfo.ndim != 3 || bufferInfo.shape[2] != 3) {
+            if (bufferInfo.ndim != 3 || bufferInfo.shape[2] != 3)
+            {
                 throw std::runtime_error(
                     "upload_training_targets: target image for camera '" + cameraName +
                     "' must be HxWx3 float32");
             }
-            if (bufferInfo.itemsize != sizeof(float)) {
+            if (bufferInfo.itemsize != sizeof(float))
+            {
                 throw std::runtime_error(
                     "upload_training_targets: target image for camera '" + cameraName +
                     "' must have dtype float32");
@@ -759,7 +846,8 @@ public:
 
             const std::uint32_t height = static_cast<std::uint32_t>(bufferInfo.shape[0]);
             const std::uint32_t width = static_cast<std::uint32_t>(bufferInfo.shape[1]);
-            if (width != sensor.width || height != sensor.height) {
+            if (width != sensor.width || height != sensor.height)
+            {
                 throw std::runtime_error(
                     "upload_training_targets: resolution mismatch for camera '" + cameraName +
                     "': target image is " + std::to_string(width) + "x" + std::to_string(height) +
@@ -767,10 +855,11 @@ public:
                     std::to_string(sensor.height));
             }
 
-            const auto *rgbPointer = static_cast<const float *>(bufferInfo.ptr);
+            const auto* rgbPointer = static_cast<const float*>(bufferInfo.ptr);
             const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
             std::vector<Pale::float4> targetRgba(pixelCount);
-            for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
+            for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex)
+            {
                 const std::size_t rgbIndex = pixelIndex * 3u;
                 targetRgba[pixelIndex] = Pale::float4{
                     rgbPointer[rgbIndex + 0u],
@@ -780,7 +869,7 @@ public:
                 };
             }
 
-            TrainingTargetDevice &target = trainingTargets[cameraName];
+            TrainingTargetDevice& target = trainingTargets[cameraName];
             ensureTrainingTargetCapacity(target, cameraName, width, height, syclQueue);
             // targetRgba owns the upload source and is destroyed each iteration.
             // Complete the asynchronous copy while that host storage is alive.
@@ -793,21 +882,23 @@ public:
         syclQueue.wait_and_throw();
     }
 
-    py::tuple render_rgb_loss_backward(const py::list &cameraNamesList,
-                                       const py::dict &optionsDictionary = py::dict()) {
+    py::tuple render_rgb_loss_backward(const py::list& cameraNamesList,
+                                       const py::dict& optionsDictionary = py::dict())
+    {
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
         ensureDebugImages();
 
         SelectedTrainingBatch selectedBatch =
-                selectTrainingBatch(cameraNamesList, "render_rgb_loss_backward");
+            selectTrainingBatch(cameraNamesList, "render_rgb_loss_backward");
         const RgbLossOptions rgbLossOptions = parseRgbLossOptions(optionsDictionary);
 
         {
             py::gil_scoped_release release;
             pathTracer->renderForward(selectedBatch.sensors);
 
-            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
+            {
                 launchRgbLossAdjointKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
@@ -826,7 +917,8 @@ public:
         py::dict lossValues;
         py::dict l2LossValues;
         py::dict dssimLossValues;
-        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
+        {
             std::array<float, 3> lossComponents{};
             syclQueue.memcpy(
                 lossComponents.data(),
@@ -849,25 +941,27 @@ public:
         return py::make_tuple(makeGradientDictionary(gradients), adjointImages);
     }
 
-    py::dict render_rgb_training_step(const py::list &cameraNamesList,
-                                      const py::dict &optionsDictionary = py::dict()) {
+    py::dict render_rgb_training_step(const py::list& cameraNamesList,
+                                      const py::dict& optionsDictionary = py::dict())
+    {
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
         ensureDebugImages();
 
         SelectedTrainingBatch selectedBatch =
-                selectTrainingBatch(cameraNamesList, "render_rgb_training_step");
+            selectTrainingBatch(cameraNamesList, "render_rgb_training_step");
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
         const RgbLossOptions rgbLossOptions = parseRgbLossOptions(optionsDictionary);
         const bool returnGradientStats =
-                get_b(optionsDictionary, "return_gradient_stats", false);
+            get_b(optionsDictionary, "return_gradient_stats", false);
 
         {
             py::gil_scoped_release release;
 
             pathTracer->renderForward(selectedBatch.sensors);
 
-            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
+            {
                 launchRgbLossAdjointKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
@@ -893,7 +987,8 @@ public:
         py::dict lossValues;
         py::dict l2LossValues;
         py::dict dssimLossValues;
-        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
+        {
             std::array<float, 3> lossComponents{};
             syclQueue.memcpy(
                 lossComponents.data(),
@@ -913,28 +1008,31 @@ public:
         result["dssim_loss_values"] = std::move(dssimLossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        if (returnGradientStats) {
+        if (returnGradientStats)
+        {
             result["gradient_stats"] = makeGradientStatsDictionary(gradients);
         }
         return result;
     }
 
-    py::dict render_rgb_backward_from_current_forward(const py::list &cameraNamesList,
-                                                      const py::dict &optionsDictionary = py::dict()) {
+    py::dict render_rgb_backward_from_current_forward(const py::list& cameraNamesList,
+                                                      const py::dict& optionsDictionary = py::dict())
+    {
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
         ensureDebugImages();
 
         SelectedTrainingBatch selectedBatch =
-                selectTrainingBatch(cameraNamesList, "render_rgb_backward_from_current_forward");
+            selectTrainingBatch(cameraNamesList, "render_rgb_backward_from_current_forward");
         const RgbLossOptions rgbLossOptions = parseRgbLossOptions(optionsDictionary);
         const bool returnGradientStats =
-                get_b(optionsDictionary, "return_gradient_stats", false);
+            get_b(optionsDictionary, "return_gradient_stats", false);
 
         {
             py::gil_scoped_release release;
 
-            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+            for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
+            {
                 launchRgbLossAdjointKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
@@ -953,7 +1051,8 @@ public:
         py::dict lossValues;
         py::dict l2LossValues;
         py::dict dssimLossValues;
-        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex) {
+        for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
+        {
             std::array<float, 3> lossComponents{};
             syclQueue.memcpy(
                 lossComponents.data(),
@@ -972,23 +1071,25 @@ public:
         result["l2_loss_values"] = std::move(l2LossValues);
         result["dssim_loss_values"] = std::move(dssimLossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
-        if (returnGradientStats) {
+        if (returnGradientStats)
+        {
             result["gradient_stats"] = makeGradientStatsDictionary(gradients);
         }
         return result;
     }
 
-    py::dict apply_device_training_step(const py::dict &optionsDictionary = py::dict()) {
+    py::dict apply_device_training_step(const py::dict& optionsDictionary = py::dict())
+    {
         auto syclQueue = deviceSelector->getQueue();
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
         const bool includeDepthDistortion =
-                get_b(optionsDictionary, "include_depth_distortion", false);
+            get_b(optionsDictionary, "include_depth_distortion", false);
         const bool includeNormalConsistency =
-                get_b(optionsDictionary, "include_normal_consistency", false);
+            get_b(optionsDictionary, "include_normal_consistency", false);
         const bool includeIntraSlabDepth =
-                get_b(optionsDictionary, "include_intra_slab_depth", false);
+            get_b(optionsDictionary, "include_intra_slab_depth", false);
         const bool includeCurvatureScale =
-                get_b(optionsDictionary, "include_curvature_scale", false);
+            get_b(optionsDictionary, "include_curvature_scale", false);
 
         ensureGradientBuffers(gradients);
         if (includeDepthDistortion) ensureGradientBuffers(depthDistortionGradients);
@@ -996,14 +1097,14 @@ public:
         if (includeIntraSlabDepth) ensureGradientBuffers(intraSlabDepthGradients);
         if (includeCurvatureScale) ensureGradientBuffers(curvatureScaleGradients);
 
-        const Pale::PointGradients *depthGradients =
-                includeDepthDistortion ? &depthDistortionGradients : nullptr;
-        const Pale::PointGradients *normalGradients =
-                includeNormalConsistency ? &normalConsistencyGradients : nullptr;
-        const Pale::PointGradients *intraSlabGradients =
-                includeIntraSlabDepth ? &intraSlabDepthGradients : nullptr;
-        const Pale::PointGradients *curvatureGradients =
-                includeCurvatureScale ? &curvatureScaleGradients : nullptr;
+        const Pale::PointGradients* depthGradients =
+            includeDepthDistortion ? &depthDistortionGradients : nullptr;
+        const Pale::PointGradients* normalGradients =
+            includeNormalConsistency ? &normalConsistencyGradients : nullptr;
+        const Pale::PointGradients* intraSlabGradients =
+            includeIntraSlabDepth ? &intraSlabDepthGradients : nullptr;
+        const Pale::PointGradients* curvatureGradients =
+            includeCurvatureScale ? &curvatureScaleGradients : nullptr;
 
         {
             py::gil_scoped_release release;
@@ -1028,29 +1129,30 @@ public:
     }
 
     py::dict render_forward_surface_regularizer_loss_and_adjoint(
-        const py::list &cameraNamesList,
-        const py::dict &optionsDictionary = py::dict()) {
+        const py::list& cameraNamesList,
+        const py::dict& optionsDictionary = py::dict())
+    {
         auto syclQueue = deviceSelector->getQueue();
         SelectedTrainingBatch selectedBatch =
-                selectTrainingBatch(cameraNamesList, "render_forward_surface_regularizer_loss_and_adjoint");
+            selectTrainingBatch(cameraNamesList, "render_forward_surface_regularizer_loss_and_adjoint");
         ensureSensorAdjoints(selectedBatch.sensors);
 
         const bool useDepthDistortion =
-                get_b(optionsDictionary, "use_depth_distortion", false);
+            get_b(optionsDictionary, "use_depth_distortion", false);
         const bool useNormalConsistency =
-                get_b(optionsDictionary, "use_normal_consistency", false);
+            get_b(optionsDictionary, "use_normal_consistency", false);
         const bool useIntraSlabDepth =
-                get_b(optionsDictionary, "use_intra_slab_depth", false);
+            get_b(optionsDictionary, "use_intra_slab_depth", false);
         const bool useCurvatureScale =
-                get_b(optionsDictionary, "use_curvature_scale", false);
+            get_b(optionsDictionary, "use_curvature_scale", false);
         const float depthDistortionWeight =
-                get_f(optionsDictionary, "depth_distortion_weight", 0.0f);
+            get_f(optionsDictionary, "depth_distortion_weight", 0.0f);
         const float normalConsistencyWeight =
-                get_f(optionsDictionary, "normal_consistency_weight", 0.0f);
+            get_f(optionsDictionary, "normal_consistency_weight", 0.0f);
         const float intraSlabDepthWeight =
-                get_f(optionsDictionary, "intra_slab_depth_weight", 0.0f);
+            get_f(optionsDictionary, "intra_slab_depth_weight", 0.0f);
         const float curvatureScaleWeight =
-                get_f(optionsDictionary, "curvature_scale_weight", 0.0f);
+            get_f(optionsDictionary, "curvature_scale_weight", 0.0f);
 
         const std::size_t cameraCount = selectedBatch.sensors.size();
         std::vector<float> depthDistortionSums(cameraCount, 0.0f);
@@ -1061,14 +1163,15 @@ public:
         std::vector<std::uint32_t> intraSlabDepthActiveSlabCounts(cameraCount, 0u);
         std::vector<std::uint32_t> curvatureScaleActiveSlabCounts(cameraCount, 0u);
 
-        try {
+        try
+        {
             py::gil_scoped_release release;
 
             m_settings.depthDistortionWeight = depthDistortionWeight;
             m_settings.normalConsistencyWeight = normalConsistencyWeight;
             m_settings.intraSlabDepthRegularizerWeight = intraSlabDepthWeight;
             m_settings.curvatureScaleRegularizerWeight = curvatureScaleWeight;
-            auto &pathSettings = pathTracer->getSettings();
+            auto& pathSettings = pathTracer->getSettings();
             pathSettings.depthDistortionWeight = depthDistortionWeight;
             pathSettings.normalConsistencyWeight = normalConsistencyWeight;
             pathSettings.intraSlabDepthRegularizerWeight = intraSlabDepthWeight;
@@ -1078,13 +1181,13 @@ public:
 
             ensureSurfaceRegularizerScratchCapacity(cameraCount, syclQueue);
             const std::size_t capacity = surfaceRegularizerScratch.cameraCapacity;
-            float *depthDistortionSumsDevice = surfaceRegularizerScratch.sums;
-            float *normalConsistencySumsDevice = depthDistortionSumsDevice + capacity;
-            float *intraSlabDepthSumsDevice = normalConsistencySumsDevice + capacity;
-            float *curvatureScaleSumsDevice = intraSlabDepthSumsDevice + capacity;
-            std::uint32_t *normalConsistencyValidCountsDevice = surfaceRegularizerScratch.counts;
-            std::uint32_t *intraSlabDepthActiveSlabCountsDevice = normalConsistencyValidCountsDevice + capacity;
-            std::uint32_t *curvatureScaleActiveSlabCountsDevice = intraSlabDepthActiveSlabCountsDevice + capacity;
+            float* depthDistortionSumsDevice = surfaceRegularizerScratch.sums;
+            float* normalConsistencySumsDevice = depthDistortionSumsDevice + capacity;
+            float* intraSlabDepthSumsDevice = normalConsistencySumsDevice + capacity;
+            float* curvatureScaleSumsDevice = intraSlabDepthSumsDevice + capacity;
+            std::uint32_t* normalConsistencyValidCountsDevice = surfaceRegularizerScratch.counts;
+            std::uint32_t* intraSlabDepthActiveSlabCountsDevice = normalConsistencyValidCountsDevice + capacity;
+            std::uint32_t* curvatureScaleActiveSlabCountsDevice = intraSlabDepthActiveSlabCountsDevice + capacity;
 
             syclQueue.fill(depthDistortionSumsDevice, 0.0f, cameraCount);
             syclQueue.fill(normalConsistencySumsDevice, 0.0f, cameraCount);
@@ -1094,7 +1197,8 @@ public:
             syclQueue.fill(intraSlabDepthActiveSlabCountsDevice, 0u, cameraCount);
             syclQueue.fill(curvatureScaleActiveSlabCountsDevice, 0u, cameraCount);
 
-            for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
+            for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex)
+            {
                 launchSurfaceRegularizerLossAccumulationKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
@@ -1141,7 +1245,8 @@ public:
                 cameraCount * sizeof(std::uint32_t));
             syclQueue.wait_and_throw();
 
-            for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
+            for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex)
+            {
                 launchSurfaceRegularizerAdjointFillKernel(
                     syclQueue,
                     selectedBatch.sensors[cameraIndex],
@@ -1158,7 +1263,9 @@ public:
                     useCurvatureScale);
             }
             syclQueue.wait_and_throw();
-        } catch (...) {
+        }
+        catch (...)
+        {
             // Finish any downloads before the local host vectors are destroyed.
             syclQueue.wait();
             throw;
@@ -1182,15 +1289,16 @@ public:
         float totalCurvatureScaleRaw = 0.0f;
         float totalCurvatureScaleWeighted = 0.0f;
 
-        for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex) {
-            const Pale::SensorGPU &sensor = selectedBatch.sensors[cameraIndex];
+        for (std::size_t cameraIndex = 0; cameraIndex < cameraCount; ++cameraIndex)
+        {
+            const Pale::SensorGPU& sensor = selectedBatch.sensors[cameraIndex];
             const std::string cameraName(
                 sensor.name,
                 strnlen(sensor.name, sizeof(sensor.name)));
             const float pixelCount =
-                    std::max(1.0f, static_cast<float>(sensor.width) * static_cast<float>(sensor.height));
+                std::max(1.0f, static_cast<float>(sensor.width) * static_cast<float>(sensor.height));
             const float validNormalCount =
-                    std::max(1.0f, static_cast<float>(normalConsistencyValidCounts[cameraIndex]));
+                std::max(1.0f, static_cast<float>(normalConsistencyValidCounts[cameraIndex]));
 
             const float depthRaw = useDepthDistortion
                                        ? depthDistortionSums[cameraIndex] / pixelCount
@@ -1207,12 +1315,12 @@ public:
                 1.0f,
                 static_cast<float>(curvatureScaleActiveSlabCounts[cameraIndex]));
             const float intraSlabDepthRaw = useIntraSlabDepth
-                ? intraSlabDepthSums[cameraIndex] / activeIntraSlabCount
-                : 0.0f;
+                                                ? intraSlabDepthSums[cameraIndex] / activeIntraSlabCount
+                                                : 0.0f;
             const float intraSlabDepthWeighted = intraSlabDepthRaw * intraSlabDepthWeight;
             const float curvatureScaleRaw = useCurvatureScale
-                ? curvatureScaleSums[cameraIndex] / activeCurvatureSlabCount
-                : 0.0f;
+                                                ? curvatureScaleSums[cameraIndex] / activeCurvatureSlabCount
+                                                : 0.0f;
             const float curvatureScaleWeighted = curvatureScaleRaw * curvatureScaleWeight;
 
             py::dict cameraLossValues = makeZeroLossValuesDictionary();
@@ -1255,12 +1363,13 @@ public:
     }
 
     py::dict render_surface_regularizers_backward_from_current_adjoint(
-        const py::list &cameraNamesList,
-        bool returnGradients = false) {
+        const py::list& cameraNamesList,
+        bool returnGradients = false)
+    {
         ensureSurfaceGradientBuffers();
         ensureDebugImages();
         SelectedTrainingBatch selectedBatch =
-                selectTrainingBatch(cameraNamesList, "render_surface_regularizers_backward_from_current_adjoint");
+            selectTrainingBatch(cameraNamesList, "render_surface_regularizers_backward_from_current_adjoint");
         ensureSensorAdjoints(selectedBatch.sensors);
 
         {
@@ -1274,7 +1383,8 @@ public:
                 selectedBatch.debugImages.data());
         }
 
-        if (!returnGradients) {
+        if (!returnGradients)
+        {
             return py::dict{};
         }
 
@@ -1287,7 +1397,8 @@ public:
     }
 
 
-    py::tuple render_backward(const py::dict &targetImagesDictionary) {
+    py::tuple render_backward(const py::dict& targetImagesDictionary)
+    {
         using std::int64_t;
         using std::size_t;
 
@@ -1295,7 +1406,8 @@ public:
         ensureGradientBuffers(gradients);
         ensureDebugImages();
 
-        struct HostAdjointImage {
+        struct HostAdjointImage
+        {
             std::string cameraName;
             std::uint32_t imageWidth{};
             std::uint32_t imageHeight{};
@@ -1307,34 +1419,39 @@ public:
         std::vector<HostAdjointImage> hostAdjointImages;
 
         // Map cameraName -> RGBA target buffer (HxWx4 float)
-        std::unordered_map<std::string, std::vector<float> > targetRgbaPerCamera;
+        std::unordered_map<std::string, std::vector<float>> targetRgbaPerCamera;
 
         // 1. WITH GIL: read Python dict, convert to RGBA buffers
         // ------------------------------------------------------------
-        for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex) {
-            const auto &sensor = sensorsForward[sensorIndex];
+        for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex)
+        {
+            const auto& sensor = sensorsForward[sensorIndex];
 
-            if (!sensor.camera.useForAdjointPass) {
+            if (!sensor.camera.useForAdjointPass)
+            {
                 continue;
             }
 
             std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
-            if (!targetImagesDictionary.contains(py::str(cameraName))) {
+            if (!targetImagesDictionary.contains(py::str(cameraName)))
+            {
                 continue;
             }
 
             py::array targetRgbArray =
-                    targetImagesDictionary[py::str(cameraName)].cast<py::array>();
+                targetImagesDictionary[py::str(cameraName)].cast<py::array>();
 
             py::buffer_info bufferInfo = targetRgbArray.request();
-            if (bufferInfo.ndim != 3 || bufferInfo.shape[2] != 3) {
+            if (bufferInfo.ndim != 3 || bufferInfo.shape[2] != 3)
+            {
                 throw std::runtime_error(
                     "render_backward: target image for camera '" + cameraName +
                     "' must be HxWx3 float32"
                 );
             }
-            if (bufferInfo.itemsize != sizeof(float)) {
+            if (bufferInfo.itemsize != sizeof(float))
+            {
                 throw std::runtime_error(
                     "render_backward: target image for camera '" + cameraName +
                     "' must have dtype float32"
@@ -1345,7 +1462,8 @@ public:
             const int64_t width = static_cast<int64_t>(bufferInfo.shape[1]);
 
             if (static_cast<std::uint32_t>(width) != sensor.width ||
-                static_cast<std::uint32_t>(height) != sensor.height) {
+                static_cast<std::uint32_t>(height) != sensor.height)
+            {
                 throw std::runtime_error(
                     "render_backward: resolution mismatch for camera '" +
                     cameraName + "': target image is " + std::to_string(width) +
@@ -1355,7 +1473,7 @@ public:
                 );
             }
 
-            const auto *rgbPointer = static_cast<const float *>(bufferInfo.ptr);
+            const auto* rgbPointer = static_cast<const float*>(bufferInfo.ptr);
 
             std::vector<float> rgbaTarget;
             rgbaTarget.resize(
@@ -1363,12 +1481,14 @@ public:
                 static_cast<size_t>(width) * 4u
             );
 
-            for (int64_t pixelY = 0; pixelY < height; ++pixelY) {
-                for (int64_t pixelX = 0; pixelX < width; ++pixelX) {
+            for (int64_t pixelY = 0; pixelY < height; ++pixelY)
+            {
+                for (int64_t pixelX = 0; pixelX < width; ++pixelX)
+                {
                     const size_t rgbIndex =
-                            static_cast<size_t>((pixelY * width + pixelX) * 3);
+                        static_cast<size_t>((pixelY * width + pixelX) * 3);
                     const size_t rgbaIndex =
-                            static_cast<size_t>((pixelY * width + pixelX) * 4);
+                        static_cast<size_t>((pixelY * width + pixelX) * 4);
 
                     rgbaTarget[rgbaIndex + 0] = rgbPointer[rgbIndex + 0];
                     rgbaTarget[rgbaIndex + 1] = rgbPointer[rgbIndex + 1];
@@ -1388,13 +1508,15 @@ public:
         py::gil_scoped_release release;
 
         // 2a. Upload RGBA targets per sensor
-        for (auto &sensor: availableAdjointSensors) {
+        for (auto& sensor : availableAdjointSensors)
+        {
             std::string cameraName(
                 sensor.name,
                 strnlen(sensor.name, sizeof(sensor.name))
             );
             auto it = targetRgbaPerCamera.find(cameraName);
-            if (it == targetRgbaPerCamera.end()) {
+            if (it == targetRgbaPerCamera.end())
+            {
                 continue; // should not happen given checks above
             }
             uploadSensorRGBA(syclQueue, sensor, it->second);
@@ -1432,22 +1554,26 @@ public:
         std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<float> cloneRadianceRmsSumPerPrimitivePerCameraHost(primitiveCameraCount);
 
-        if (pointCount > 0) {
-            if (gradients.gradPosition) {
+        if (pointCount > 0)
+        {
+            if (gradients.gradPosition)
+            {
                 syclQueue.memcpy(
                     gradPositionHost.data(),
                     gradients.gradPosition,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.cloneSignal) {
+            if (gradients.cloneSignal)
+            {
                 syclQueue.memcpy(
                     cloneSignalHost.data(),
                     gradients.cloneSignal,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradRotation) {
+            if (gradients.gradRotation)
+            {
                 syclQueue.memcpy(
                     gradRotationHost.data(),
                     gradients.gradRotation,
@@ -1455,35 +1581,40 @@ public:
                 );
             }
 
-            if (gradients.gradScale) {
+            if (gradients.gradScale)
+            {
                 syclQueue.memcpy(
                     gradScaleHost.data(),
                     gradients.gradScale,
                     pointCount * sizeof(Pale::float2)
                 );
             }
-            if (gradients.gradAlbedo) {
+            if (gradients.gradAlbedo)
+            {
                 syclQueue.memcpy(
                     gradColorHost.data(),
                     gradients.gradAlbedo,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradOpacity) {
+            if (gradients.gradOpacity)
+            {
                 syclQueue.memcpy(
                     gradOpacityHost.data(),
                     gradients.gradOpacity,
                     pointCount * sizeof(float)
                 );
             }
-            if (gradients.gradBeta) {
+            if (gradients.gradBeta)
+            {
                 syclQueue.memcpy(
                     gradBetaHost.data(),
                     gradients.gradBeta,
                     pointCount * sizeof(float)
                 );
             }
-            if (gradients.gradShape) {
+            if (gradients.gradShape)
+            {
                 syclQueue.memcpy(
                     gradShapeHost.data(),
                     gradients.gradShape,
@@ -1491,35 +1622,40 @@ public:
                 );
             }
 
-            if (gradients.cloneSignalMeanNorm) {
+            if (gradients.cloneSignalMeanNorm)
+            {
                 syclQueue.memcpy(
                     cloneSignalMeanNormHost.data(),
                     gradients.cloneSignalMeanNorm,
                     pointCount * sizeof(float));
             }
 
-            if (gradients.cloneSignalStd) {
+            if (gradients.cloneSignalStd)
+            {
                 syclQueue.memcpy(
                     cloneSignalStdHost.data(),
                     gradients.cloneSignalStd,
                     pointCount * sizeof(float));
             }
 
-            if (gradients.cloneSignalCoherence) {
+            if (gradients.cloneSignalCoherence)
+            {
                 syclQueue.memcpy(
                     cloneSignalCoherenceHost.data(),
                     gradients.cloneSignalCoherence,
                     pointCount * sizeof(float));
             }
 
-            if (gradients.cloneSignalDisagreement) {
+            if (gradients.cloneSignalDisagreement)
+            {
                 syclQueue.memcpy(
                     cloneSignalDisagreementHost.data(),
                     gradients.cloneSignalDisagreement,
                     pointCount * sizeof(float));
             }
 
-            if (gradients.cloneSignalActiveCameraCount) {
+            if (gradients.cloneSignalActiveCameraCount)
+            {
                 syclQueue.memcpy(
                     cloneSignalActiveCameraCountHost.data(),
                     gradients.cloneSignalActiveCameraCount,
@@ -1527,7 +1663,8 @@ public:
             }
 
             if (primitiveCameraCount > 0 &&
-                gradients.gradPositionPerPrimitivePerCamera) {
+                gradients.gradPositionPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(
                     gradPositionPerPrimitivePerCameraHost.data(),
                     gradients.gradPositionPerPrimitivePerCamera,
@@ -1535,7 +1672,8 @@ public:
             }
 
             if (primitiveCameraCount > 0 &&
-                gradients.gradPositionRecordCountPerPrimitivePerCamera) {
+                gradients.gradPositionRecordCountPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(
                     gradPositionRecordCountPerPrimitivePerCameraHost.data(),
                     gradients.gradPositionRecordCountPerPrimitivePerCamera,
@@ -1543,7 +1681,8 @@ public:
             }
 
             if (primitiveCameraCount > 0 &&
-                gradients.cloneSignalPerPrimitivePerCamera) {
+                gradients.cloneSignalPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(
                     cloneSignalPerPrimitivePerCameraHost.data(),
                     gradients.cloneSignalPerPrimitivePerCamera,
@@ -1551,14 +1690,16 @@ public:
             }
 
             if (primitiveCameraCount > 0 &&
-                gradients.cloneSignalRecordCountPerPrimitivePerCamera) {
+                gradients.cloneSignalRecordCountPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(
                     cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
                     gradients.cloneSignalRecordCountPerPrimitivePerCamera,
                     primitiveCameraCount * sizeof(uint32_t));
             }
             if (primitiveCameraCount > 0 &&
-                gradients.cloneRadianceRmsSumPerPrimitivePerCamera) {
+                gradients.cloneRadianceRmsSumPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(
                     cloneRadianceRmsSumPerPrimitivePerCameraHost.data(),
                     gradients.cloneRadianceRmsSumPerPrimitivePerCamera,
@@ -1569,7 +1710,8 @@ public:
         }
 
         // 2c. Download adjoint images per sensor
-        for (auto &sensor: availableAdjointSensors) {
+        for (auto& sensor : availableAdjointSensors)
+        {
             HostAdjointImage hostImage;
             hostImage.cameraName = std::string(
                 sensor.name,
@@ -1578,7 +1720,7 @@ public:
             hostImage.imageWidth = sensor.width;
             hostImage.imageHeight = sensor.height;
             hostImage.imageRgbaData =
-                    Pale::downloadSensorRGBARAW(syclQueue, sensor);
+                Pale::downloadSensorRGBARAW(syclQueue, sensor);
 
             hostAdjointImages.push_back(std::move(hostImage));
         }
@@ -1589,8 +1731,9 @@ public:
         py::gil_scoped_acquire gilAcquire;
 
         auto makeFloat3Array =
-                [](std::vector<Pale::float3> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            [](std::vector<Pale::float3>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(elementCount),
                 3
@@ -1609,15 +1752,17 @@ public:
                     arrayShape,
                     arrayStrides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
                 })
             );
         };
 
         auto makeFloat2Array =
-                [](std::vector<Pale::float2> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+            [](std::vector<Pale::float2>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(elementCount),
                 2
@@ -1636,15 +1781,17 @@ public:
                     arrayShape,
                     arrayStrides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float2>*>(pointer);
                 })
             );
         };
 
         auto makeFloat1Array =
-                [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(elementCount)
             };
@@ -1661,15 +1808,17 @@ public:
                     arrayShape,
                     arrayStrides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 })
             );
         };
 
         auto makeUint1Array =
-                [](std::vector<uint32_t> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+            [](std::vector<uint32_t>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<uint32_t>(std::move(hostVector));
 
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(elementCount)
@@ -1688,17 +1837,19 @@ public:
                     arrayShape,
                     arrayStrides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<uint32_t>*>(pointer);
                 })
             );
         };
 
         auto makeFloat3CameraArray =
-                [](std::vector<Pale::float3> &hostVector,
-                   std::size_t pointCount,
-                   std::size_t cameraSlotCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            [](std::vector<Pale::float3>& hostVector,
+               std::size_t pointCount,
+               std::size_t cameraSlotCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
 
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(pointCount),
@@ -1721,17 +1872,19 @@ public:
                     arrayShape,
                     arrayStrides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
                 })
             );
         };
 
         auto makeUintCameraArray =
-                [](std::vector<uint32_t> &hostVector,
-                   std::size_t pointCount,
-                   std::size_t cameraSlotCount) -> py::array {
-            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+            [](std::vector<uint32_t>& hostVector,
+               std::size_t pointCount,
+               std::size_t cameraSlotCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<uint32_t>(std::move(hostVector));
 
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(pointCount),
@@ -1752,17 +1905,19 @@ public:
                     arrayShape,
                     arrayStrides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<uint32_t>*>(pointer);
                 })
             );
         };
 
         auto makeFloatCameraArray =
-                [](std::vector<float> &hostVector,
-                   std::size_t pointCount,
-                   std::size_t cameraSlotCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            [](std::vector<float>& hostVector,
+               std::size_t pointCount,
+               std::size_t cameraSlotCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(pointCount),
                 static_cast<ssize_t>(cameraSlotCount)
@@ -1776,8 +1931,9 @@ public:
                     ownedVector->data(), sizeof(float),
                     py::format_descriptor<float>::format(), 2,
                     arrayShape, arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 })
             );
         };
@@ -1797,11 +1953,12 @@ public:
         py::dict adjointImagesDictionary;
 
         auto makeRgbaImageArray =
-                [](std::vector<float> &imageBuffer,
-                   std::uint32_t imageWidth,
-                   std::uint32_t imageHeight) -> py::array {
-            auto *ownedImageBuffer =
-                    new std::vector<float>(std::move(imageBuffer));
+            [](std::vector<float>& imageBuffer,
+               std::uint32_t imageWidth,
+               std::uint32_t imageHeight) -> py::array
+        {
+            auto* ownedImageBuffer =
+                new std::vector<float>(std::move(imageBuffer));
 
             std::vector<ssize_t> rgbaShape{
                 static_cast<ssize_t>(imageHeight),
@@ -1823,8 +1980,9 @@ public:
                     rgbaShape,
                     rgbaStrides
                 ),
-                py::capsule(ownedImageBuffer, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedImageBuffer, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 })
             );
         };
@@ -1832,7 +1990,8 @@ public:
 
         // 3a. Main adjoint source images per camera
         py::dict adjointSourceDict;
-        for (auto &hostImage: hostAdjointImages) {
+        for (auto& hostImage : hostAdjointImages)
+        {
             py::array rgbaArray = makeRgbaImageArray(
                 hostImage.imageRgbaData,
                 hostImage.imageWidth,
@@ -1844,18 +2003,20 @@ public:
         adjointImagesDictionary["adjoint_source"] = std::move(adjointSourceDict);
 
 
-        if (pathTracer->getSettings().renderDebugGradientImages) {
+        if (pathTracer->getSettings().renderDebugGradientImages)
+        {
             py::dict debugPerCameraDict;
 
-            for (std::size_t i = 0; i < availableAdjointSensors.size(); ++i) {
-                const auto &sensor = availableAdjointSensors[i];
+            for (std::size_t i = 0; i < availableAdjointSensors.size(); ++i)
+            {
+                const auto& sensor = availableAdjointSensors[i];
 
                 Pale::DebugGradientImagesHost debugImagesHost =
-                        Pale::downloadDebugGradientImages(
-                            deviceSelector->getQueue(),
-                            sensor,
-                            availableDebugImages[i]
-                        );
+                    Pale::downloadDebugGradientImages(
+                        deviceSelector->getQueue(),
+                        sensor,
+                        availableDebugImages[i]
+                    );
 
                 const std::uint32_t imageWidth = sensor.width;
                 const std::uint32_t imageHeight = sensor.height;
@@ -1864,7 +2025,8 @@ public:
                 py::dict cameraDebugDict;
 
                 // Position gradient image
-                if (!debugImagesHost.positionX.empty()) {
+                if (!debugImagesHost.positionX.empty())
+                {
                     cameraDebugDict["position_x"] = makeRgbaImageArray(
                         debugImagesHost.positionX,
                         imageWidth,
@@ -1872,7 +2034,8 @@ public:
                     );
                 }
                 // Position gradient image
-                if (!debugImagesHost.positionY.empty()) {
+                if (!debugImagesHost.positionY.empty())
+                {
                     cameraDebugDict["position_y"] = makeRgbaImageArray(
                         debugImagesHost.positionY,
                         imageWidth,
@@ -1880,7 +2043,8 @@ public:
                     );
                 }
                 // Position gradient image
-                if (!debugImagesHost.positionZ.empty()) {
+                if (!debugImagesHost.positionZ.empty())
+                {
                     cameraDebugDict["position_z"] = makeRgbaImageArray(
                         debugImagesHost.positionZ,
                         imageWidth,
@@ -1889,7 +2053,8 @@ public:
                 }
 
                 // Tangent U gradient image
-                if (!debugImagesHost.rotationX.empty()) {
+                if (!debugImagesHost.rotationX.empty())
+                {
                     cameraDebugDict["rotation_x"] = makeRgbaImageArray(
                         debugImagesHost.rotationX,
                         imageWidth,
@@ -1898,7 +2063,8 @@ public:
                 }
 
                 // Tangent U gradient image
-                if (!debugImagesHost.rotationY.empty()) {
+                if (!debugImagesHost.rotationY.empty())
+                {
                     cameraDebugDict["rotation_y"] = makeRgbaImageArray(
                         debugImagesHost.rotationY,
                         imageWidth,
@@ -1907,7 +2073,8 @@ public:
                 }
 
                 // Tangent U gradient image
-                if (!debugImagesHost.rotationZ.empty()) {
+                if (!debugImagesHost.rotationZ.empty())
+                {
                     cameraDebugDict["rotation_z"] = makeRgbaImageArray(
                         debugImagesHost.rotationZ,
                         imageWidth,
@@ -1917,7 +2084,8 @@ public:
 
 
                 // Scale gradient image
-                if (!debugImagesHost.scaleU.empty()) {
+                if (!debugImagesHost.scaleU.empty())
+                {
                     cameraDebugDict["scale_u"] = makeRgbaImageArray(
                         debugImagesHost.scaleU,
                         imageWidth,
@@ -1926,7 +2094,8 @@ public:
                 }
 
                 // Scale gradient image
-                if (!debugImagesHost.scaleV.empty()) {
+                if (!debugImagesHost.scaleV.empty())
+                {
                     cameraDebugDict["scale_v"] = makeRgbaImageArray(
                         debugImagesHost.scaleV,
                         imageWidth,
@@ -1935,7 +2104,8 @@ public:
                 }
 
                 // Color gradient image
-                if (!debugImagesHost.albedo.empty()) {
+                if (!debugImagesHost.albedo.empty())
+                {
                     cameraDebugDict["albedo"] = makeRgbaImageArray(
                         debugImagesHost.albedo,
                         imageWidth,
@@ -1944,7 +2114,8 @@ public:
                 }
 
                 // Opacity gradient image
-                if (!debugImagesHost.opacity.empty()) {
+                if (!debugImagesHost.opacity.empty())
+                {
                     cameraDebugDict["opacity"] = makeRgbaImageArray(
                         debugImagesHost.opacity,
                         imageWidth,
@@ -1953,7 +2124,8 @@ public:
                 }
 
                 // Beta gradient image
-                if (!debugImagesHost.beta.empty()) {
+                if (!debugImagesHost.beta.empty())
+                {
                     cameraDebugDict["beta"] = makeRgbaImageArray(
                         debugImagesHost.beta,
                         imageWidth,
@@ -1961,7 +2133,8 @@ public:
                     );
                 }
 
-                if (cameraDebugDict.size() > 0) {
+                if (cameraDebugDict.size() > 0)
+                {
                     std::string cameraName(sensor.name,
                                            strnlen(sensor.name, sizeof(sensor.name)));
                     debugPerCameraDict[py::str(cameraName)] = std::move(cameraDebugDict);
@@ -1977,15 +2150,15 @@ public:
         gradientStatsDictionary["position_record_count_per_camera"] = makeUintCameraArray(
             gradPositionRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_mean_norm"] =
-                makeFloat1Array(cloneSignalMeanNormHost, pointCount);
+            makeFloat1Array(cloneSignalMeanNormHost, pointCount);
         gradientStatsDictionary["clone_signal_std"] =
-                makeFloat1Array(cloneSignalStdHost, pointCount);
+            makeFloat1Array(cloneSignalStdHost, pointCount);
         gradientStatsDictionary["clone_signal_coherence"] =
-                makeFloat1Array(cloneSignalCoherenceHost, pointCount);
+            makeFloat1Array(cloneSignalCoherenceHost, pointCount);
         gradientStatsDictionary["clone_signal_disagreement"] =
-                makeFloat1Array(cloneSignalDisagreementHost, pointCount);
+            makeFloat1Array(cloneSignalDisagreementHost, pointCount);
         gradientStatsDictionary["clone_signal_active_camera_count"] =
-                makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
+            makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
         gradientStatsDictionary["clone_signal_per_camera"] = makeFloat3CameraArray(
             cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_record_count_per_camera"] = makeUintCameraArray(
@@ -1997,7 +2170,8 @@ public:
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);
     }
 
-    py::dict render_depth_distortion_backward(const py::dict &distortionGradImagesDictionary) {
+    py::dict render_depth_distortion_backward(const py::dict& distortionGradImagesDictionary)
+    {
         using std::int64_t;
         using std::size_t;
 
@@ -2009,35 +2183,39 @@ public:
         std::vector<Pale::SensorGPU> selectedCameras;
         selectedCameras.reserve(sensorsForward.size());
 
-        std::unordered_map<std::string, std::vector<float> > distortionAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> distortionAdjointPerCamera;
         distortionAdjointPerCamera.reserve(sensorsForward.size());
 
         // ------------------------------------------------------------
         // 1. WITH GIL: read Python dict, validate HxW float32 images
         // ------------------------------------------------------------
-        for (std::size_t i = 0; i < sensorsForward.size(); ++i) {
-            const auto &sensor = sensorsForward[i];
+        for (std::size_t i = 0; i < sensorsForward.size(); ++i)
+        {
+            const auto& sensor = sensorsForward[i];
             std::string cameraName(
                 sensor.name,
                 strnlen(sensor.name, sizeof(sensor.name))
             );
 
-            if (!distortionGradImagesDictionary.contains(py::str(cameraName))) {
+            if (!distortionGradImagesDictionary.contains(py::str(cameraName)))
+            {
                 continue;
             }
 
             py::array adjointArray =
-                    distortionGradImagesDictionary[py::str(cameraName)].cast<py::array>();
+                distortionGradImagesDictionary[py::str(cameraName)].cast<py::array>();
 
             py::buffer_info bufferInfo = adjointArray.request();
 
-            if (bufferInfo.ndim != 2) {
+            if (bufferInfo.ndim != 2)
+            {
                 throw std::runtime_error(
                     "render_depth_distortion_backward: adjoint image for camera '" +
                     cameraName + "' must be HxW float32"
                 );
             }
-            if (bufferInfo.itemsize != sizeof(float)) {
+            if (bufferInfo.itemsize != sizeof(float))
+            {
                 throw std::runtime_error(
                     "render_depth_distortion_backward: adjoint image for camera '" +
                     cameraName + "' must have dtype float32"
@@ -2048,7 +2226,8 @@ public:
             const int64_t width = static_cast<int64_t>(bufferInfo.shape[1]);
 
             if (static_cast<std::uint32_t>(width) != sensor.width ||
-                static_cast<std::uint32_t>(height) != sensor.height) {
+                static_cast<std::uint32_t>(height) != sensor.height)
+            {
                 throw std::runtime_error(
                     "render_depth_distortion_backward: resolution mismatch for camera '" +
                     cameraName + "': adjoint image is " + std::to_string(width) +
@@ -2058,9 +2237,9 @@ public:
                 );
             }
 
-            const auto *src = static_cast<const float *>(bufferInfo.ptr);
+            const auto* src = static_cast<const float*>(bufferInfo.ptr);
             const std::size_t pixelCount =
-                    static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+                static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
 
             std::vector<float> hostAdjoint(pixelCount);
             std::memcpy(hostAdjoint.data(), src, pixelCount * sizeof(float));
@@ -2071,7 +2250,8 @@ public:
         }
 
         // Nothing to do
-        if (selectedCameras.empty()) {
+        if (selectedCameras.empty())
+        {
             py::dict emptyGradientDictionary;
             return emptyGradientDictionary;
         }
@@ -2084,14 +2264,16 @@ public:
         py::gil_scoped_release release;
 
         // 2a. Upload per-camera HxW float adjoint images into storage buffers
-        for (auto &entry: selectedCameras) {
+        for (auto& entry : selectedCameras)
+        {
             const std::string cameraName(
                 entry.name,
                 strnlen(entry.name, sizeof(entry.name))
             );
 
             auto it = distortionAdjointPerCamera.find(cameraName);
-            if (it == distortionAdjointPerCamera.end()) {
+            if (it == distortionAdjointPerCamera.end())
+            {
                 continue;
             }
             Pale::uploadFloatImage(
@@ -2116,15 +2298,18 @@ public:
         std::vector<float> gradShapeHost(pointCount); // should remain zero
         std::vector<float> gradPowerHost(pointCount); // should remain zero
 
-        if (pointCount > 0) {
-            if (gradients.gradPosition) {
+        if (pointCount > 0)
+        {
+            if (gradients.gradPosition)
+            {
                 syclQueue.memcpy(
                     gradPositionHost.data(),
                     gradients.gradPosition,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradRotation) {
+            if (gradients.gradRotation)
+            {
                 syclQueue.memcpy(
                     gradRotationHost.data(),
                     gradients.gradRotation,
@@ -2132,28 +2317,32 @@ public:
                 );
             }
 
-            if (gradients.gradScale) {
+            if (gradients.gradScale)
+            {
                 syclQueue.memcpy(
                     gradScaleHost.data(),
                     gradients.gradScale,
                     pointCount * sizeof(Pale::float2)
                 );
             }
-            if (gradients.gradAlbedo) {
+            if (gradients.gradAlbedo)
+            {
                 syclQueue.memcpy(
                     gradColorHost.data(),
                     gradients.gradAlbedo,
                     pointCount * sizeof(Pale::float3)
                 );
             }
-            if (gradients.gradOpacity) {
+            if (gradients.gradOpacity)
+            {
                 syclQueue.memcpy(
                     gradOpacityHost.data(),
                     gradients.gradOpacity,
                     pointCount * sizeof(float)
                 );
             }
-            if (gradients.gradBeta) {
+            if (gradients.gradBeta)
+            {
                 syclQueue.memcpy(
                     gradBetaHost.data(),
                     gradients.gradBeta,
@@ -2170,8 +2359,9 @@ public:
         py::gil_scoped_acquire gilAcquire;
 
         auto makeFloat3Array =
-                [](std::vector<Pale::float3> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            [](std::vector<Pale::float3>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(elementCount),
                 3
@@ -2190,15 +2380,17 @@ public:
                     shape,
                     strides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
                 })
             );
         };
 
         auto makeFloat2Array =
-                [](std::vector<Pale::float2> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+            [](std::vector<Pale::float2>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(elementCount),
                 2
@@ -2217,15 +2409,17 @@ public:
                     shape,
                     strides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float2>*>(pointer);
                 })
             );
         };
 
         auto makeFloat1Array =
-                [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(elementCount)
             };
@@ -2242,8 +2436,9 @@ public:
                     shape,
                     strides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 })
             );
         };
@@ -2262,8 +2457,9 @@ public:
     }
 
     py::dict render_normal_consistency_backward(
-        const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary) {
+        const py::dict& visibleNormalGradImagesDictionary,
+        const py::dict& normalFromDepthGradImagesDictionary)
+    {
         using std::int64_t;
         using std::size_t;
 
@@ -2275,24 +2471,27 @@ public:
         std::vector<Pale::SensorGPU> selectedCameras;
         selectedCameras.reserve(sensorsForward.size());
 
-        std::unordered_map<std::string, std::vector<float> > visibleNormalAdjointPerCamera;
-        std::unordered_map<std::string, std::vector<float> > normalFromDepthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> visibleNormalAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> normalFromDepthAdjointPerCamera;
 
         auto packNormalAdjointToRGBA =
-                [](const py::array &adjointArray,
-                   std::uint32_t expectedWidth,
-                   std::uint32_t expectedHeight,
-                   const std::string &cameraName,
-                   const char *fieldName) -> std::vector<float> {
+            [](const py::array& adjointArray,
+               std::uint32_t expectedWidth,
+               std::uint32_t expectedHeight,
+               const std::string& cameraName,
+               const char* fieldName) -> std::vector<float>
+        {
             py::buffer_info info = adjointArray.request();
 
-            if (info.itemsize != sizeof(float)) {
+            if (info.itemsize != sizeof(float))
+            {
                 throw std::runtime_error(
                     std::string("render_normal_consistency_backward: '") +
                     fieldName + "' for camera '" + cameraName + "' must have dtype float32");
             }
 
-            if (info.ndim != 3) {
+            if (info.ndim != 3)
+            {
                 throw std::runtime_error(
                     std::string("render_normal_consistency_backward: '") +
                     fieldName + "' for camera '" + cameraName +
@@ -2303,7 +2502,8 @@ public:
             const int64_t width = static_cast<int64_t>(info.shape[1]);
             const int64_t channels = static_cast<int64_t>(info.shape[2]);
 
-            if (channels != 3 && channels != 4) {
+            if (channels != 3 && channels != 4)
+            {
                 throw std::runtime_error(
                     std::string("render_normal_consistency_backward: '") +
                     fieldName + "' for camera '" + cameraName +
@@ -2311,19 +2511,22 @@ public:
             }
 
             if (static_cast<std::uint32_t>(width) != expectedWidth ||
-                static_cast<std::uint32_t>(height) != expectedHeight) {
+                static_cast<std::uint32_t>(height) != expectedHeight)
+            {
                 throw std::runtime_error(
                     std::string("render_normal_consistency_backward: resolution mismatch for '") +
                     fieldName + "' camera '" + cameraName + "'");
             }
 
-            const float *src = static_cast<const float *>(info.ptr);
+            const float* src = static_cast<const float*>(info.ptr);
 
             std::vector<float> rgba(
                 static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0.0f);
 
-            for (int64_t y = 0; y < height; ++y) {
-                for (int64_t x = 0; x < width; ++x) {
+            for (int64_t y = 0; y < height; ++y)
+            {
+                for (int64_t x = 0; x < width; ++x)
+                {
                     const size_t srcBase = static_cast<size_t>((y * width + x) * channels);
                     const size_t dstBase = static_cast<size_t>((y * width + x) * 4);
 
@@ -2337,31 +2540,34 @@ public:
             return rgba;
         };
 
-        for (const auto &sensor: sensorsForward) {
+        for (const auto& sensor : sensorsForward)
+        {
             std::string cameraName(
                 sensor.name,
                 strnlen(sensor.name, sizeof(sensor.name)));
 
             const bool hasVisible =
-                    visibleNormalGradImagesDictionary.contains(py::str(cameraName));
+                visibleNormalGradImagesDictionary.contains(py::str(cameraName));
             const bool hasDepth =
-                    normalFromDepthGradImagesDictionary.contains(py::str(cameraName));
+                normalFromDepthGradImagesDictionary.contains(py::str(cameraName));
 
-            if (!hasVisible && !hasDepth) {
+            if (!hasVisible && !hasDepth)
+            {
                 continue;
             }
 
-            if (!hasVisible || !hasDepth) {
+            if (!hasVisible || !hasDepth)
+            {
                 throw std::runtime_error(
                     "render_normal_consistency_backward: both visible_normal and "
                     "normal_from_depth adjoints must be provided for camera '" + cameraName + "'");
             }
 
             py::array visibleAdjointArray =
-                    visibleNormalGradImagesDictionary[py::str(cameraName)].cast<py::array>();
+                visibleNormalGradImagesDictionary[py::str(cameraName)].cast<py::array>();
 
             py::array depthAdjointArray =
-                    normalFromDepthGradImagesDictionary[py::str(cameraName)].cast<py::array>();
+                normalFromDepthGradImagesDictionary[py::str(cameraName)].cast<py::array>();
 
             visibleNormalAdjointPerCamera.emplace(
                 cameraName,
@@ -2384,7 +2590,8 @@ public:
             selectedCameras.push_back(sensor);
         }
 
-        if (selectedCameras.empty()) {
+        if (selectedCameras.empty())
+        {
             py::dict emptyGradientDictionary;
             return emptyGradientDictionary;
         }
@@ -2393,7 +2600,8 @@ public:
 
         py::gil_scoped_release release;
 
-        for (auto &sensor: selectedCameras) {
+        for (auto& sensor : selectedCameras)
+        {
             const std::string cameraName(
                 sensor.name,
                 strnlen(sensor.name, sizeof(sensor.name)));
@@ -2402,13 +2610,14 @@ public:
             auto depIt = normalFromDepthAdjointPerCamera.find(cameraName);
 
             if (visIt == visibleNormalAdjointPerCamera.end() ||
-                depIt == normalFromDepthAdjointPerCamera.end()) {
+                depIt == normalFromDepthAdjointPerCamera.end())
+            {
                 continue;
             }
 
             const std::size_t pixelCount =
-                    static_cast<std::size_t>(sensor.width) *
-                    static_cast<std::size_t>(sensor.height);
+                static_cast<std::size_t>(sensor.width) *
+                static_cast<std::size_t>(sensor.height);
 
             syclQueue.memcpy(
                 sensor.visibleNormalAdjointBuffer,
@@ -2436,39 +2645,46 @@ public:
         std::vector<float> gradShapeHost(pointCount);
         std::vector<float> gradPowerHost(pointCount);
 
-        if (pointCount > 0) {
-            if (gradients.gradPosition) {
+        if (pointCount > 0)
+        {
+            if (gradients.gradPosition)
+            {
                 syclQueue.memcpy(
                     gradPositionHost.data(),
                     gradients.gradPosition,
                     pointCount * sizeof(Pale::float3));
             }
-            if (gradients.gradRotation) {
+            if (gradients.gradRotation)
+            {
                 syclQueue.memcpy(
                     gradRotationHost.data(),
                     gradients.gradRotation,
                     pointCount * sizeof(Pale::float3));
             }
 
-            if (gradients.gradScale) {
+            if (gradients.gradScale)
+            {
                 syclQueue.memcpy(
                     gradScaleHost.data(),
                     gradients.gradScale,
                     pointCount * sizeof(Pale::float2));
             }
-            if (gradients.gradAlbedo) {
+            if (gradients.gradAlbedo)
+            {
                 syclQueue.memcpy(
                     gradColorHost.data(),
                     gradients.gradAlbedo,
                     pointCount * sizeof(Pale::float3));
             }
-            if (gradients.gradOpacity) {
+            if (gradients.gradOpacity)
+            {
                 syclQueue.memcpy(
                     gradOpacityHost.data(),
                     gradients.gradOpacity,
                     pointCount * sizeof(float));
             }
-            if (gradients.gradBeta) {
+            if (gradients.gradBeta)
+            {
                 syclQueue.memcpy(
                     gradBetaHost.data(),
                     gradients.gradBeta,
@@ -2481,8 +2697,9 @@ public:
         py::gil_scoped_acquire gilAcquire;
 
         auto makeFloat3Array =
-                [](std::vector<Pale::float3> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            [](std::vector<Pale::float3>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(elementCount),
                 3
@@ -2501,15 +2718,17 @@ public:
                     shape,
                     strides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
                 })
             );
         };
 
         auto makeFloat2Array =
-                [](std::vector<Pale::float2> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+            [](std::vector<Pale::float2>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(elementCount),
                 2
@@ -2528,15 +2747,17 @@ public:
                     shape,
                     strides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float2>*>(pointer);
                 })
             );
         };
 
         auto makeFloat1Array =
-                [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> shape{
                 static_cast<ssize_t>(elementCount)
             };
@@ -2553,8 +2774,9 @@ public:
                     shape,
                     strides
                 ),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 })
             );
         };
@@ -2572,7 +2794,8 @@ public:
         return gradientDictionary;
     }
 
-    py::dict makeGradientDictionary(Pale::PointGradients &sourceGradients) {
+    py::dict makeGradientDictionary(Pale::PointGradients& sourceGradients)
+    {
         auto syclQueue = deviceSelector->getQueue();
         const std::size_t pointCount = sceneGpu.pointCount;
 
@@ -2586,40 +2809,50 @@ public:
         std::vector<float> gradShapeHost(pointCount, 0.0f);
         std::vector<float> gradPowerHost(pointCount, 0.0f);
 
-        if (pointCount > 0) {
-            if (sourceGradients.gradPosition) {
+        if (pointCount > 0)
+        {
+            if (sourceGradients.gradPosition)
+            {
                 syclQueue.memcpy(gradPositionHost.data(), sourceGradients.gradPosition,
                                  pointCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.cloneSignal) {
+            if (sourceGradients.cloneSignal)
+            {
                 syclQueue.memcpy(cloneSignalHost.data(), sourceGradients.cloneSignal,
                                  pointCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.gradRotation) {
+            if (sourceGradients.gradRotation)
+            {
                 syclQueue.memcpy(gradRotationHost.data(), sourceGradients.gradRotation,
                                  pointCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.gradScale) {
+            if (sourceGradients.gradScale)
+            {
                 syclQueue.memcpy(gradScaleHost.data(), sourceGradients.gradScale, pointCount * sizeof(Pale::float2));
             }
-            if (sourceGradients.gradAlbedo) {
+            if (sourceGradients.gradAlbedo)
+            {
                 syclQueue.memcpy(gradAlbedoHost.data(), sourceGradients.gradAlbedo, pointCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.gradOpacity) {
+            if (sourceGradients.gradOpacity)
+            {
                 syclQueue.memcpy(gradOpacityHost.data(), sourceGradients.gradOpacity, pointCount * sizeof(float));
             }
-            if (sourceGradients.gradBeta) {
+            if (sourceGradients.gradBeta)
+            {
                 syclQueue.memcpy(gradBetaHost.data(), sourceGradients.gradBeta, pointCount * sizeof(float));
             }
-            if (sourceGradients.gradShape) {
+            if (sourceGradients.gradShape)
+            {
                 syclQueue.memcpy(gradShapeHost.data(), sourceGradients.gradShape, pointCount * sizeof(float));
             }
 
             syclQueue.wait_and_throw();
         }
 
-        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+        auto makeFloat3Array = [](std::vector<Pale::float3>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 3};
             std::vector<ssize_t> arrayStrides{
                 static_cast<ssize_t>(sizeof(Pale::float3)),
@@ -2634,13 +2867,15 @@ public:
                     2,
                     arrayShape,
                     arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
                 }));
         };
 
-        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+        auto makeFloat2Array = [](std::vector<Pale::float2>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 2};
             std::vector<ssize_t> arrayStrides{
                 static_cast<ssize_t>(sizeof(Pale::float2)),
@@ -2655,13 +2890,15 @@ public:
                     2,
                     arrayShape,
                     arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float2> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float2>*>(pointer);
                 }));
         };
 
-        auto makeFloat1Array = [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+        auto makeFloat1Array = [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
             std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(float))};
 
@@ -2673,8 +2910,9 @@ public:
                     1,
                     arrayShape,
                     arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 }));
         };
 
@@ -2691,7 +2929,8 @@ public:
         return gradientDictionary;
     }
 
-    py::dict makeGradientStatsDictionary(Pale::PointGradients &sourceGradients) {
+    py::dict makeGradientStatsDictionary(Pale::PointGradients& sourceGradients)
+    {
         auto syclQueue = deviceSelector->getQueue();
         const std::size_t pointCount = sourceGradients.numPoints;
         const std::size_t cameraSlotCount = sourceGradients.cameraSlotCount;
@@ -2709,51 +2948,63 @@ public:
         std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount, 0u);
         std::vector<float> cloneRadianceRmsSumPerPrimitivePerCameraHost(primitiveCameraCount, 0.0f);
 
-        if (pointCount > 0) {
-            if (sourceGradients.cloneSignalMeanNorm) {
+        if (pointCount > 0)
+        {
+            if (sourceGradients.cloneSignalMeanNorm)
+            {
                 syclQueue.memcpy(cloneSignalMeanNormHost.data(), sourceGradients.cloneSignalMeanNorm,
                                  pointCount * sizeof(float));
             }
-            if (sourceGradients.cloneSignalStd) {
+            if (sourceGradients.cloneSignalStd)
+            {
                 syclQueue.memcpy(cloneSignalStdHost.data(), sourceGradients.cloneSignalStd,
                                  pointCount * sizeof(float));
             }
-            if (sourceGradients.cloneSignalCoherence) {
+            if (sourceGradients.cloneSignalCoherence)
+            {
                 syclQueue.memcpy(cloneSignalCoherenceHost.data(), sourceGradients.cloneSignalCoherence,
                                  pointCount * sizeof(float));
             }
-            if (sourceGradients.cloneSignalDisagreement) {
+            if (sourceGradients.cloneSignalDisagreement)
+            {
                 syclQueue.memcpy(cloneSignalDisagreementHost.data(), sourceGradients.cloneSignalDisagreement,
                                  pointCount * sizeof(float));
             }
-            if (sourceGradients.cloneSignalActiveCameraCount) {
+            if (sourceGradients.cloneSignalActiveCameraCount)
+            {
                 syclQueue.memcpy(cloneSignalActiveCameraCountHost.data(), sourceGradients.cloneSignalActiveCameraCount,
                                  pointCount * sizeof(uint32_t));
             }
         }
 
-        if (primitiveCameraCount > 0) {
-            if (sourceGradients.gradPositionPerPrimitivePerCamera) {
+        if (primitiveCameraCount > 0)
+        {
+            if (sourceGradients.gradPositionPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(gradPositionPerPrimitivePerCameraHost.data(),
                                  sourceGradients.gradPositionPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.gradPositionRecordCountPerPrimitivePerCamera) {
+            if (sourceGradients.gradPositionRecordCountPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(gradPositionRecordCountPerPrimitivePerCameraHost.data(),
                                  sourceGradients.gradPositionRecordCountPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(uint32_t));
             }
-            if (sourceGradients.cloneSignalPerPrimitivePerCamera) {
+            if (sourceGradients.cloneSignalPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(cloneSignalPerPrimitivePerCameraHost.data(),
                                  sourceGradients.cloneSignalPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(Pale::float3));
             }
-            if (sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera) {
+            if (sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
                                  sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(uint32_t));
             }
-            if (sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera) {
+            if (sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera)
+            {
                 syclQueue.memcpy(cloneRadianceRmsSumPerPrimitivePerCameraHost.data(),
                                  sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(float));
@@ -2761,34 +3012,39 @@ public:
         }
         syclQueue.wait_and_throw();
 
-        auto makeFloat1Array = [](std::vector<float> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+        auto makeFloat1Array = [](std::vector<float>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
             std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(float))};
             return py::array(
                 py::buffer_info(ownedVector->data(), sizeof(float), py::format_descriptor<float>::format(), 1,
                                 arrayShape, arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 }));
         };
 
-        auto makeUint1Array = [](std::vector<uint32_t> &hostVector, std::size_t elementCount) -> py::array {
-            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+        auto makeUint1Array = [](std::vector<uint32_t>& hostVector, std::size_t elementCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<uint32_t>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
             std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(uint32_t))};
             return py::array(
                 py::buffer_info(ownedVector->data(), sizeof(uint32_t), py::format_descriptor<uint32_t>::format(), 1,
                                 arrayShape, arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<uint32_t>*>(pointer);
                 }));
         };
 
         auto makeFloat3CameraArray =
-                [](std::vector<Pale::float3> &hostVector, std::size_t pointCount,
-                   std::size_t cameraSlotCount) -> py::array {
-            auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+            [](std::vector<Pale::float3>& hostVector, std::size_t pointCount,
+               std::size_t cameraSlotCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(pointCount),
                 static_cast<ssize_t>(cameraSlotCount),
@@ -2802,15 +3058,17 @@ public:
             return py::array(
                 py::buffer_info(ownedVector->data(), sizeof(float), py::format_descriptor<float>::format(), 3,
                                 arrayShape, arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<Pale::float3> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
                 }));
         };
 
         auto makeUintCameraArray =
-                [](std::vector<uint32_t> &hostVector, std::size_t pointCount,
-                   std::size_t cameraSlotCount) -> py::array {
-            auto *ownedVector = new std::vector<uint32_t>(std::move(hostVector));
+            [](std::vector<uint32_t>& hostVector, std::size_t pointCount,
+               std::size_t cameraSlotCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<uint32_t>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(pointCount),
                 static_cast<ssize_t>(cameraSlotCount)
@@ -2822,15 +3080,17 @@ public:
             return py::array(
                 py::buffer_info(ownedVector->data(), sizeof(uint32_t), py::format_descriptor<uint32_t>::format(), 2,
                                 arrayShape, arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<uint32_t> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<uint32_t>*>(pointer);
                 }));
         };
 
         auto makeFloatCameraArray =
-                [](std::vector<float> &hostVector, std::size_t pointCount,
-                   std::size_t cameraSlotCount) -> py::array {
-            auto *ownedVector = new std::vector<float>(std::move(hostVector));
+            [](std::vector<float>& hostVector, std::size_t pointCount,
+               std::size_t cameraSlotCount) -> py::array
+        {
+            auto* ownedVector = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> arrayShape{
                 static_cast<ssize_t>(pointCount),
                 static_cast<ssize_t>(cameraSlotCount)
@@ -2842,39 +3102,41 @@ public:
             return py::array(
                 py::buffer_info(ownedVector->data(), sizeof(float), py::format_descriptor<float>::format(), 2,
                                 arrayShape, arrayStrides),
-                py::capsule(ownedVector, [](void *pointer) {
-                    delete static_cast<std::vector<float> *>(pointer);
+                py::capsule(ownedVector, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
                 }));
         };
 
         py::dict gradientStatsDictionary;
         gradientStatsDictionary["position_per_camera"] =
-                makeFloat3CameraArray(gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+            makeFloat3CameraArray(gradPositionPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["position_record_count_per_camera"] =
-                makeUintCameraArray(gradPositionRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+            makeUintCameraArray(gradPositionRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_mean_norm"] = makeFloat1Array(cloneSignalMeanNormHost, pointCount);
         gradientStatsDictionary["clone_signal_std"] = makeFloat1Array(cloneSignalStdHost, pointCount);
         gradientStatsDictionary["clone_signal_coherence"] = makeFloat1Array(cloneSignalCoherenceHost, pointCount);
         gradientStatsDictionary["clone_signal_disagreement"] = makeFloat1Array(cloneSignalDisagreementHost, pointCount);
         gradientStatsDictionary["clone_signal_active_camera_count"] =
-                makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
+            makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
         gradientStatsDictionary["clone_signal_per_camera"] =
-                makeFloat3CameraArray(cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+            makeFloat3CameraArray(cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_record_count_per_camera"] =
-                makeUintCameraArray(cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+            makeUintCameraArray(cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_radiance_rms_sum_per_camera"] =
-                makeFloatCameraArray(cloneRadianceRmsSumPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+            makeFloatCameraArray(cloneRadianceRmsSumPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         return gradientStatsDictionary;
     }
 
     py::dict runSurfaceRegularizersBackward(
-        const py::list &cameraNamesList,
-        const py::dict &depthDistortionGradImagesDictionary,
-        const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary,
-        const py::dict &intraSlabDepthGradImagesDictionary,
-        const py::dict &curvatureScaleGradImagesDictionary,
-        bool returnGradients) {
+        const py::list& cameraNamesList,
+        const py::dict& depthDistortionGradImagesDictionary,
+        const py::dict& visibleNormalGradImagesDictionary,
+        const py::dict& normalFromDepthGradImagesDictionary,
+        const py::dict& intraSlabDepthGradImagesDictionary,
+        const py::dict& curvatureScaleGradImagesDictionary,
+        bool returnGradients)
+    {
         using std::int64_t;
         using std::size_t;
 
@@ -2883,7 +3145,8 @@ public:
         ensureDebugImages();
 
         std::unordered_set<std::string> selectedCameraNames;
-        for (const py::handle item: cameraNamesList) {
+        for (const py::handle item : cameraNamesList)
+        {
             selectedCameraNames.insert(py::cast<std::string>(item));
         }
 
@@ -2893,20 +3156,22 @@ public:
         selectedCameras.reserve(sensorsForward.size());
         selectedDebugImages.reserve(sensorsForward.size());
 
-        std::unordered_map<std::string, std::vector<float> > depthAdjointPerCamera;
-        std::unordered_map<std::string, std::vector<float> > visibleNormalAdjointPerCamera;
-        std::unordered_map<std::string, std::vector<float> > normalFromDepthAdjointPerCamera;
-        std::unordered_map<std::string, std::vector<float> > intraSlabDepthAdjointPerCamera;
-        std::unordered_map<std::string, std::vector<float> > curvatureScaleAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> depthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> visibleNormalAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> normalFromDepthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> intraSlabDepthAdjointPerCamera;
+        std::unordered_map<std::string, std::vector<float>> curvatureScaleAdjointPerCamera;
 
-        auto packFloatImage = [](const py::array &array,
+        auto packFloatImage = [](const py::array& array,
                                  std::uint32_t expectedWidth,
                                  std::uint32_t expectedHeight,
-                                 const std::string &cameraName,
-                                 const char *fieldName) -> std::vector<float> {
+                                 const std::string& cameraName,
+                                 const char* fieldName) -> std::vector<float>
+        {
             py::buffer_info info = array.request();
 
-            if (info.ndim != 2 || info.itemsize != sizeof(float)) {
+            if (info.ndim != 2 || info.itemsize != sizeof(float))
+            {
                 throw std::runtime_error(
                     std::string("render_surface_regularizers_backward: '") +
                     fieldName + "' for camera '" + cameraName + "' must be HxW float32");
@@ -2916,13 +3181,14 @@ public:
             const int64_t width = static_cast<int64_t>(info.shape[1]);
 
             if (static_cast<std::uint32_t>(width) != expectedWidth ||
-                static_cast<std::uint32_t>(height) != expectedHeight) {
+                static_cast<std::uint32_t>(height) != expectedHeight)
+            {
                 throw std::runtime_error(
                     std::string("render_surface_regularizers_backward: resolution mismatch for '") +
                     fieldName + "' camera '" + cameraName + "'");
             }
 
-            const auto *src = static_cast<const float *>(info.ptr);
+            const auto* src = static_cast<const float*>(info.ptr);
             const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
 
             std::vector<float> hostImage(pixelCount);
@@ -2930,14 +3196,16 @@ public:
             return hostImage;
         };
 
-        auto packNormalAdjointToRGBA = [](const py::array &array,
+        auto packNormalAdjointToRGBA = [](const py::array& array,
                                           std::uint32_t expectedWidth,
                                           std::uint32_t expectedHeight,
-                                          const std::string &cameraName,
-                                          const char *fieldName) -> std::vector<float> {
+                                          const std::string& cameraName,
+                                          const char* fieldName) -> std::vector<float>
+        {
             py::buffer_info info = array.request();
 
-            if (info.ndim != 3 || info.itemsize != sizeof(float)) {
+            if (info.ndim != 3 || info.itemsize != sizeof(float))
+            {
                 throw std::runtime_error(
                     std::string("render_surface_regularizers_backward: '") +
                     fieldName + "' for camera '" + cameraName + "' must be HxWx3 or HxWx4 float32");
@@ -2947,24 +3215,28 @@ public:
             const int64_t width = static_cast<int64_t>(info.shape[1]);
             const int64_t channels = static_cast<int64_t>(info.shape[2]);
 
-            if (channels != 3 && channels != 4) {
+            if (channels != 3 && channels != 4)
+            {
                 throw std::runtime_error(
                     std::string("render_surface_regularizers_backward: '") +
                     fieldName + "' for camera '" + cameraName + "' must be HxWx3 or HxWx4");
             }
 
             if (static_cast<std::uint32_t>(width) != expectedWidth ||
-                static_cast<std::uint32_t>(height) != expectedHeight) {
+                static_cast<std::uint32_t>(height) != expectedHeight)
+            {
                 throw std::runtime_error(
                     std::string("render_surface_regularizers_backward: resolution mismatch for '") +
                     fieldName + "' camera '" + cameraName + "'");
             }
 
-            const float *src = static_cast<const float *>(info.ptr);
+            const float* src = static_cast<const float*>(info.ptr);
             std::vector<float> rgba(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0.0f);
 
-            for (int64_t y = 0; y < height; ++y) {
-                for (int64_t x = 0; x < width; ++x) {
+            for (int64_t y = 0; y < height; ++y)
+            {
+                for (int64_t x = 0; x < width; ++x)
+                {
                     const size_t srcBase = static_cast<size_t>((y * width + x) * channels);
                     const size_t dstBase = static_cast<size_t>((y * width + x) * 4);
 
@@ -2978,22 +3250,26 @@ public:
             return rgba;
         };
 
-        for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex) {
-            const auto &sensor = sensorsForward[sensorIndex];
+        for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex)
+        {
+            const auto& sensor = sensorsForward[sensorIndex];
             const std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
-            if (!sensor.camera.useForAdjointPass) {
+            if (!sensor.camera.useForAdjointPass)
+            {
                 continue;
             }
 
-            if (!selectedCameraNames.contains(cameraName)) {
+            if (!selectedCameraNames.contains(cameraName))
+            {
                 continue;
             }
 
             selectedCameras.push_back(sensor);
             selectedDebugImages.push_back(debugImages[sensorIndex]);
 
-            if (depthDistortionGradImagesDictionary.contains(py::str(cameraName))) {
+            if (depthDistortionGradImagesDictionary.contains(py::str(cameraName)))
+            {
                 depthAdjointPerCamera.emplace(
                     cameraName,
                     packFloatImage(
@@ -3004,7 +3280,8 @@ public:
                         "depth_distortion"));
             }
 
-            if (intraSlabDepthGradImagesDictionary.contains(py::str(cameraName))) {
+            if (intraSlabDepthGradImagesDictionary.contains(py::str(cameraName)))
+            {
                 intraSlabDepthAdjointPerCamera.emplace(
                     cameraName,
                     packFloatImage(
@@ -3015,7 +3292,8 @@ public:
                         "intra_slab_depth"));
             }
 
-            if (curvatureScaleGradImagesDictionary.contains(py::str(cameraName))) {
+            if (curvatureScaleGradImagesDictionary.contains(py::str(cameraName)))
+            {
                 curvatureScaleAdjointPerCamera.emplace(
                     cameraName,
                     packFloatImage(
@@ -3029,13 +3307,15 @@ public:
             const bool hasVisibleNormal = visibleNormalGradImagesDictionary.contains(py::str(cameraName));
             const bool hasDepthNormal = normalFromDepthGradImagesDictionary.contains(py::str(cameraName));
 
-            if (hasVisibleNormal != hasDepthNormal) {
+            if (hasVisibleNormal != hasDepthNormal)
+            {
                 throw std::runtime_error(
                     "render_surface_regularizers_backward: visible_normal and normal_from_depth adjoints must either both "
                     "be present or both be absent for camera '" + cameraName + "'");
             }
 
-            if (hasVisibleNormal) {
+            if (hasVisibleNormal)
+            {
                 visibleNormalAdjointPerCamera.emplace(
                     cameraName,
                     packNormalAdjointToRGBA(
@@ -3056,7 +3336,8 @@ public:
             }
         }
 
-        if (selectedCameras.empty()) {
+        if (selectedCameras.empty())
+        {
             return py::dict{};
         }
 
@@ -3064,7 +3345,8 @@ public:
 
         py::gil_scoped_release release;
 
-        for (auto &sensor: selectedCameras) {
+        for (auto& sensor : selectedCameras)
+        {
             const std::string cameraName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
             const size_t pixelCount = static_cast<size_t>(sensor.width) * static_cast<size_t>(sensor.height);
 
@@ -3076,7 +3358,8 @@ public:
             syclQueue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount);
 
             auto depthIt = depthAdjointPerCamera.find(cameraName);
-            if (depthIt != depthAdjointPerCamera.end()) {
+            if (depthIt != depthAdjointPerCamera.end())
+            {
                 Pale::uploadFloatImage(
                     syclQueue,
                     sensor.depthDistortionAdjointBuffer,
@@ -3084,7 +3367,8 @@ public:
             }
 
             auto intraSlabIt = intraSlabDepthAdjointPerCamera.find(cameraName);
-            if (intraSlabIt != intraSlabDepthAdjointPerCamera.end()) {
+            if (intraSlabIt != intraSlabDepthAdjointPerCamera.end())
+            {
                 Pale::uploadFloatImage(
                     syclQueue,
                     sensor.intraSlabDepthAdjointBuffer,
@@ -3092,7 +3376,8 @@ public:
             }
 
             auto curvatureScaleIt = curvatureScaleAdjointPerCamera.find(cameraName);
-            if (curvatureScaleIt != curvatureScaleAdjointPerCamera.end()) {
+            if (curvatureScaleIt != curvatureScaleAdjointPerCamera.end())
+            {
                 Pale::uploadFloatImage(
                     syclQueue,
                     sensor.curvatureScaleAdjointBuffer,
@@ -3103,7 +3388,8 @@ public:
             auto depthNormalIt = normalFromDepthAdjointPerCamera.find(cameraName);
 
             if (visibleIt != visibleNormalAdjointPerCamera.end() &&
-                depthNormalIt != normalFromDepthAdjointPerCamera.end()) {
+                depthNormalIt != normalFromDepthAdjointPerCamera.end())
+            {
                 syclQueue.memcpy(
                     sensor.visibleNormalAdjointBuffer,
                     visibleIt->second.data(),
@@ -3128,7 +3414,8 @@ public:
 
         py::gil_scoped_acquire gilAcquire;
 
-        if (!returnGradients) {
+        if (!returnGradients)
+        {
             return py::dict{};
         }
 
@@ -3141,12 +3428,13 @@ public:
     }
 
     py::dict render_surface_regularizers_backward(
-        const py::list &cameraNamesList,
-        const py::dict &depthDistortionGradImagesDictionary,
-        const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary,
-        const py::dict &intraSlabDepthGradImagesDictionary,
-        const py::dict &curvatureScaleGradImagesDictionary) {
+        const py::list& cameraNamesList,
+        const py::dict& depthDistortionGradImagesDictionary,
+        const py::dict& visibleNormalGradImagesDictionary,
+        const py::dict& normalFromDepthGradImagesDictionary,
+        const py::dict& intraSlabDepthGradImagesDictionary,
+        const py::dict& curvatureScaleGradImagesDictionary)
+    {
         return runSurfaceRegularizersBackward(
             cameraNamesList,
             depthDistortionGradImagesDictionary,
@@ -3158,13 +3446,14 @@ public:
     }
 
     void render_surface_regularizers_backward_no_gradients(
-        const py::list &cameraNamesList,
-        const py::dict &depthDistortionGradImagesDictionary,
-        const py::dict &visibleNormalGradImagesDictionary,
-        const py::dict &normalFromDepthGradImagesDictionary,
-        const py::dict &intraSlabDepthGradImagesDictionary,
-        const py::dict &curvatureScaleGradImagesDictionary) {
-        (void) runSurfaceRegularizersBackward(
+        const py::list& cameraNamesList,
+        const py::dict& depthDistortionGradImagesDictionary,
+        const py::dict& visibleNormalGradImagesDictionary,
+        const py::dict& normalFromDepthGradImagesDictionary,
+        const py::dict& intraSlabDepthGradImagesDictionary,
+        const py::dict& curvatureScaleGradImagesDictionary)
+    {
+        (void)runSurfaceRegularizersBackward(
             cameraNamesList,
             depthDistortionGradImagesDictionary,
             visibleNormalGradImagesDictionary,
@@ -3174,16 +3463,19 @@ public:
             false);
     }
 
-    bool sync_point_parameters_from_gpu() {
+    bool sync_point_parameters_from_gpu()
+    {
         return syncPointParametersFromGpu(true);
     }
 
-    py::dict capture_device_adam_state() {
+    py::dict capture_device_adam_state()
+    {
         py::dict state;
         state["point_count"] = static_cast<std::uint64_t>(0u);
         state["step"] = static_cast<std::uint64_t>(0u);
 
-        if (!isDeviceTrainingStateAllocated()) {
+        if (!isDeviceTrainingStateAllocated())
+        {
             return state;
         }
 
@@ -3237,47 +3529,50 @@ public:
         return state;
     }
 
-    void upload_device_adam_state(const py::dict &state) {
+    void upload_device_adam_state(const py::dict& state)
+    {
         auto syclQueue = deviceSelector->getQueue();
         const std::size_t pointCount =
-                static_cast<std::size_t>(get_u64(state, "point_count", 0u));
+            static_cast<std::size_t>(get_u64(state, "point_count", 0u));
         const std::uint32_t step =
-                static_cast<std::uint32_t>(get_u64(state, "step", 0u));
+            static_cast<std::uint32_t>(get_u64(state, "step", 0u));
 
-        if (pointCount == 0u) {
+        if (pointCount == 0u)
+        {
             freeDeviceTrainingState(syclQueue);
             return;
         }
 
-        if (!sceneGpu.points || sceneGpu.pointCount != pointCount) {
+        if (!sceneGpu.points || sceneGpu.pointCount != pointCount)
+        {
             throw std::runtime_error(
                 "upload_device_adam_state: state point count does not match current device scene");
         }
 
         std::vector<Pale::float3> positionM =
-                readDeviceAdamFloat3Array(state, "position_m", pointCount);
+            readDeviceAdamFloat3Array(state, "position_m", pointCount);
         std::vector<Pale::float3> positionV =
-                readDeviceAdamFloat3Array(state, "position_v", pointCount);
+            readDeviceAdamFloat3Array(state, "position_v", pointCount);
         std::vector<Pale::float3> rotationM =
-                readDeviceAdamFloat3Array(state, "rotation_m", pointCount);
+            readDeviceAdamFloat3Array(state, "rotation_m", pointCount);
         std::vector<Pale::float3> rotationV =
-                readDeviceAdamFloat3Array(state, "rotation_v", pointCount);
+            readDeviceAdamFloat3Array(state, "rotation_v", pointCount);
         std::vector<Pale::float2> scaleM =
-                readDeviceAdamFloat2Array(state, "scale_m", pointCount);
+            readDeviceAdamFloat2Array(state, "scale_m", pointCount);
         std::vector<Pale::float2> scaleV =
-                readDeviceAdamFloat2Array(state, "scale_v", pointCount);
+            readDeviceAdamFloat2Array(state, "scale_v", pointCount);
         std::vector<Pale::float3> albedoM =
-                readDeviceAdamFloat3Array(state, "albedo_m", pointCount);
+            readDeviceAdamFloat3Array(state, "albedo_m", pointCount);
         std::vector<Pale::float3> albedoV =
-                readDeviceAdamFloat3Array(state, "albedo_v", pointCount);
+            readDeviceAdamFloat3Array(state, "albedo_v", pointCount);
         std::vector<float> opacityM =
-                readDeviceAdamFloat1Array(state, "opacity_m", pointCount);
+            readDeviceAdamFloat1Array(state, "opacity_m", pointCount);
         std::vector<float> opacityV =
-                readDeviceAdamFloat1Array(state, "opacity_v", pointCount);
+            readDeviceAdamFloat1Array(state, "opacity_v", pointCount);
         std::vector<float> betaM =
-                readDeviceAdamFloat1Array(state, "beta_m", pointCount);
+            readDeviceAdamFloat1Array(state, "beta_m", pointCount);
         std::vector<float> betaV =
-                readDeviceAdamFloat1Array(state, "beta_v", pointCount);
+            readDeviceAdamFloat1Array(state, "beta_v", pointCount);
 
         {
             py::gil_scoped_release release;
@@ -3300,16 +3595,22 @@ public:
         deviceTrainingState.step = step;
     }
 
-    py::dict get_point_parameters() {
+    py::dict get_point_parameters()
+    {
         syncPointParametersFromGpuIfDirty();
         if (!assetManager) throw std::runtime_error("get_point_parameters: assetManager is null");
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) throw std::runtime_error("get_point_parameters: failed to get PointAsset for dynamic point cloud");
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) throw std::runtime_error("get_point_parameters: PointAsset has no PointGeometry blocks");
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        if (!pointAssetSharedPtr) throw std::runtime_error(
+            "get_point_parameters: failed to get PointAsset for dynamic point cloud");
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) throw std::runtime_error(
+            "get_point_parameters: PointAsset has no PointGeometry blocks");
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
         const std::size_t pointCount = pointGeometry.positions.size();
-        if (pointGeometry.quat.size() != pointCount || pointGeometry.scales.size() != pointCount || pointGeometry.albedos.size() != pointCount || pointGeometry.opacities.size() != pointCount || pointGeometry.betas.size() != pointCount || pointGeometry.powers.size() != pointCount) {
+        if (pointGeometry.quat.size() != pointCount || pointGeometry.scales.size() != pointCount || pointGeometry.
+            albedos.size() != pointCount || pointGeometry.opacities.size() != pointCount || pointGeometry.betas.size()
+            != pointCount || pointGeometry.powers.size() != pointCount)
+        {
             throw std::runtime_error("get_point_parameters: PointGeometry size mismatch");
         }
         std::vector<Pale::float3> positionHost(pointCount);
@@ -3324,10 +3625,12 @@ public:
         const bool hasPrimitiveAgeMetadata =
             pointGeometry.primitiveAges.size() == pointCount;
         std::vector<float> primitiveAgeHost;
-        if (hasPrimitiveAgeMetadata) {
+        if (hasPrimitiveAgeMetadata)
+        {
             primitiveAgeHost.resize(pointCount, 0.0f);
         }
-        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+        {
             const glm::quat q = normalizeQuaternionOrIdentity(pointGeometry.quat[pointIndex]);
             positionHost[pointIndex] = pointGeometry.positions[pointIndex];
             rotationHost[pointIndex * 4u + 0u] = q.w;
@@ -3341,38 +3644,68 @@ public:
             betaHost[pointIndex] = pointGeometry.betas[pointIndex];
             shapeHost[pointIndex] = pointGeometry.shapes.size() == pointCount ? pointGeometry.shapes[pointIndex] : 0.0f;
             powerHost[pointIndex] = pointGeometry.powers[pointIndex];
-            if (pointGeometry.densificationOrigins.size() == pointCount) {
+            if (pointGeometry.densificationOrigins.size() == pointCount)
+            {
                 densificationOriginHost[pointIndex] = static_cast<float>(
                     pointGeometry.densificationOrigins[pointIndex]);
             }
-            if (hasPrimitiveAgeMetadata) {
+            if (hasPrimitiveAgeMetadata)
+            {
                 primitiveAgeHost[pointIndex] = static_cast<float>(
                     pointGeometry.primitiveAges[pointIndex]);
             }
         }
-        auto makeFloat3Array = [](std::vector<Pale::float3> &hostVector, std::size_t count) -> py::array {
-            auto *owner = new std::vector<Pale::float3>(std::move(hostVector));
+        auto makeFloat3Array = [](std::vector<Pale::float3>& hostVector, std::size_t count) -> py::array
+        {
+            auto* owner = new std::vector<Pale::float3>(std::move(hostVector));
             std::vector<ssize_t> shape{static_cast<ssize_t>(count), 3};
-            std::vector<ssize_t> strides{static_cast<ssize_t>(sizeof(Pale::float3)), static_cast<ssize_t>(sizeof(float))};
-            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<Pale::float3> *>(pointer); }));
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float3)), static_cast<ssize_t>(sizeof(float))
+            };
+            return py::array(
+                py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape,
+                                strides), py::capsule(owner, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float3>*>(pointer);
+                }));
         };
-        auto makeFloat4Array = [](std::vector<float> &hostVector, std::size_t count) -> py::array {
-            auto *owner = new std::vector<float>(std::move(hostVector));
+        auto makeFloat4Array = [](std::vector<float>& hostVector, std::size_t count) -> py::array
+        {
+            auto* owner = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> shape{static_cast<ssize_t>(count), 4};
             std::vector<ssize_t> strides{static_cast<ssize_t>(4 * sizeof(float)), static_cast<ssize_t>(sizeof(float))};
-            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<float> *>(pointer); }));
+            return py::array(
+                py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape,
+                                strides), py::capsule(owner, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
+                }));
         };
-        auto makeFloat2Array = [](std::vector<Pale::float2> &hostVector, std::size_t count) -> py::array {
-            auto *owner = new std::vector<Pale::float2>(std::move(hostVector));
+        auto makeFloat2Array = [](std::vector<Pale::float2>& hostVector, std::size_t count) -> py::array
+        {
+            auto* owner = new std::vector<Pale::float2>(std::move(hostVector));
             std::vector<ssize_t> shape{static_cast<ssize_t>(count), 2};
-            std::vector<ssize_t> strides{static_cast<ssize_t>(sizeof(Pale::float2)), static_cast<ssize_t>(sizeof(float))};
-            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<Pale::float2> *>(pointer); }));
+            std::vector<ssize_t> strides{
+                static_cast<ssize_t>(sizeof(Pale::float2)), static_cast<ssize_t>(sizeof(float))
+            };
+            return py::array(
+                py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 2, shape,
+                                strides), py::capsule(owner, [](void* pointer)
+                {
+                    delete static_cast<std::vector<Pale::float2>*>(pointer);
+                }));
         };
-        auto makeFloat1Array = [](std::vector<float> &hostVector, std::size_t count) -> py::array {
-            auto *owner = new std::vector<float>(std::move(hostVector));
+        auto makeFloat1Array = [](std::vector<float>& hostVector, std::size_t count) -> py::array
+        {
+            auto* owner = new std::vector<float>(std::move(hostVector));
             std::vector<ssize_t> shape{static_cast<ssize_t>(count)};
             std::vector<ssize_t> strides{static_cast<ssize_t>(sizeof(float))};
-            return py::array(py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 1, shape, strides), py::capsule(owner, [](void *pointer) { delete static_cast<std::vector<float> *>(pointer); }));
+            return py::array(
+                py::buffer_info(owner->data(), sizeof(float), py::format_descriptor<float>::format(), 1, shape,
+                                strides), py::capsule(owner, [](void* pointer)
+                {
+                    delete static_cast<std::vector<float>*>(pointer);
+                }));
         };
         py::dict parameterDictionary;
         parameterDictionary["position"] = makeFloat3Array(positionHost, pointCount);
@@ -3385,14 +3718,16 @@ public:
         parameterDictionary["power"] = makeFloat1Array(powerHost, pointCount);
         parameterDictionary["densification_origin"] =
             makeFloat1Array(densificationOriginHost, pointCount);
-        if (hasPrimitiveAgeMetadata) {
+        if (hasPrimitiveAgeMetadata)
+        {
             parameterDictionary["primitive_age"] =
                 makeFloat1Array(primitiveAgeHost, pointCount);
         }
         return parameterDictionary;
     }
 
-    py::dict get_curvature_densification_stats() {
+    py::dict get_curvature_densification_stats()
+    {
         const std::size_t pointCount = curvatureDensificationStats.numPoints;
         py::array_t<float> violationSum(pointCount);
         py::array_t<std::uint32_t> violationCount(pointCount);
@@ -3400,22 +3735,24 @@ public:
         py::array_t<float> directionTensorUv(pointCount);
         py::array_t<float> directionTensorVv(pointCount);
 
-        if (pointCount > 0u) {
+        if (pointCount > 0u)
+        {
             if (!curvatureDensificationStats.violationSum ||
                 !curvatureDensificationStats.violationCount ||
                 !curvatureDensificationStats.directionTensorUu ||
                 !curvatureDensificationStats.directionTensorUv ||
-                !curvatureDensificationStats.directionTensorVv) {
+                !curvatureDensificationStats.directionTensorVv)
+            {
                 throw std::runtime_error(
                     "get_curvature_densification_stats: enabled buffers are incomplete");
             }
 
             auto syclQueue = deviceSelector->getQueue();
-            float *violationSumHost = violationSum.mutable_data();
-            std::uint32_t *violationCountHost = violationCount.mutable_data();
-            float *directionTensorUuHost = directionTensorUu.mutable_data();
-            float *directionTensorUvHost = directionTensorUv.mutable_data();
-            float *directionTensorVvHost = directionTensorVv.mutable_data();
+            float* violationSumHost = violationSum.mutable_data();
+            std::uint32_t* violationCountHost = violationCount.mutable_data();
+            float* directionTensorUuHost = directionTensorUu.mutable_data();
+            float* directionTensorUvHost = directionTensorUv.mutable_data();
+            float* directionTensorVvHost = directionTensorVv.mutable_data();
             {
                 py::gil_scoped_release release;
                 syclQueue.memcpy(
@@ -3451,14 +3788,17 @@ public:
         return result;
     }
 
-    py::dict get_primal_activity_stats() {
+    py::dict get_primal_activity_stats()
+    {
         const std::size_t pointCount = primalActivityStats.numPoints;
         py::array_t<std::uint32_t> cameraSurfaceHitCount(pointCount);
         py::array_t<std::uint32_t> shadowOccluderHitCount(pointCount);
 
-        if (pointCount > 0u) {
+        if (pointCount > 0u)
+        {
             if (!primalActivityStats.cameraSurfaceHitCount ||
-                !primalActivityStats.shadowOccluderHitCount) {
+                !primalActivityStats.shadowOccluderHitCount)
+            {
                 throw std::runtime_error(
                     "get_primal_activity_stats: buffers are incomplete");
             }
@@ -3484,34 +3824,51 @@ public:
     }
 
 
-    void apply_point_optimization(const py::dict &parameterDictionary) {
+    void apply_point_optimization(const py::dict& parameterDictionary)
+    {
         if (!parameterDictionary.contains("position")) return;
         devicePointParametersDirty = false;
-        if (!parameterDictionary.contains("rotation")) throw std::runtime_error("apply_point_optimization: expected key 'rotation' with shape (N,4)");
+        if (!parameterDictionary.contains("rotation")) throw std::runtime_error(
+            "apply_point_optimization: expected key 'rotation' with shape (N,4)");
         py::array positionArray = parameterDictionary["position"].cast<py::array>();
         py::buffer_info positionInfo = positionArray.request();
-        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) throw std::runtime_error("Expected 'position' to have shape (N,3)");
+        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) throw std::runtime_error(
+            "Expected 'position' to have shape (N,3)");
         const std::size_t pointCount = static_cast<std::size_t>(positionInfo.shape[0]);
         const std::size_t currentPointCount = buildProducts.points.size();
         if (pointCount == 0) return;
-        if (pointCount != currentPointCount) {
-            Pale::Log::PA_ERROR("apply_point_optimization: incoming point count {} does not match current buildProducts.points size {}. This function does not handle topology changes.", pointCount, currentPointCount);
-            throw std::runtime_error("apply_point_optimization expects consistent point count; use densification API for adding/removing points.");
+        if (pointCount != currentPointCount)
+        {
+            Pale::Log::PA_ERROR(
+                "apply_point_optimization: incoming point count {} does not match current buildProducts.points size {}. This function does not handle topology changes.",
+                pointCount, currentPointCount);
+            throw std::runtime_error(
+                "apply_point_optimization expects consistent point count; use densification API for adding/removing points.");
         }
-        if (deviceTrainingState.pointCount != 0u && deviceTrainingState.pointCount != pointCount) {
+        if (deviceTrainingState.pointCount != 0u && deviceTrainingState.pointCount != pointCount)
+        {
             freeDeviceTrainingState(deviceSelector->getQueue());
         }
-        auto requireArray = [&](const char *key) -> py::array {
-            if (!parameterDictionary.contains(key)) throw std::runtime_error("apply_point_optimization: missing key: " + std::string(key));
+        auto requireArray = [&](const char* key) -> py::array
+        {
+            if (!parameterDictionary.contains(key)) throw std::runtime_error(
+                "apply_point_optimization: missing key: " + std::string(key));
             return parameterDictionary[key].cast<py::array>();
         };
-        auto checkMatrix = [&](const py::buffer_info &info, const char *key, std::size_t dim) {
-            if (info.ndim != 2 || info.shape[0] != static_cast<ssize_t>(pointCount) || info.shape[1] != static_cast<ssize_t>(dim)) throw std::runtime_error(std::string("Expected '") + key + "' to have shape (N," + std::to_string(dim) + ")");
-            if (info.itemsize != sizeof(float)) throw std::runtime_error(std::string("Expected '") + key + "' to be float32");
+        auto checkMatrix = [&](const py::buffer_info& info, const char* key, std::size_t dim)
+        {
+            if (info.ndim != 2 || info.shape[0] != static_cast<ssize_t>(pointCount) || info.shape[1] != static_cast<
+                ssize_t>(dim)) throw std::runtime_error(
+                std::string("Expected '") + key + "' to have shape (N," + std::to_string(dim) + ")");
+            if (info.itemsize != sizeof(float)) throw std::runtime_error(
+                std::string("Expected '") + key + "' to be float32");
         };
-        auto checkVector = [&](const py::buffer_info &info, const char *key) {
-            if (info.ndim != 1 || info.shape[0] != static_cast<ssize_t>(pointCount)) throw std::runtime_error(std::string("Expected '") + key + "' to have shape (N,)");
-            if (info.itemsize != sizeof(float)) throw std::runtime_error(std::string("Expected '") + key + "' to be float32");
+        auto checkVector = [&](const py::buffer_info& info, const char* key)
+        {
+            if (info.ndim != 1 || info.shape[0] != static_cast<ssize_t>(pointCount)) throw std::runtime_error(
+                std::string("Expected '") + key + "' to have shape (N,)");
+            if (info.itemsize != sizeof(float)) throw std::runtime_error(
+                std::string("Expected '") + key + "' to be float32");
         };
         py::array rotationArray = requireArray("rotation");
         py::array scaleArray = requireArray("scale");
@@ -3532,20 +3889,22 @@ public:
         checkVector(opacityInfo, "opacity");
         checkVector(betaInfo, "beta");
         checkVector(powerInfo, "power");
-        const float *positionData = static_cast<const float *>(positionInfo.ptr);
-        const float *rotationData = static_cast<const float *>(rotationInfo.ptr);
-        const float *scaleData = static_cast<const float *>(scaleInfo.ptr);
-        const float *albedoData = static_cast<const float *>(albedoInfo.ptr);
-        const float *opacityData = static_cast<const float *>(opacityInfo.ptr);
-        const float *betaData = static_cast<const float *>(betaInfo.ptr);
-        const float *powerData = static_cast<const float *>(powerInfo.ptr);
-        for (std::size_t i = 0; i < pointCount; ++i) {
+        const float* positionData = static_cast<const float*>(positionInfo.ptr);
+        const float* rotationData = static_cast<const float*>(rotationInfo.ptr);
+        const float* scaleData = static_cast<const float*>(scaleInfo.ptr);
+        const float* albedoData = static_cast<const float*>(albedoInfo.ptr);
+        const float* opacityData = static_cast<const float*>(opacityInfo.ptr);
+        const float* betaData = static_cast<const float*>(betaInfo.ptr);
+        const float* powerData = static_cast<const float*>(powerInfo.ptr);
+        for (std::size_t i = 0; i < pointCount; ++i)
+        {
             const std::size_t i3 = i * 3u;
             const std::size_t i4 = i * 4u;
             const std::size_t i2 = i * 2u;
-            Pale::Point &point = buildProducts.points[i];
+            Pale::Point& point = buildProducts.points[i];
             point.position = glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u], positionData[i3 + 2u]);
-            const glm::quat q = normalizeQuaternionOrIdentity(glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u]));
+            const glm::quat q = normalizeQuaternionOrIdentity(
+                glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u]));
             frameFromQuaternion(q, point.tanU, point.tanV);
             point.scale.x() = scaleData[i2 + 0u];
             point.scale.y() = scaleData[i2 + 1u];
@@ -3554,23 +3913,37 @@ public:
             point.beta = betaData[i];
             point.flux = powerData[i];
         }
-        if (!assetManager) {
+        if (!assetManager)
+        {
             Pale::Log::PA_WARN("apply_point_optimization: assetManager is null, skipping asset point cloud update.");
-        } else {
+        }
+        else
+        {
             auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-            if (!pointAssetSharedPtr) {
-                Pale::Log::PA_ERROR("apply_point_optimization: failed to get PointAsset for handle {}", std::string(pointCloudAssetHandle));
-            } else if (!pointAssetSharedPtr->points.empty()) {
-                Pale::PointGeometry &pointGeometry = pointAssetSharedPtr->points.front();
-                if (pointGeometry.positions.size() != pointCount || pointGeometry.quat.size() != pointCount || pointGeometry.scales.size() != pointCount || pointGeometry.albedos.size() != pointCount || pointGeometry.betas.size() != pointCount || pointGeometry.opacities.size() != pointCount || pointGeometry.powers.size() != pointCount) {
+            if (!pointAssetSharedPtr)
+            {
+                Pale::Log::PA_ERROR("apply_point_optimization: failed to get PointAsset for handle {}",
+                                    std::string(pointCloudAssetHandle));
+            }
+            else if (!pointAssetSharedPtr->points.empty())
+            {
+                Pale::PointGeometry& pointGeometry = pointAssetSharedPtr->points.front();
+                if (pointGeometry.positions.size() != pointCount || pointGeometry.quat.size() != pointCount ||
+                    pointGeometry.scales.size() != pointCount || pointGeometry.albedos.size() != pointCount ||
+                    pointGeometry.betas.size() != pointCount || pointGeometry.opacities.size() != pointCount ||
+                    pointGeometry.powers.size() != pointCount)
+                {
                     throw std::runtime_error("apply_point_optimization: PointGeometry size mismatch");
                 }
-                for (std::size_t i = 0; i < pointCount; ++i) {
+                for (std::size_t i = 0; i < pointCount; ++i)
+                {
                     const std::size_t i3 = i * 3u;
                     const std::size_t i4 = i * 4u;
                     const std::size_t i2 = i * 2u;
-                    pointGeometry.positions[i] = glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u], positionData[i3 + 2u]);
-                    pointGeometry.quat[i] = normalizeQuaternionOrIdentity(glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u]));
+                    pointGeometry.positions[i] = glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u],
+                                                           positionData[i3 + 2u]);
+                    pointGeometry.quat[i] = normalizeQuaternionOrIdentity(glm::quat(
+                        rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u]));
                     pointGeometry.scales[i] = glm::vec2(scaleData[i2 + 0u], scaleData[i2 + 1u]);
                     pointGeometry.albedos[i] = glm::vec3(albedoData[i3 + 0u], albedoData[i3 + 1u], albedoData[i3 + 2u]);
                     pointGeometry.opacities[i] = opacityData[i];
@@ -3584,7 +3957,8 @@ public:
         devicePointParametersDirty = false;
     }
 
-    void rebuild_bvh() {
+    void rebuild_bvh()
+    {
         syncPointParametersFromGpuIfDirty();
         freePointBvhRefitPlan(deviceSelector->getQueue());
         const std::size_t previousDeviceOptimizerPointCount = deviceTrainingState.pointCount;
@@ -3592,7 +3966,8 @@ public:
         buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
         Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, deviceSelector->getQueue());
         if (previousDeviceOptimizerPointCount != 0u &&
-            previousDeviceOptimizerPointCount != buildProducts.points.size()) {
+            previousDeviceOptimizerPointCount != buildProducts.points.size())
+        {
             freeDeviceTrainingState(deviceSelector->getQueue());
         }
         Pale::freeGradientsForScene(deviceSelector->getQueue(), gradients);
@@ -3609,11 +3984,13 @@ public:
         debugImages.clear();
         debugImages.resize(sensorsForward.size());
         // Backward buffers are allocated on first use, including after a topology change.
-        if (curvatureDensificationEnabled) {
+        if (curvatureDensificationEnabled)
+        {
             curvatureDensificationStats = Pale::makeCurvatureDensificationStatsForScene(
                 deviceSelector->getQueue(), buildProducts);
         }
-        if (primalActivityTrackingEnabled) {
+        if (primalActivityTrackingEnabled)
+        {
             primalActivityStats = Pale::makePrimalActivityStatsForScene(
                 deviceSelector->getQueue(), buildProducts);
         }
@@ -3625,56 +4002,65 @@ public:
         devicePointParametersDirty = false;
     }
 
-    void remove_points(const py::dict &parameterDictionary) {
+    void remove_points(const py::dict& parameterDictionary)
+    {
         syncPointParametersFromGpuIfDirty();
         // -----------------------------------------------------------------
         // 0) Check required input
         // -----------------------------------------------------------------
-        if (!parameterDictionary.contains("indices")) {
+        if (!parameterDictionary.contains("indices"))
+        {
             throw std::runtime_error("remove_points: expected key 'indices' (1D int32 / int64 array)");
         }
 
         py::array indicesArray = parameterDictionary["indices"].cast<py::array>();
         py::buffer_info indicesInfo = indicesArray.request();
 
-        if (indicesInfo.ndim != 1) {
+        if (indicesInfo.ndim != 1)
+        {
             throw std::runtime_error("remove_points: 'indices' must be a 1D array");
         }
 
         const std::size_t removeCount = static_cast<std::size_t>(indicesInfo.shape[0]);
-        if (removeCount == 0) {
+        if (removeCount == 0)
+        {
             Pale::Log::PA_INFO("remove_points: no indices provided, nothing to remove.");
             return;
         }
 
-        const void *indicesVoidPointer = indicesInfo.ptr;
+        const void* indicesVoidPointer = indicesInfo.ptr;
         const bool indicesAreInt64 = (indicesInfo.itemsize == sizeof(std::int64_t));
         const bool indicesAreInt32 = (indicesInfo.itemsize == sizeof(std::int32_t));
-        if (!indicesAreInt32 && !indicesAreInt64) {
+        if (!indicesAreInt32 && !indicesAreInt64)
+        {
             throw std::runtime_error("remove_points: 'indices' must have dtype int32 or int64");
         }
 
         // -----------------------------------------------------------------
         // 1) Get point cloud asset
         // -----------------------------------------------------------------
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("remove_points: assetManager is null");
         }
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
+        if (!pointAssetSharedPtr)
+        {
             throw std::runtime_error("remove_points: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("remove_points: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
         const std::size_t currentPointCount = pointGeometry.positions.size();
 
-        if (currentPointCount == 0) {
+        if (currentPointCount == 0)
+        {
             Pale::Log::PA_INFO("remove_points: current point cloud is empty, nothing to remove.");
             return;
         }
@@ -3684,27 +4070,36 @@ public:
         // -----------------------------------------------------------------
         std::vector<char> keepMask(currentPointCount, 1);
 
-        auto markIndexForRemoval = [&](std::size_t removalIndex) {
-            if (removalIndex >= currentPointCount) {
+        auto markIndexForRemoval = [&](std::size_t removalIndex)
+        {
+            if (removalIndex >= currentPointCount)
+            {
                 throw std::out_of_range("remove_points: index out of range");
             }
             keepMask[removalIndex] = 0;
         };
 
-        if (indicesAreInt64) {
-            const auto *indexData = static_cast<const std::int64_t *>(indicesVoidPointer);
-            for (std::size_t removeIndex = 0; removeIndex < removeCount; ++removeIndex) {
+        if (indicesAreInt64)
+        {
+            const auto* indexData = static_cast<const std::int64_t*>(indicesVoidPointer);
+            for (std::size_t removeIndex = 0; removeIndex < removeCount; ++removeIndex)
+            {
                 const std::int64_t value = indexData[removeIndex];
-                if (value < 0) {
+                if (value < 0)
+                {
                     throw std::out_of_range("remove_points: negative index is not allowed");
                 }
                 markIndexForRemoval(static_cast<std::size_t>(value));
             }
-        } else {
-            const auto *indexData = static_cast<const std::int32_t *>(indicesVoidPointer);
-            for (std::size_t removeIndex = 0; removeIndex < removeCount; ++removeIndex) {
+        }
+        else
+        {
+            const auto* indexData = static_cast<const std::int32_t*>(indicesVoidPointer);
+            for (std::size_t removeIndex = 0; removeIndex < removeCount; ++removeIndex)
+            {
                 const std::int32_t value = indexData[removeIndex];
-                if (value < 0) {
+                if (value < 0)
+                {
                     throw std::out_of_range("remove_points: negative index is not allowed");
                 }
                 markIndexForRemoval(static_cast<std::size_t>(value));
@@ -3712,13 +4107,16 @@ public:
         }
 
         std::size_t newPointCount = 0;
-        for (char keepFlag: keepMask) {
-            if (keepFlag) {
+        for (char keepFlag : keepMask)
+        {
+            if (keepFlag)
+            {
                 ++newPointCount;
             }
         }
 
-        if (newPointCount == 0) {
+        if (newPointCount == 0)
+        {
             Pale::Log::PA_WARN(
                 "remove_points: all points would be removed ({} total). "
                 "Proceeding, but make sure your pipeline handles the empty case.",
@@ -3729,13 +4127,16 @@ public:
         // -----------------------------------------------------------------
         // 3) Filter all attribute arrays in PointGeometry
         // -----------------------------------------------------------------
-        auto filterVectorInPlace = [&](auto &vectorAttribute) {
+        auto filterVectorInPlace = [&](auto& vectorAttribute)
+        {
             using AttributeType = typename std::decay_t<decltype(vectorAttribute)>::value_type;
             std::vector<AttributeType> filteredVector;
             filteredVector.reserve(newPointCount);
 
-            for (std::size_t pointIndex = 0; pointIndex < currentPointCount; ++pointIndex) {
-                if (keepMask[pointIndex]) {
+            for (std::size_t pointIndex = 0; pointIndex < currentPointCount; ++pointIndex)
+            {
+                if (keepMask[pointIndex])
+                {
                     filteredVector.push_back(vectorAttribute[pointIndex]);
                 }
             }
@@ -3751,10 +4152,12 @@ public:
         filterVectorInPlace(pointGeometry.shapes);
         filterVectorInPlace(pointGeometry.betas);
         filterVectorInPlace(pointGeometry.powers);
-        if (pointGeometry.densificationOrigins.size() == currentPointCount) {
+        if (pointGeometry.densificationOrigins.size() == currentPointCount)
+        {
             filterVectorInPlace(pointGeometry.densificationOrigins);
         }
-        if (pointGeometry.primitiveAges.size() == currentPointCount) {
+        if (pointGeometry.primitiveAges.size() == currentPointCount)
+        {
             filterVectorInPlace(pointGeometry.primitiveAges);
         }
 
@@ -3770,20 +4173,31 @@ public:
         rebuild_bvh();
     }
 
-    void add_new_points(const py::dict &parameterDictionary) {
+    void add_new_points(const py::dict& parameterDictionary)
+    {
         syncPointParametersFromGpuIfDirty();
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) throw std::runtime_error("add_new_points: failed to get PointAsset for dynamic point cloud");
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) throw std::runtime_error("add_new_points: PointAsset has no PointGeometry blocks");
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-        if (!parameterDictionary.contains("new")) { Pale::Log::PA_INFO("add_new_points: no 'new' block provided, nothing to append."); return; }
+        if (!pointAssetSharedPtr) throw std::runtime_error(
+            "add_new_points: failed to get PointAsset for dynamic point cloud");
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) throw std::runtime_error(
+            "add_new_points: PointAsset has no PointGeometry blocks");
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
+        if (!parameterDictionary.contains("new"))
+        {
+            Pale::Log::PA_INFO("add_new_points: no 'new' block provided, nothing to append.");
+            return;
+        }
         py::dict newDict = parameterDictionary["new"].cast<py::dict>();
-        auto getFloatArray = [&](const char *key) -> py::array_t<float, py::array::c_style | py::array::forcecast> {
-            if (!newDict.contains(key)) throw std::runtime_error(std::string("add_new_points: missing key 'new.") + key + "'");
+        auto getFloatArray = [&](const char* key) -> py::array_t<float, py::array::c_style | py::array::forcecast>
+        {
+            if (!newDict.contains(key)) throw std::runtime_error(
+                std::string("add_new_points: missing key 'new.") + key + "'");
             return newDict[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         };
-        auto getOptionalFloatArray = [&](const char *key) -> std::optional<py::array_t<float, py::array::c_style | py::array::forcecast>> {
+        auto getOptionalFloatArray = [&](
+            const char* key) -> std::optional<py::array_t<float, py::array::c_style | py::array::forcecast>>
+        {
             if (!newDict.contains(key)) return std::nullopt;
             return newDict[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         };
@@ -3793,26 +4207,44 @@ public:
         py::array_t<float, py::array::c_style | py::array::forcecast> albedoArray = getFloatArray("albedo");
         py::array_t<float, py::array::c_style | py::array::forcecast> opacityArray = getFloatArray("opacity");
         py::array_t<float, py::array::c_style | py::array::forcecast> betaArray = getFloatArray("beta");
-        std::optional<py::array_t<float, py::array::c_style | py::array::forcecast>> powerArrayOpt = getOptionalFloatArray("power");
+        std::optional<py::array_t<float, py::array::c_style | py::array::forcecast>> powerArrayOpt =
+            getOptionalFloatArray("power");
         py::buffer_info positionInfo = positionArray.request();
         py::buffer_info rotationInfo = rotationArray.request();
         py::buffer_info scaleInfo = scaleArray.request();
         py::buffer_info albedoInfo = albedoArray.request();
         py::buffer_info opacityInfo = opacityArray.request();
         py::buffer_info betaInfo = betaArray.request();
-        auto checkMatrixShape = [](const py::buffer_info &bufferInfo, std::size_t expectedCount, std::size_t expectedDim, const char *name) {
-            if (bufferInfo.ndim != 2 || bufferInfo.shape[0] != static_cast<ssize_t>(expectedCount) || bufferInfo.shape[1] != static_cast<ssize_t>(expectedDim)) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must have shape (N," + std::to_string(expectedDim) + ")");
-            if (bufferInfo.itemsize != sizeof(float)) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must be float32");
+        auto checkMatrixShape = [](const py::buffer_info& bufferInfo, std::size_t expectedCount,
+                                   std::size_t expectedDim, const char* name)
+        {
+            if (bufferInfo.ndim != 2 || bufferInfo.shape[0] != static_cast<ssize_t>(expectedCount) || bufferInfo.shape[
+                1] != static_cast<ssize_t>(expectedDim)) throw std::runtime_error(
+                std::string("add_new_points: 'new.") + name + "' must have shape (N," + std::to_string(expectedDim) +
+                ")");
+            if (bufferInfo.itemsize != sizeof(float)) throw std::runtime_error(
+                std::string("add_new_points: 'new.") + name + "' must be float32");
         };
-        auto checkVectorShape = [](const py::buffer_info &bufferInfo, std::size_t expectedCount, const char *name) {
-            const bool validShape = (bufferInfo.ndim == 1 && bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount)) || (bufferInfo.ndim == 2 && bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount) && bufferInfo.shape[1] == 1);
-            if (!validShape) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must have shape (N,) or (N,1)");
-            if (bufferInfo.itemsize != sizeof(float)) throw std::runtime_error(std::string("add_new_points: 'new.") + name + "' must be float32");
+        auto checkVectorShape = [](const py::buffer_info& bufferInfo, std::size_t expectedCount, const char* name)
+        {
+            const bool validShape = (bufferInfo.ndim == 1 && bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount))
+                || (bufferInfo.ndim == 2 && bufferInfo.shape[0] == static_cast<ssize_t>(expectedCount) && bufferInfo.
+                    shape[1] == 1);
+            if (!validShape) throw std::runtime_error(
+                std::string("add_new_points: 'new.") + name + "' must have shape (N,) or (N,1)");
+            if (bufferInfo.itemsize != sizeof(float)) throw std::runtime_error(
+                std::string("add_new_points: 'new.") + name + "' must be float32");
         };
-        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) throw std::runtime_error("add_new_points: 'new.position' must have shape (N,3)");
-        if (positionInfo.itemsize != sizeof(float)) throw std::runtime_error("add_new_points: 'new.position' must be float32");
+        if (positionInfo.ndim != 2 || positionInfo.shape[1] != 3) throw std::runtime_error(
+            "add_new_points: 'new.position' must have shape (N,3)");
+        if (positionInfo.itemsize != sizeof(float)) throw std::runtime_error(
+            "add_new_points: 'new.position' must be float32");
         const std::size_t newPointCount = static_cast<std::size_t>(positionInfo.shape[0]);
-        if (newPointCount == 0) { Pale::Log::PA_INFO("add_new_points: 'new' block has zero points, nothing to append."); return; }
+        if (newPointCount == 0)
+        {
+            Pale::Log::PA_INFO("add_new_points: 'new' block has zero points, nothing to append.");
+            return;
+        }
         checkMatrixShape(rotationInfo, newPointCount, 4, "rotation");
         checkMatrixShape(scaleInfo, newPointCount, 2, "scale");
         checkMatrixShape(albedoInfo, newPointCount, 3, "albedo");
@@ -3820,17 +4252,25 @@ public:
         checkVectorShape(betaInfo, newPointCount, "beta");
         py::buffer_info powerInfo{};
         bool hasPower = false;
-        if (powerArrayOpt.has_value()) { powerInfo = powerArrayOpt.value().request(); checkVectorShape(powerInfo, newPointCount, "power"); hasPower = true; }
-        const float *positionData = static_cast<const float *>(positionInfo.ptr);
-        const float *rotationData = static_cast<const float *>(rotationInfo.ptr);
-        const float *scaleData = static_cast<const float *>(scaleInfo.ptr);
-        const float *albedoData = static_cast<const float *>(albedoInfo.ptr);
-        const float *opacityData = static_cast<const float *>(opacityInfo.ptr);
-        const float *betaData = static_cast<const float *>(betaInfo.ptr);
-        const float *powerData = hasPower ? static_cast<const float *>(powerInfo.ptr) : nullptr;
+        if (powerArrayOpt.has_value())
+        {
+            powerInfo = powerArrayOpt.value().request();
+            checkVectorShape(powerInfo, newPointCount, "power");
+            hasPower = true;
+        }
+        const float* positionData = static_cast<const float*>(positionInfo.ptr);
+        const float* rotationData = static_cast<const float*>(rotationInfo.ptr);
+        const float* scaleData = static_cast<const float*>(scaleInfo.ptr);
+        const float* albedoData = static_cast<const float*>(albedoInfo.ptr);
+        const float* opacityData = static_cast<const float*>(opacityInfo.ptr);
+        const float* betaData = static_cast<const float*>(betaInfo.ptr);
+        const float* powerData = hasPower ? static_cast<const float*>(powerInfo.ptr) : nullptr;
         const std::size_t currentPointCount = pointGeometry.positions.size();
         const std::size_t newTotalPointCount = currentPointCount + newPointCount;
-        auto reserveAttribute = [newTotalPointCount](auto &vectorAttribute) { vectorAttribute.reserve(newTotalPointCount); };
+        auto reserveAttribute = [newTotalPointCount](auto& vectorAttribute)
+        {
+            vectorAttribute.reserve(newTotalPointCount);
+        };
         reserveAttribute(pointGeometry.positions);
         reserveAttribute(pointGeometry.quat);
         reserveAttribute(pointGeometry.scales);
@@ -3839,72 +4279,89 @@ public:
         reserveAttribute(pointGeometry.shapes);
         reserveAttribute(pointGeometry.betas);
         reserveAttribute(pointGeometry.powers);
-        if (!pointGeometry.densificationOrigins.empty()) {
+        if (!pointGeometry.densificationOrigins.empty())
+        {
             reserveAttribute(pointGeometry.densificationOrigins);
         }
-        if (!pointGeometry.primitiveAges.empty()) {
+        if (!pointGeometry.primitiveAges.empty())
+        {
             reserveAttribute(pointGeometry.primitiveAges);
         }
-        for (std::size_t pointIndex = 0; pointIndex < newPointCount; ++pointIndex) {
+        for (std::size_t pointIndex = 0; pointIndex < newPointCount; ++pointIndex)
+        {
             const std::size_t i3 = pointIndex * 3u;
             const std::size_t i4 = pointIndex * 4u;
             const std::size_t i2 = pointIndex * 2u;
-            pointGeometry.positions.push_back(glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u], positionData[i3 + 2u]));
-            pointGeometry.quat.push_back(normalizeQuaternionOrIdentity(glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u])));
+            pointGeometry.positions.push_back(glm::vec3(positionData[i3 + 0u], positionData[i3 + 1u],
+                                                        positionData[i3 + 2u]));
+            pointGeometry.quat.push_back(normalizeQuaternionOrIdentity(
+                glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u])));
             pointGeometry.scales.push_back(glm::vec2(scaleData[i2 + 0u], scaleData[i2 + 1u]));
             pointGeometry.albedos.push_back(glm::vec3(albedoData[i3 + 0u], albedoData[i3 + 1u], albedoData[i3 + 2u]));
             pointGeometry.opacities.push_back(opacityData[pointIndex]);
             pointGeometry.betas.push_back(betaData[pointIndex]);
             pointGeometry.powers.push_back(hasPower ? powerData[pointIndex] : 0.0f);
             pointGeometry.shapes.push_back(0.0f);
-            if (!pointGeometry.densificationOrigins.empty()) {
+            if (!pointGeometry.densificationOrigins.empty())
+            {
                 pointGeometry.densificationOrigins.push_back(0u);
             }
-            if (!pointGeometry.primitiveAges.empty()) {
+            if (!pointGeometry.primitiveAges.empty())
+            {
                 pointGeometry.primitiveAges.push_back(0u);
             }
         }
-        Pale::Log::PA_INFO("add_new_points: final point count in geometry = {} (added {} new points)", pointGeometry.positions.size(), newPointCount);
+        Pale::Log::PA_INFO("add_new_points: final point count in geometry = {} (added {} new points)",
+                           pointGeometry.positions.size(), newPointCount);
         rebuild_bvh();
     }
 
-    std::vector<std::string> getCameraNames() {
+    std::vector<std::string> getCameraNames()
+    {
         std::vector<std::string> names;
-        for (const auto &camera: buildProducts.cameras()) {
+        for (const auto& camera : buildProducts.cameras())
+        {
             names.emplace_back(camera.name);
         }
         return names;
     }
 
-    std::vector<std::string> getTrainingCameras() {
+    std::vector<std::string> getTrainingCameras()
+    {
         std::vector<std::string> names;
-        for (const auto &camera: buildProducts.cameras()) {
+        for (const auto& camera : buildProducts.cameras())
+        {
             if (camera.useForAdjointPass)
                 names.emplace_back(camera.name);
         }
         return names;
     }
 
-    void set_point_opacity(float newOpacity, int index) {
+    void set_point_opacity(float newOpacity, int index)
+    {
         syncPointParametersFromGpuIfDirty();
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
         }
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
+        if (!pointAssetSharedPtr)
+        {
             throw std::runtime_error("set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("set_gaussian_opacity: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
 
         const int pointCount = static_cast<int>(pointGeometry.opacities.size());
-        if (index < 0 || index >= pointCount) {
+        if (index < 0 || index >= pointCount)
+        {
             throw std::runtime_error("set_gaussian_opacity: index out of range");
         }
 
@@ -3916,26 +4373,31 @@ public:
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
-    void set_point_translation(float newPosition, float axis, int index) {
+    void set_point_translation(float newPosition, float axis, int index)
+    {
         syncPointParametersFromGpuIfDirty();
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
         }
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
+        if (!pointAssetSharedPtr)
+        {
             throw std::runtime_error("set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("set_gaussian_opacity: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
 
         const int pointCount = static_cast<int>(pointGeometry.positions.size());
-        if (index < 0 || index >= pointCount) {
+        if (index < 0 || index >= pointCount)
+        {
             throw std::runtime_error("set_gaussian_opacity: index out of range");
         }
 
@@ -3947,26 +4409,31 @@ public:
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
-    void set_point_albedo(float newIntensity, float axis, int index) {
+    void set_point_albedo(float newIntensity, float axis, int index)
+    {
         syncPointParametersFromGpuIfDirty();
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("set_point_albedo: assetManager is null");
         }
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
+        if (!pointAssetSharedPtr)
+        {
             throw std::runtime_error("set_point_albedo: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("set_point_albedo: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
 
         const int pointCount = static_cast<int>(pointGeometry.positions.size());
-        if (index < 0 || index >= pointCount) {
+        if (index < 0 || index >= pointCount)
+        {
             throw std::runtime_error("set_point_albedo: index out of range");
         }
 
@@ -3974,7 +4441,8 @@ public:
         rebuild_bvh();
     }
 
-    static inline void orthonormalizeFrame(glm::vec3 &tanU, glm::vec3 &tanV) {
+    static inline void orthonormalizeFrame(glm::vec3& tanU, glm::vec3& tanV)
+    {
         tanU = normalize(tanU);
 
         tanV = tanV - tanU * dot(tanV, tanU);
@@ -3986,81 +4454,98 @@ public:
     }
 
     static inline glm::vec3 rotateAxisAngle(
-        const glm::vec3 &v,
-        const glm::vec3 &axisUnit,
-        float angleRadians) {
+        const glm::vec3& v,
+        const glm::vec3& axisUnit,
+        float angleRadians)
+    {
         const float c = std::cos(angleRadians);
         const float s = std::sin(angleRadians);
 
         return v * c
-               + cross(axisUnit, v) * s
-               + axisUnit * (dot(axisUnit, v) * (1.0f - c));
+            + cross(axisUnit, v) * s
+            + axisUnit * (dot(axisUnit, v) * (1.0f - c));
     }
 
-    void set_point_rotation_degrees(float angleDegrees, int axisIndex, int index) {
+    void set_point_rotation_degrees(float angleDegrees, int axisIndex, int index)
+    {
         syncPointParametersFromGpuIfDirty();
         if (!assetManager) throw std::runtime_error("set_point_rotation_degrees: assetManager is null");
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
         if (!pointAssetSharedPtr) throw std::runtime_error("set_point_rotation_degrees: failed to get PointAsset");
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
         if (pointAsset.points.empty()) throw std::runtime_error("set_point_rotation_degrees: no PointGeometry blocks");
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
         const int pointCount = static_cast<int>(pointGeometry.positions.size());
-        if (index < 0 || index >= pointCount) throw std::runtime_error("set_point_rotation_degrees: index out of range");
+        if (index < 0 || index >= pointCount) throw
+            std::runtime_error("set_point_rotation_degrees: index out of range");
         glm::vec3 axis(0.0f, 0.0f, 0.0f);
-        switch (axisIndex) {
-            case 0: axis = glm::vec3(1.0f, 0.0f, 0.0f); break;
-            case 1: axis = glm::vec3(0.0f, 1.0f, 0.0f); break;
-            case 2: axis = glm::vec3(0.0f, 0.0f, 1.0f); break;
-            default: throw std::runtime_error("set_point_rotation_degrees: invalid axisIndex");
+        switch (axisIndex)
+        {
+        case 0: axis = glm::vec3(1.0f, 0.0f, 0.0f);
+            break;
+        case 1: axis = glm::vec3(0.0f, 1.0f, 0.0f);
+            break;
+        case 2: axis = glm::vec3(0.0f, 0.0f, 1.0f);
+            break;
+        default: throw std::runtime_error("set_point_rotation_degrees: invalid axisIndex");
         }
         pointGeometry.quat[index] = normalizeQuaternionOrIdentity(glm::angleAxis(glm::radians(angleDegrees), axis));
         rebuild_bvh();
     }
 
-    std::vector<Pale::SensorGPU> selectSensorsByName(const std::optional<std::string>& cameraName) const {
-        if (!cameraName.has_value() || cameraName->empty()) {
+    std::vector<Pale::SensorGPU> selectSensorsByName(const std::optional<std::string>& cameraName) const
+    {
+        if (!cameraName.has_value() || cameraName->empty())
+        {
             return sensorsForward;
         }
 
         std::vector<Pale::SensorGPU> selectedSensors;
 
-        for (const Pale::SensorGPU& sensor : sensorsForward) {
+        for (const Pale::SensorGPU& sensor : sensorsForward)
+        {
             const std::string sensorName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
 
-            if (sensorName == cameraName.value()) {
+            if (sensorName == cameraName.value())
+            {
                 selectedSensors.push_back(sensor);
                 break;
             }
         }
 
-        if (selectedSensors.empty()) {
+        if (selectedSensors.empty())
+        {
             throw std::runtime_error("Camera not found: " + cameraName.value());
         }
 
         return selectedSensors;
     }
 
-    void set_point_scale(float newScale, float axis, int index) {
+    void set_point_scale(float newScale, float axis, int index)
+    {
         syncPointParametersFromGpuIfDirty();
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("set_gaussian_opacity: assetManager is null");
         }
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
+        if (!pointAssetSharedPtr)
+        {
             throw std::runtime_error("set_gaussian_opacity: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("set_gaussian_opacity: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
 
         const int pointCount = static_cast<int>(pointGeometry.positions.size());
-        if (index < 0 || index >= pointCount) {
+        if (index < 0 || index >= pointCount)
+        {
             throw std::runtime_error("set_gaussian_opacity: index out of range");
         }
 
@@ -4073,26 +4558,31 @@ public:
     }
 
 
-    void set_point_beta(float newBeta, int index) {
+    void set_point_beta(float newBeta, int index)
+    {
         syncPointParametersFromGpuIfDirty();
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("set_point_beta: assetManager is null");
         }
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
+        if (!pointAssetSharedPtr)
+        {
             throw std::runtime_error("set_point_beta: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("set_point_beta: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
 
         const int pointCount = static_cast<int>(pointGeometry.opacities.size());
-        if (index < 0 || index >= pointCount) {
+        if (index < 0 || index >= pointCount)
+        {
             throw std::runtime_error("set_point_beta: index out of range");
         }
 
@@ -4105,20 +4595,31 @@ public:
     }
 
 
-    void set_point_properties(py::tuple translation3, py::tuple rotationQuat4, py::tuple scale3, py::tuple albedo3, float opacity, float beta, int index = -1) {
+    void set_point_properties(py::tuple translation3, py::tuple rotationQuat4, py::tuple scale3, py::tuple albedo3,
+                              float opacity, float beta, int index = -1)
+    {
         syncPointParametersFromGpuIfDirty();
-        if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3 || albedo3.size() != 3) throw std::runtime_error("Expected translation(3), rotation_quat_wxyz(4), scale(3), albedo(3)");
-        const glm::vec3 newTranslation{py::cast<float>(translation3[0]), py::cast<float>(translation3[1]), py::cast<float>(translation3[2])};
-        const glm::quat rotationDelta = normalizeQuaternionOrIdentity(glm::quat(py::cast<float>(rotationQuat4[0]), py::cast<float>(rotationQuat4[1]), py::cast<float>(rotationQuat4[2]), py::cast<float>(rotationQuat4[3])));
+        if (translation3.size() != 3 || rotationQuat4.size() != 4 || scale3.size() != 3 || albedo3.size() != 3) throw
+            std::runtime_error("Expected translation(3), rotation_quat_wxyz(4), scale(3), albedo(3)");
+        const glm::vec3 newTranslation{
+            py::cast<float>(translation3[0]), py::cast<float>(translation3[1]), py::cast<float>(translation3[2])
+        };
+        const glm::quat rotationDelta = normalizeQuaternionOrIdentity(glm::quat(
+            py::cast<float>(rotationQuat4[0]), py::cast<float>(rotationQuat4[1]), py::cast<float>(rotationQuat4[2]),
+            py::cast<float>(rotationQuat4[3])));
         const glm::vec2 newScale{py::cast<float>(scale3[0]), py::cast<float>(scale3[1])};
         const glm::vec3 newColor{py::cast<float>(albedo3[0]), py::cast<float>(albedo3[1]), py::cast<float>(albedo3[2])};
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) throw std::runtime_error("set_point_properties: failed to get PointAsset for dynamic point cloud");
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) throw std::runtime_error("set_point_properties: PointAsset has no PointGeometry blocks");
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
-        if (index < 0) {
-            for (std::size_t i = 0; i < pointGeometry.positions.size(); ++i) {
+        if (!pointAssetSharedPtr) throw std::runtime_error(
+            "set_point_properties: failed to get PointAsset for dynamic point cloud");
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty()) throw std::runtime_error(
+            "set_point_properties: PointAsset has no PointGeometry blocks");
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
+        if (index < 0)
+        {
+            for (std::size_t i = 0; i < pointGeometry.positions.size(); ++i)
+            {
                 pointGeometry.positions[i] += newTranslation;
                 pointGeometry.quat[i] = normalizeQuaternionOrIdentity(rotationDelta * pointGeometry.quat[i]);
                 pointGeometry.albedos[i] += newColor;
@@ -4126,8 +4627,11 @@ public:
                 pointGeometry.betas[i] += beta;
                 pointGeometry.scales[i] *= newScale;
             }
-        } else {
-            if (index >= static_cast<int>(pointGeometry.positions.size())) throw std::runtime_error("set_point_properties: index out of range");
+        }
+        else
+        {
+            if (index >= static_cast<int>(pointGeometry.positions.size())) throw std::runtime_error(
+                "set_point_properties: index out of range");
             pointGeometry.positions[index] += newTranslation;
             pointGeometry.quat[index] = normalizeQuaternionOrIdentity(rotationDelta * pointGeometry.quat[index]);
             pointGeometry.albedos[index] = newColor;
@@ -4139,57 +4643,69 @@ public:
     }
 
 private:
-    void ensureGradientBuffers(Pale::PointGradients &buffers) {
+    void ensureGradientBuffers(Pale::PointGradients& buffers)
+    {
         if (buffers.numPoints == sceneGpu.pointCount &&
             buffers.cameraSlotCount == buildProducts.cameras().size() &&
-            (sceneGpu.pointCount == 0u || buffers.gradPosition != nullptr)) return;
+            (sceneGpu.pointCount == 0u || buffers.gradPosition != nullptr))
+            return;
         auto queue = deviceSelector->getQueue();
         Pale::freeGradientsForScene(queue, buffers);
         buffers = Pale::makeGradientsForScene(queue, buildProducts, nullptr);
     }
 
-    void ensureDebugImages() {
-        if (m_settings.renderDebugGradientImages) {
+    void ensureDebugImages()
+    {
+        if (m_settings.renderDebugGradientImages)
+        {
             Pale::ensureDebugImagesForScene(deviceSelector->getQueue(), buildProducts, debugImages.data());
         }
     }
 
-    void ensureSurfaceGradientBuffers() {
+    void ensureSurfaceGradientBuffers()
+    {
         if (m_settings.depthDistortionWeight != 0.0f) ensureGradientBuffers(depthDistortionGradients);
         if (m_settings.normalConsistencyWeight != 0.0f) ensureGradientBuffers(normalConsistencyGradients);
         if (m_settings.intraSlabDepthRegularizerWeight != 0.0f) ensureGradientBuffers(intraSlabDepthGradients);
         if (m_settings.curvatureScaleRegularizerWeight != 0.0f) ensureGradientBuffers(curvatureScaleGradients);
     }
 
-    void ensureSensorAdjoints(std::vector<Pale::SensorGPU> &selectedSensors) {
+    void ensureSensorAdjoints(std::vector<Pale::SensorGPU>& selectedSensors)
+    {
         auto queue = deviceSelector->getQueue();
-        for (auto &selected : selectedSensors) {
-            auto &owner = sensorsForward.at(selected.cameraSlotIndex);
+        for (auto& selected : selectedSensors)
+        {
+            auto& owner = sensorsForward.at(selected.cameraSlotIndex);
             Pale::ensureSensorAdjointBuffers(queue, owner);
             selected = owner;
         }
     }
 
-    SelectedTrainingBatch selectTrainingBatch(const py::list &cameraNamesList,
-                                              const char *callerName) {
+    SelectedTrainingBatch selectTrainingBatch(const py::list& cameraNamesList,
+                                              const char* callerName)
+    {
         SelectedTrainingBatch selectedBatch;
         selectedBatch.sensors.reserve(py::len(cameraNamesList));
         selectedBatch.debugImages.reserve(py::len(cameraNamesList));
         selectedBatch.targets.reserve(py::len(cameraNamesList));
 
-        for (const auto &cameraNameObject: cameraNamesList) {
+        for (const auto& cameraNameObject : cameraNamesList)
+        {
             const std::string cameraName = py::cast<std::string>(cameraNameObject);
             bool foundSensor = false;
 
-            for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex) {
-                const Pale::SensorGPU &sensor = sensorsForward[sensorIndex];
+            for (std::size_t sensorIndex = 0; sensorIndex < sensorsForward.size(); ++sensorIndex)
+            {
+                const Pale::SensorGPU& sensor = sensorsForward[sensorIndex];
                 const std::string sensorName(sensor.name, strnlen(sensor.name, sizeof(sensor.name)));
-                if (sensorName != cameraName) {
+                if (sensorName != cameraName)
+                {
                     continue;
                 }
 
                 auto targetIt = trainingTargets.find(cameraName);
-                if (targetIt == trainingTargets.end() || targetIt->second.rgba == nullptr) {
+                if (targetIt == trainingTargets.end() || targetIt->second.rgba == nullptr)
+                {
                     throw std::runtime_error(
                         std::string(callerName) + ": no uploaded target image for camera '" + cameraName + "'");
                 }
@@ -4201,50 +4717,60 @@ private:
                 break;
             }
 
-            if (!foundSensor) {
+            if (!foundSensor)
+            {
                 throw std::runtime_error(std::string(callerName) + ": camera not found: " + cameraName);
             }
         }
 
-        if (selectedBatch.sensors.empty()) {
+        if (selectedBatch.sensors.empty())
+        {
             throw std::runtime_error(std::string(callerName) + ": camera list is empty");
         }
 
         return selectedBatch;
     }
 
-    static DeviceTrainingStepOptions parseDeviceTrainingStepOptions(const py::dict &optionsDictionary) {
+    static DeviceTrainingStepOptions parseDeviceTrainingStepOptions(const py::dict& optionsDictionary)
+    {
         DeviceTrainingStepOptions options;
         options.optimizer = get_s(optionsDictionary, "optimizer", options.optimizer);
-        if (options.optimizer != "adam" && options.optimizer != "sgd") {
+        if (options.optimizer != "adam" && options.optimizer != "sgd")
+        {
             throw std::runtime_error(
                 "render_rgb_training_step: expected optimizer to be 'adam' or 'sgd', got '" +
                 options.optimizer + "'");
         }
-
+        options.skipZeroGradientSurfels = get_b(optionsDictionary, "skip_zero_gradient_surfels",
+                                                options.skipZeroGradientSurfels);
+        if (options.skipZeroGradientSurfels && options.optimizer != "adam")
+        {
+            throw std::invalid_argument("skip_zero_gradient_surfels requires optimizer=adam");
+        }
         options.learningRatePosition =
-                get_f(optionsDictionary, "learning_rate_position", options.learningRatePosition);
+            get_f(optionsDictionary, "learning_rate_position", options.learningRatePosition);
         options.learningRateRotation =
-                get_f(optionsDictionary, "learning_rate_rotation", options.learningRateRotation);
+            get_f(optionsDictionary, "learning_rate_rotation", options.learningRateRotation);
         options.learningRateScale =
-                get_f(optionsDictionary, "learning_rate_scale", options.learningRateScale);
+            get_f(optionsDictionary, "learning_rate_scale", options.learningRateScale);
         options.learningRateAlbedo =
-                get_f(optionsDictionary, "learning_rate_albedo", options.learningRateAlbedo);
+            get_f(optionsDictionary, "learning_rate_albedo", options.learningRateAlbedo);
         options.learningRateOpacity =
-                get_f(optionsDictionary, "learning_rate_opacity", options.learningRateOpacity);
+            get_f(optionsDictionary, "learning_rate_opacity", options.learningRateOpacity);
         options.learningRateBeta =
-                get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
+            get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
         options.cameraBatchScale =
-                get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
+            get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
         options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
         options.beta2 = get_f(optionsDictionary, "adam_beta2", options.beta2);
         options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
         options.maxRotationStepRadians =
-                get_f(optionsDictionary, "max_rotation_step_radians", options.maxRotationStepRadians);
+            get_f(optionsDictionary, "max_rotation_step_radians", options.maxRotationStepRadians);
         return options;
     }
 
-    static RgbLossOptions parseRgbLossOptions(const py::dict &optionsDictionary) {
+    static RgbLossOptions parseRgbLossOptions(const py::dict& optionsDictionary)
+    {
         RgbLossOptions options;
         options.ssimWeight = get_f(optionsDictionary, "ssim_weight", options.ssimWeight);
         options.ssimWindowSize = get_i(
@@ -4256,45 +4782,51 @@ private:
             optionsDictionary, "densification_radiance_floor", options.densificationRadianceFloor);
         const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
         if (!std::isfinite(options.densificationRadianceFloor) ||
-            options.densificationRadianceFloor <= 0.0f || !std::isfinite(floorSquared) || floorSquared <= 0.0f) {
+            options.densificationRadianceFloor <= 0.0f || !std::isfinite(floorSquared) || floorSquared <= 0.0f)
+        {
             throw std::runtime_error("densification_radiance_floor and its square must be finite and positive");
         }
 
         if (!std::isfinite(options.ssimWeight) ||
-            options.ssimWeight < 0.0f || options.ssimWeight > 1.0f) {
+            options.ssimWeight < 0.0f || options.ssimWeight > 1.0f)
+        {
             throw std::runtime_error("ssim_weight must be finite and in [0, 1]");
         }
         if (options.ssimWindowSize <= 0 ||
             options.ssimWindowSize > 31 ||
-            (options.ssimWindowSize & 1) == 0) {
+            (options.ssimWindowSize & 1) == 0)
+        {
             throw std::runtime_error("ssim_window_size must be odd and in [1, 31]");
         }
-        if (!std::isfinite(options.ssimSigma) || options.ssimSigma <= 0.0f) {
+        if (!std::isfinite(options.ssimSigma) || options.ssimSigma <= 0.0f)
+        {
             throw std::runtime_error("ssim_sigma must be finite and positive");
         }
         return options;
     }
 
-    bool isDeviceTrainingStateAllocated() const {
+    bool isDeviceTrainingStateAllocated() const
+    {
         return deviceTrainingState.pointCount != 0u &&
-               deviceTrainingState.positionM != nullptr &&
-               deviceTrainingState.positionV != nullptr &&
-               deviceTrainingState.rotationM != nullptr &&
-               deviceTrainingState.rotationV != nullptr &&
-               deviceTrainingState.scaleM != nullptr &&
-               deviceTrainingState.scaleV != nullptr &&
-               deviceTrainingState.albedoM != nullptr &&
-               deviceTrainingState.albedoV != nullptr &&
-               deviceTrainingState.opacityM != nullptr &&
-               deviceTrainingState.opacityV != nullptr &&
-               deviceTrainingState.betaM != nullptr &&
-               deviceTrainingState.betaV != nullptr;
+            deviceTrainingState.positionM != nullptr &&
+            deviceTrainingState.positionV != nullptr &&
+            deviceTrainingState.rotationM != nullptr &&
+            deviceTrainingState.rotationV != nullptr &&
+            deviceTrainingState.scaleM != nullptr &&
+            deviceTrainingState.scaleV != nullptr &&
+            deviceTrainingState.albedoM != nullptr &&
+            deviceTrainingState.albedoV != nullptr &&
+            deviceTrainingState.opacityM != nullptr &&
+            deviceTrainingState.opacityV != nullptr &&
+            deviceTrainingState.betaM != nullptr &&
+            deviceTrainingState.betaV != nullptr;
     }
 
     static py::array makeDeviceAdamFloat3Array(
-        std::vector<Pale::float3> &&hostVector,
-        std::size_t elementCount) {
-        auto *ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
+        std::vector<Pale::float3>&& hostVector,
+        std::size_t elementCount)
+    {
+        auto* ownedVector = new std::vector<Pale::float3>(std::move(hostVector));
         std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 3};
         std::vector<ssize_t> arrayStrides{
             static_cast<ssize_t>(sizeof(Pale::float3)),
@@ -4309,15 +4841,17 @@ private:
                 2,
                 arrayShape,
                 arrayStrides),
-            py::capsule(ownedVector, [](void *pointer) {
-                delete static_cast<std::vector<Pale::float3> *>(pointer);
+            py::capsule(ownedVector, [](void* pointer)
+            {
+                delete static_cast<std::vector<Pale::float3>*>(pointer);
             }));
     }
 
     static py::array makeDeviceAdamFloat2Array(
-        std::vector<Pale::float2> &&hostVector,
-        std::size_t elementCount) {
-        auto *ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
+        std::vector<Pale::float2>&& hostVector,
+        std::size_t elementCount)
+    {
+        auto* ownedVector = new std::vector<Pale::float2>(std::move(hostVector));
         std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount), 2};
         std::vector<ssize_t> arrayStrides{
             static_cast<ssize_t>(sizeof(Pale::float2)),
@@ -4332,15 +4866,17 @@ private:
                 2,
                 arrayShape,
                 arrayStrides),
-            py::capsule(ownedVector, [](void *pointer) {
-                delete static_cast<std::vector<Pale::float2> *>(pointer);
+            py::capsule(ownedVector, [](void* pointer)
+            {
+                delete static_cast<std::vector<Pale::float2>*>(pointer);
             }));
     }
 
     static py::array makeDeviceAdamFloat1Array(
-        std::vector<float> &&hostVector,
-        std::size_t elementCount) {
-        auto *ownedVector = new std::vector<float>(std::move(hostVector));
+        std::vector<float>&& hostVector,
+        std::size_t elementCount)
+    {
+        auto* ownedVector = new std::vector<float>(std::move(hostVector));
         std::vector<ssize_t> arrayShape{static_cast<ssize_t>(elementCount)};
         std::vector<ssize_t> arrayStrides{static_cast<ssize_t>(sizeof(float))};
 
@@ -4352,35 +4888,40 @@ private:
                 1,
                 arrayShape,
                 arrayStrides),
-            py::capsule(ownedVector, [](void *pointer) {
-                delete static_cast<std::vector<float> *>(pointer);
+            py::capsule(ownedVector, [](void* pointer)
+            {
+                delete static_cast<std::vector<float>*>(pointer);
             }));
     }
 
     static std::vector<Pale::float3> readDeviceAdamFloat3Array(
-        const py::dict &state,
-        const char *key,
-        std::size_t pointCount) {
-        if (!state.contains(key)) {
+        const py::dict& state,
+        const char* key,
+        std::size_t pointCount)
+    {
+        if (!state.contains(key))
+        {
             throw std::runtime_error(
                 std::string("upload_device_adam_state: missing key '") + key + "'");
         }
 
         py::array_t<float, py::array::c_style | py::array::forcecast> array =
-                state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+            state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         py::buffer_info info = array.request();
         if (info.ndim != 2 ||
             info.shape[0] != static_cast<ssize_t>(pointCount) ||
-            info.shape[1] != 3) {
+            info.shape[1] != 3)
+        {
             throw std::runtime_error(
                 std::string("upload_device_adam_state: expected '") +
                 key +
                 "' to have shape (N,3)");
         }
 
-        const float *data = static_cast<const float *>(info.ptr);
+        const float* data = static_cast<const float*>(info.ptr);
         std::vector<Pale::float3> result(pointCount);
-        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+        {
             const std::size_t base = pointIndex * 3u;
             result[pointIndex] = Pale::float3{
                 data[base + 0u],
@@ -4392,29 +4933,33 @@ private:
     }
 
     static std::vector<Pale::float2> readDeviceAdamFloat2Array(
-        const py::dict &state,
-        const char *key,
-        std::size_t pointCount) {
-        if (!state.contains(key)) {
+        const py::dict& state,
+        const char* key,
+        std::size_t pointCount)
+    {
+        if (!state.contains(key))
+        {
             throw std::runtime_error(
                 std::string("upload_device_adam_state: missing key '") + key + "'");
         }
 
         py::array_t<float, py::array::c_style | py::array::forcecast> array =
-                state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+            state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         py::buffer_info info = array.request();
         if (info.ndim != 2 ||
             info.shape[0] != static_cast<ssize_t>(pointCount) ||
-            info.shape[1] != 2) {
+            info.shape[1] != 2)
+        {
             throw std::runtime_error(
                 std::string("upload_device_adam_state: expected '") +
                 key +
                 "' to have shape (N,2)");
         }
 
-        const float *data = static_cast<const float *>(info.ptr);
+        const float* data = static_cast<const float*>(info.ptr);
         std::vector<Pale::float2> result(pointCount);
-        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+        {
             const std::size_t base = pointIndex * 2u;
             result[pointIndex] = Pale::float2{data[base + 0u], data[base + 1u]};
         }
@@ -4422,38 +4967,44 @@ private:
     }
 
     static std::vector<float> readDeviceAdamFloat1Array(
-        const py::dict &state,
-        const char *key,
-        std::size_t pointCount) {
-        if (!state.contains(key)) {
+        const py::dict& state,
+        const char* key,
+        std::size_t pointCount)
+    {
+        if (!state.contains(key))
+        {
             throw std::runtime_error(
                 std::string("upload_device_adam_state: missing key '") + key + "'");
         }
 
         py::array_t<float, py::array::c_style | py::array::forcecast> array =
-                state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+            state[py::str(key)].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         py::buffer_info info = array.request();
         const bool isFlatVector =
-                info.ndim == 1 &&
-                info.shape[0] == static_cast<ssize_t>(pointCount);
+            info.ndim == 1 &&
+            info.shape[0] == static_cast<ssize_t>(pointCount);
         const bool isColumnVector =
-                info.ndim == 2 &&
-                info.shape[0] == static_cast<ssize_t>(pointCount) &&
-                info.shape[1] == 1;
-        if (!isFlatVector && !isColumnVector) {
+            info.ndim == 2 &&
+            info.shape[0] == static_cast<ssize_t>(pointCount) &&
+            info.shape[1] == 1;
+        if (!isFlatVector && !isColumnVector)
+        {
             throw std::runtime_error(
                 std::string("upload_device_adam_state: expected '") +
                 key +
                 "' to have shape (N,) or (N,1)");
         }
 
-        const float *data = static_cast<const float *>(info.ptr);
+        const float* data = static_cast<const float*>(info.ptr);
         return std::vector<float>(data, data + pointCount);
     }
 
-    void freeDeviceTrainingState(sycl::queue queue) {
-        auto releasePointer = [&queue](auto *&pointer) {
-            if (pointer) {
+    void freeDeviceTrainingState(sycl::queue queue)
+    {
+        auto releasePointer = [&queue](auto*& pointer)
+        {
+            if (pointer)
+            {
                 sycl::free(pointer, queue);
                 pointer = nullptr;
             }
@@ -4475,27 +5026,30 @@ private:
         deviceTrainingState.step = 0;
     }
 
-    void ensureDeviceTrainingState(std::size_t pointCount, sycl::queue queue) {
-        if (pointCount == 0u) {
+    void ensureDeviceTrainingState(std::size_t pointCount, sycl::queue queue)
+    {
+        if (pointCount == 0u)
+        {
             throw std::runtime_error("ensureDeviceTrainingState: point count is zero");
         }
 
         const bool alreadyAllocated =
-                deviceTrainingState.pointCount == pointCount &&
-                deviceTrainingState.positionM != nullptr &&
-                deviceTrainingState.positionV != nullptr &&
-                deviceTrainingState.rotationM != nullptr &&
-                deviceTrainingState.rotationV != nullptr &&
-                deviceTrainingState.scaleM != nullptr &&
-                deviceTrainingState.scaleV != nullptr &&
-                deviceTrainingState.albedoM != nullptr &&
-                deviceTrainingState.albedoV != nullptr &&
-                deviceTrainingState.opacityM != nullptr &&
-                deviceTrainingState.opacityV != nullptr &&
-                deviceTrainingState.betaM != nullptr &&
-                deviceTrainingState.betaV != nullptr;
+            deviceTrainingState.pointCount == pointCount &&
+            deviceTrainingState.positionM != nullptr &&
+            deviceTrainingState.positionV != nullptr &&
+            deviceTrainingState.rotationM != nullptr &&
+            deviceTrainingState.rotationV != nullptr &&
+            deviceTrainingState.scaleM != nullptr &&
+            deviceTrainingState.scaleV != nullptr &&
+            deviceTrainingState.albedoM != nullptr &&
+            deviceTrainingState.albedoV != nullptr &&
+            deviceTrainingState.opacityM != nullptr &&
+            deviceTrainingState.opacityV != nullptr &&
+            deviceTrainingState.betaM != nullptr &&
+            deviceTrainingState.betaV != nullptr;
 
-        if (alreadyAllocated) {
+        if (alreadyAllocated)
+        {
             return;
         }
 
@@ -4520,7 +5074,8 @@ private:
             !deviceTrainingState.scaleM || !deviceTrainingState.scaleV ||
             !deviceTrainingState.albedoM || !deviceTrainingState.albedoV ||
             !deviceTrainingState.opacityM || !deviceTrainingState.opacityV ||
-            !deviceTrainingState.betaM || !deviceTrainingState.betaV) {
+            !deviceTrainingState.betaM || !deviceTrainingState.betaV)
+        {
             freeDeviceTrainingState(queue);
             throw std::runtime_error("ensureDeviceTrainingState: failed to allocate Adam state on device");
         }
@@ -4541,22 +5096,27 @@ private:
     }
 
     void launchDeviceTrainingStepKernel(sycl::queue queue,
-                                        const Pale::PointGradients &pointGradients,
-                                        const Pale::PointGradients *depthGradients,
-                                        const Pale::PointGradients *normalGradients,
-                                        const Pale::PointGradients *intraSlabGradients,
-                                        const Pale::PointGradients *curvatureGradients,
-                                        const DeviceTrainingStepOptions &options) {
-        if (!sceneGpu.points || sceneGpu.pointCount == 0u) {
+                                        const Pale::PointGradients& pointGradients,
+                                        const Pale::PointGradients* depthGradients,
+                                        const Pale::PointGradients* normalGradients,
+                                        const Pale::PointGradients* intraSlabGradients,
+                                        const Pale::PointGradients* curvatureGradients,
+                                        const DeviceTrainingStepOptions& options)
+    {
+        if (!sceneGpu.points || sceneGpu.pointCount == 0u)
+        {
             throw std::runtime_error("launchDeviceTrainingStepKernel: scene has no device points");
         }
         if (pointGradients.numPoints != sceneGpu.pointCount ||
-            deviceTrainingState.pointCount != sceneGpu.pointCount) {
+            deviceTrainingState.pointCount != sceneGpu.pointCount)
+        {
             throw std::runtime_error("launchDeviceTrainingStepKernel: point count mismatch");
         }
-        auto validateOptionalGradientSource = [&](const Pale::PointGradients *gradientSource,
-                                                  const char *sourceName) {
-            if (gradientSource && gradientSource->numPoints != sceneGpu.pointCount) {
+        auto validateOptionalGradientSource = [&](const Pale::PointGradients* gradientSource,
+                                                  const char* sourceName)
+        {
+            if (gradientSource && gradientSource->numPoints != sceneGpu.pointCount)
+            {
                 throw std::runtime_error(
                     std::string("launchDeviceTrainingStepKernel: ") +
                     sourceName +
@@ -4571,9 +5131,9 @@ private:
         const bool useAdam = options.optimizer == "adam";
         const std::uint32_t adamStep = ++deviceTrainingState.step;
         const float biasCorrection1 =
-                useAdam ? 1.0f - std::pow(options.beta1, static_cast<float>(adamStep)) : 1.0f;
+            useAdam ? 1.0f - std::pow(options.beta1, static_cast<float>(adamStep)) : 1.0f;
         const float biasCorrection2 =
-                useAdam ? 1.0f - std::pow(options.beta2, static_cast<float>(adamStep)) : 1.0f;
+            useAdam ? 1.0f - std::pow(options.beta2, static_cast<float>(adamStep)) : 1.0f;
 
         const bool timeKernel = Pale::ScopedTimerDetail::isProfilingEnabled() ||
             Pale::ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug);
@@ -4581,98 +5141,111 @@ private:
         sycl::event updateEvent = queue.parallel_for<class DeviceTrainingStepKernelTag>(
             sycl::range<1>(sceneGpu.pointCount),
             [points = sceneGpu.points,
-             gradPosition = pointGradients.gradPosition,
-             gradRotation = pointGradients.gradRotation,
-             gradScale = pointGradients.gradScale,
-             gradAlbedo = pointGradients.gradAlbedo,
-             gradOpacity = pointGradients.gradOpacity,
-             gradBeta = pointGradients.gradBeta,
-             depthGradPosition = depthGradients ? depthGradients->gradPosition : nullptr,
-             depthGradRotation = depthGradients ? depthGradients->gradRotation : nullptr,
-             depthGradScale = depthGradients ? depthGradients->gradScale : nullptr,
-             depthGradAlbedo = depthGradients ? depthGradients->gradAlbedo : nullptr,
-             depthGradOpacity = depthGradients ? depthGradients->gradOpacity : nullptr,
-             depthGradBeta = depthGradients ? depthGradients->gradBeta : nullptr,
-             normalGradPosition = normalGradients ? normalGradients->gradPosition : nullptr,
-             normalGradRotation = normalGradients ? normalGradients->gradRotation : nullptr,
-             normalGradScale = normalGradients ? normalGradients->gradScale : nullptr,
-             normalGradAlbedo = normalGradients ? normalGradients->gradAlbedo : nullptr,
-             normalGradOpacity = normalGradients ? normalGradients->gradOpacity : nullptr,
-             normalGradBeta = normalGradients ? normalGradients->gradBeta : nullptr,
-             intraSlabGradPosition = intraSlabGradients ? intraSlabGradients->gradPosition : nullptr,
-             intraSlabGradRotation = intraSlabGradients ? intraSlabGradients->gradRotation : nullptr,
-             intraSlabGradScale = intraSlabGradients ? intraSlabGradients->gradScale : nullptr,
-             intraSlabGradAlbedo = intraSlabGradients ? intraSlabGradients->gradAlbedo : nullptr,
-             intraSlabGradOpacity = intraSlabGradients ? intraSlabGradients->gradOpacity : nullptr,
-             intraSlabGradBeta = intraSlabGradients ? intraSlabGradients->gradBeta : nullptr,
-             curvatureGradPosition = curvatureGradients ? curvatureGradients->gradPosition : nullptr,
-             curvatureGradRotation = curvatureGradients ? curvatureGradients->gradRotation : nullptr,
-             curvatureGradScale = curvatureGradients ? curvatureGradients->gradScale : nullptr,
-             curvatureGradAlbedo = curvatureGradients ? curvatureGradients->gradAlbedo : nullptr,
-             curvatureGradOpacity = curvatureGradients ? curvatureGradients->gradOpacity : nullptr,
-             curvatureGradBeta = curvatureGradients ? curvatureGradients->gradBeta : nullptr,
-             positionM = deviceTrainingState.positionM,
-             positionV = deviceTrainingState.positionV,
-             rotationM = deviceTrainingState.rotationM,
-             rotationV = deviceTrainingState.rotationV,
-             scaleM = deviceTrainingState.scaleM,
-             scaleV = deviceTrainingState.scaleV,
-             albedoM = deviceTrainingState.albedoM,
-             albedoV = deviceTrainingState.albedoV,
-             opacityM = deviceTrainingState.opacityM,
-             opacityV = deviceTrainingState.opacityV,
-             betaM = deviceTrainingState.betaM,
-             betaV = deviceTrainingState.betaV,
-             useAdam,
-             beta1 = options.beta1,
-             beta2 = options.beta2,
-             epsilon = options.epsilon,
-             biasCorrection1,
-             biasCorrection2,
-             lrPosition = options.learningRatePosition,
-             lrRotation = options.learningRateRotation,
-             lrScale = options.learningRateScale,
-             lrAlbedo = options.learningRateAlbedo,
-             lrOpacity = options.learningRateOpacity,
-             lrBeta = options.learningRateBeta,
-             cameraBatchScale = options.cameraBatchScale,
-             maxRotationStepRadians = options.maxRotationStepRadians](sycl::id<1> itemId) {
+                gradPosition = pointGradients.gradPosition,
+                gradRotation = pointGradients.gradRotation,
+                gradScale = pointGradients.gradScale,
+                gradAlbedo = pointGradients.gradAlbedo,
+                gradOpacity = pointGradients.gradOpacity,
+                gradBeta = pointGradients.gradBeta,
+                depthGradPosition = depthGradients ? depthGradients->gradPosition : nullptr,
+                depthGradRotation = depthGradients ? depthGradients->gradRotation : nullptr,
+                depthGradScale = depthGradients ? depthGradients->gradScale : nullptr,
+                depthGradAlbedo = depthGradients ? depthGradients->gradAlbedo : nullptr,
+                depthGradOpacity = depthGradients ? depthGradients->gradOpacity : nullptr,
+                depthGradBeta = depthGradients ? depthGradients->gradBeta : nullptr,
+                normalGradPosition = normalGradients ? normalGradients->gradPosition : nullptr,
+                normalGradRotation = normalGradients ? normalGradients->gradRotation : nullptr,
+                normalGradScale = normalGradients ? normalGradients->gradScale : nullptr,
+                normalGradAlbedo = normalGradients ? normalGradients->gradAlbedo : nullptr,
+                normalGradOpacity = normalGradients ? normalGradients->gradOpacity : nullptr,
+                normalGradBeta = normalGradients ? normalGradients->gradBeta : nullptr,
+                intraSlabGradPosition = intraSlabGradients ? intraSlabGradients->gradPosition : nullptr,
+                intraSlabGradRotation = intraSlabGradients ? intraSlabGradients->gradRotation : nullptr,
+                intraSlabGradScale = intraSlabGradients ? intraSlabGradients->gradScale : nullptr,
+                intraSlabGradAlbedo = intraSlabGradients ? intraSlabGradients->gradAlbedo : nullptr,
+                intraSlabGradOpacity = intraSlabGradients ? intraSlabGradients->gradOpacity : nullptr,
+                intraSlabGradBeta = intraSlabGradients ? intraSlabGradients->gradBeta : nullptr,
+                curvatureGradPosition = curvatureGradients ? curvatureGradients->gradPosition : nullptr,
+                curvatureGradRotation = curvatureGradients ? curvatureGradients->gradRotation : nullptr,
+                curvatureGradScale = curvatureGradients ? curvatureGradients->gradScale : nullptr,
+                curvatureGradAlbedo = curvatureGradients ? curvatureGradients->gradAlbedo : nullptr,
+                curvatureGradOpacity = curvatureGradients ? curvatureGradients->gradOpacity : nullptr,
+                curvatureGradBeta = curvatureGradients ? curvatureGradients->gradBeta : nullptr,
+                positionM = deviceTrainingState.positionM,
+                positionV = deviceTrainingState.positionV,
+                rotationM = deviceTrainingState.rotationM,
+                rotationV = deviceTrainingState.rotationV,
+                scaleM = deviceTrainingState.scaleM,
+                scaleV = deviceTrainingState.scaleV,
+                albedoM = deviceTrainingState.albedoM,
+                albedoV = deviceTrainingState.albedoV,
+                opacityM = deviceTrainingState.opacityM,
+                opacityV = deviceTrainingState.opacityV,
+                betaM = deviceTrainingState.betaM,
+                betaV = deviceTrainingState.betaV,
+                useAdam,
+                skipZeroGradientSurfels = options.skipZeroGradientSurfels,
+                beta1 = options.beta1,
+                beta2 = options.beta2,
+                epsilon = options.epsilon,
+                biasCorrection1,
+                biasCorrection2,
+                lrPosition = options.learningRatePosition,
+                lrRotation = options.learningRateRotation,
+                lrScale = options.learningRateScale,
+                lrAlbedo = options.learningRateAlbedo,
+                lrOpacity = options.learningRateOpacity,
+                lrBeta = options.learningRateBeta,
+                cameraBatchScale = options.cameraBatchScale,
+                maxRotationStepRadians = options.maxRotationStepRadians](sycl::id<1> itemId)
+            {
                 const std::uint32_t primitiveIndex = static_cast<std::uint32_t>(itemId[0]);
-                Pale::Point &point = points[primitiveIndex];
+                Pale::Point& point = points[primitiveIndex];
 
-                if (point.isEmissive()) {
+                if (point.isEmissive())
+                {
                     return;
                 }
 
-                auto cleanGradient = [](float value) -> float {
+                auto cleanGradient = [](float value) -> float
+                {
                     constexpr float maxAbsGradientComponent = 1.0e6f;
-                    if (!sycl::isfinite(value)) {
+                    if (!sycl::isfinite(value))
+                    {
                         return 0.0f;
                     }
                     return sycl::fmin(
                         sycl::fmax(value, -maxAbsGradientComponent),
                         maxAbsGradientComponent);
                 };
-                auto cleanParameter = [](float value, float fallback) -> float {
+                auto cleanParameter = [](float value, float fallback) -> float
+                {
                     return sycl::isfinite(value) ? value : fallback;
                 };
-                auto clampValue = [](float value, float minValue, float maxValue) -> float {
-                    if (!sycl::isfinite(value)) {
+                auto clampValue = [](float value, float minValue, float maxValue) -> float
+                {
+                    if (!sycl::isfinite(value))
+                    {
                         return minValue;
                     }
                     return sycl::fmin(sycl::fmax(value, minValue), maxValue);
                 };
-                auto adamUpdate = [&](float gradientValue, float &m, float &v, float learningRate) -> float {
-                    if (learningRate == 0.0f) {
+                auto adamUpdate = [&](float gradientValue, float& m, float& v, float learningRate) -> float
+                {
+                    if (learningRate == 0.0f)
+                    {
                         return 0.0f;
                     }
-                    if (!useAdam) {
+                    if (!useAdam)
+                    {
                         return learningRate * gradientValue;
                     }
-                    if (!sycl::isfinite(m)) {
+                    if (!sycl::isfinite(m))
+                    {
                         m = 0.0f;
                     }
-                    if (!sycl::isfinite(v)) {
+                    if (!sycl::isfinite(v))
+                    {
                         v = 0.0f;
                     }
                     m = beta1 * m + (1.0f - beta1) * gradientValue;
@@ -4682,61 +5255,75 @@ private:
                     const float update = learningRate * mHat / (sycl::sqrt(vHat) + epsilon);
                     return sycl::isfinite(update) ? update : 0.0f;
                 };
-                auto dot3 = [](const Pale::float3 &a, const Pale::float3 &b) -> float {
+                auto dot3 = [](const Pale::float3& a, const Pale::float3& b) -> float
+                {
                     return a.x() * b.x() + a.y() * b.y() + a.z() * b.z();
                 };
-                auto cross3 = [](const Pale::float3 &a, const Pale::float3 &b) -> Pale::float3 {
+                auto cross3 = [](const Pale::float3& a, const Pale::float3& b) -> Pale::float3
+                {
                     return Pale::float3{
                         a.y() * b.z() - a.z() * b.y(),
                         a.z() * b.x() - a.x() * b.z(),
                         a.x() * b.y() - a.y() * b.x()
                     };
                 };
-                auto normalizeOrFallback = [&](const Pale::float3 &value,
-                                               const Pale::float3 &fallback) -> Pale::float3 {
+                auto normalizeOrFallback = [&](const Pale::float3& value,
+                                               const Pale::float3& fallback) -> Pale::float3
+                {
                     const float lengthSquared = dot3(value, value);
-                    if (!sycl::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) {
+                    if (!sycl::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f)
+                    {
                         return fallback;
                     }
                     const float invLength = sycl::rsqrt(lengthSquared);
                     return value * invLength;
                 };
-                auto sumFloat3Gradient = [&](Pale::float3 *depthPointer,
-                                             Pale::float3 *normalPointer,
-                                             Pale::float3 *intraSlabPointer,
-                                             Pale::float3 *curvaturePointer,
-                                             Pale::float3 baseGradient) -> Pale::float3 {
+                auto sumFloat3Gradient = [&](Pale::float3* depthPointer,
+                                             Pale::float3* normalPointer,
+                                             Pale::float3* intraSlabPointer,
+                                             Pale::float3* curvaturePointer,
+                                             Pale::float3 baseGradient) -> Pale::float3
+                {
                     Pale::float3 gradient = baseGradient;
-                    if (depthPointer) {
+                    if (depthPointer)
+                    {
                         gradient += depthPointer[primitiveIndex];
                     }
-                    if (normalPointer) {
+                    if (normalPointer)
+                    {
                         gradient += normalPointer[primitiveIndex];
                     }
-                    if (intraSlabPointer) {
+                    if (intraSlabPointer)
+                    {
                         gradient += intraSlabPointer[primitiveIndex];
                     }
-                    if (curvaturePointer) {
+                    if (curvaturePointer)
+                    {
                         gradient += curvaturePointer[primitiveIndex];
                     }
                     return gradient;
                 };
-                auto sumFloatGradient = [&](float *depthPointer,
-                                            float *normalPointer,
-                                            float *intraSlabPointer,
-                                            float *curvaturePointer,
-                                            float baseGradient) -> float {
+                auto sumFloatGradient = [&](float* depthPointer,
+                                            float* normalPointer,
+                                            float* intraSlabPointer,
+                                            float* curvaturePointer,
+                                            float baseGradient) -> float
+                {
                     float gradient = baseGradient;
-                    if (depthPointer) {
+                    if (depthPointer)
+                    {
                         gradient += depthPointer[primitiveIndex];
                     }
-                    if (normalPointer) {
+                    if (normalPointer)
+                    {
                         gradient += normalPointer[primitiveIndex];
                     }
-                    if (intraSlabPointer) {
+                    if (intraSlabPointer)
+                    {
                         gradient += intraSlabPointer[primitiveIndex];
                     }
-                    if (curvaturePointer) {
+                    if (curvaturePointer)
+                    {
                         gradient += curvaturePointer[primitiveIndex];
                     }
                     return gradient;
@@ -4757,19 +5344,23 @@ private:
                 const Pale::float2 baseScaleGradient = gradScale[primitiveIndex];
                 float scaleGradientX = baseScaleGradient.x();
                 float scaleGradientY = baseScaleGradient.y();
-                if (depthGradScale) {
+                if (depthGradScale)
+                {
                     scaleGradientX += depthGradScale[primitiveIndex].x();
                     scaleGradientY += depthGradScale[primitiveIndex].y();
                 }
-                if (normalGradScale) {
+                if (normalGradScale)
+                {
                     scaleGradientX += normalGradScale[primitiveIndex].x();
                     scaleGradientY += normalGradScale[primitiveIndex].y();
                 }
-                if (intraSlabGradScale) {
+                if (intraSlabGradScale)
+                {
                     scaleGradientX += intraSlabGradScale[primitiveIndex].x();
                     scaleGradientY += intraSlabGradScale[primitiveIndex].y();
                 }
-                if (curvatureGradScale) {
+                if (curvatureGradScale)
+                {
                     scaleGradientX += curvatureGradScale[primitiveIndex].x();
                     scaleGradientY += curvatureGradScale[primitiveIndex].y();
                 }
@@ -4792,6 +5383,40 @@ private:
                     curvatureGradBeta,
                     gradBeta[primitiveIndex]);
 
+                // Whole-surfel gating: zero components of an active surfel still use Adam.
+                if (skipZeroGradientSurfels)
+                {
+                    auto hasGradientComponent = [&](float gradientValue) -> bool
+                    {
+                        return cleanGradient(gradientValue) != 0.0f;
+                    };
+                    auto hasVectorGradient = [&](const Pale::float3& gradientValue) -> bool
+                    {
+                        return hasGradientComponent(gradientValue.x() * cameraBatchScale) ||
+                            hasGradientComponent(gradientValue.y() * cameraBatchScale) ||
+                            hasGradientComponent(gradientValue.z() * cameraBatchScale);
+                    };
+                    // Match the existing log-radius chain rule and physical-scale bounds.
+                    const float physicalScaleX = clampValue(cleanParameter(point.scale.x(), 1.0e-6f), 1.0e-6f, 5.0f);
+                    const float physicalScaleY = clampValue(cleanParameter(point.scale.y(), 1.0e-6f), 1.0e-6f, 5.0f);
+                    const bool hasPositionGradient = lrPosition != 0.0f && hasVectorGradient(positionGradient);
+                    const bool hasRotationGradient = lrRotation != 0.0f && hasVectorGradient(rotationGradient);
+                    const bool hasScaleGradient = lrScale != 0.0f &&
+                    (hasGradientComponent(scaleGradientX * cameraBatchScale * physicalScaleX) ||
+                        hasGradientComponent(scaleGradientY * cameraBatchScale * physicalScaleY));
+                    const bool hasAlbedoGradient = lrAlbedo != 0.0f && hasVectorGradient(albedoGradient);
+                    const bool hasOpacityGradient = lrOpacity != 0.0f && hasGradientComponent(
+                        opacityGradient * cameraBatchScale);
+                    const bool hasBetaGradient = lrBeta != 0.0f &&
+                        hasGradientComponent(betaGradient * cameraBatchScale);
+                    if (!(hasPositionGradient || hasRotationGradient || hasScaleGradient || hasAlbedoGradient ||
+                        hasOpacityGradient || hasBetaGradient))
+                    {
+                        // No moment decay, momentum displacement, clamping, or log/exp round trip.
+                        return;
+                    }
+                }
+
                 const float positionUpdateX = adamUpdate(
                     cleanGradient(positionGradient.x() * cameraBatchScale),
                     positionM[primitiveIndex].x(),
@@ -4808,9 +5433,12 @@ private:
                     positionV[primitiveIndex].z(),
                     lrPosition);
                 // Keep aligned with verify_positions_inplace in python/render_hooks.py.
-                point.position.x() = clampValue(cleanParameter(point.position.x(), 0.0f) - positionUpdateX, -20.0f, 20.0f);
-                point.position.y() = clampValue(cleanParameter(point.position.y(), 0.0f) - positionUpdateY, -20.0f, 20.0f);
-                point.position.z() = clampValue(cleanParameter(point.position.z(), 0.0f) - positionUpdateZ, -20.0f, 20.0f);
+                point.position.x() = clampValue(cleanParameter(point.position.x(), 0.0f) - positionUpdateX, -20.0f,
+                                                20.0f);
+                point.position.y() = clampValue(cleanParameter(point.position.y(), 0.0f) - positionUpdateY, -20.0f,
+                                                20.0f);
+                point.position.z() = clampValue(cleanParameter(point.position.z(), 0.0f) - positionUpdateZ, -20.0f,
+                                                20.0f);
 
                 float rotationDeltaX = -adamUpdate(
                     cleanGradient(rotationGradient.x() * cameraBatchScale),
@@ -4832,8 +5460,10 @@ private:
                     rotationDeltaX * rotationDeltaX +
                     rotationDeltaY * rotationDeltaY +
                     rotationDeltaZ * rotationDeltaZ);
-                if (rotationLength > 1.0e-12f && sycl::isfinite(rotationLength)) {
-                    if (maxRotationStepRadians > 0.0f && rotationLength > maxRotationStepRadians) {
+                if (rotationLength > 1.0e-12f && sycl::isfinite(rotationLength))
+                {
+                    if (maxRotationStepRadians > 0.0f && rotationLength > maxRotationStepRadians)
+                    {
                         const float clampScale = maxRotationStepRadians / rotationLength;
                         rotationDeltaX *= clampScale;
                         rotationDeltaY *= clampScale;
@@ -4863,22 +5493,22 @@ private:
                     Pale::float3 tangentU = normalizeOrFallback(point.tanU, Pale::float3{1.0f, 0.0f, 0.0f});
                     Pale::float3 tangentV = point.tanV - tangentU * dot3(tangentU, point.tanV);
                     const Pale::float3 fallbackV =
-                            sycl::fabs(tangentU.y()) < 0.9f
-                                ? Pale::float3{0.0f, 1.0f, 0.0f}
-                                : Pale::float3{1.0f, 0.0f, 0.0f};
+                        sycl::fabs(tangentU.y()) < 0.9f
+                            ? Pale::float3{0.0f, 1.0f, 0.0f}
+                            : Pale::float3{1.0f, 0.0f, 0.0f};
                     tangentV = normalizeOrFallback(tangentV, fallbackV - tangentU * dot3(tangentU, fallbackV));
                     const Pale::float3 tangentW = normalizeOrFallback(
                         cross3(tangentU, tangentV),
                         Pale::float3{0.0f, 0.0f, 1.0f});
 
                     Pale::float3 updatedTangentU =
-                            tangentU * r00 +
-                            tangentV * r10 +
-                            tangentW * r20;
+                        tangentU * r00 +
+                        tangentV * r10 +
+                        tangentW * r20;
                     Pale::float3 updatedTangentV =
-                            tangentU * r01 +
-                            tangentV * r11 +
-                            tangentW * r21;
+                        tangentU * r01 +
+                        tangentV * r11 +
+                        tangentW * r21;
 
                     updatedTangentU = normalizeOrFallback(updatedTangentU, tangentU);
                     updatedTangentV = updatedTangentV - updatedTangentU * dot3(updatedTangentU, updatedTangentV);
@@ -4893,8 +5523,10 @@ private:
                 // remains in physical radii for rendering, splitting and PLY IO.
                 constexpr float minSurfelScale = 1.0e-6f;
                 constexpr float maxSurfelScale = 5.0f;
-                const float scaleX = clampValue(cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale, maxSurfelScale);
-                const float scaleY = clampValue(cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale, maxSurfelScale);
+                const float scaleX = clampValue(cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale,
+                                                maxSurfelScale);
+                const float scaleY = clampValue(cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale,
+                                                maxSurfelScale);
                 const float scaleUpdateX = adamUpdate(
                     cleanGradient(scaleGradientX * cameraBatchScale * scaleX),
                     scaleM[primitiveIndex].x(),
@@ -4905,11 +5537,16 @@ private:
                     scaleM[primitiveIndex].y(),
                     scaleV[primitiveIndex].y(),
                     lrScale);
-                if (lrScale != 0.0f) {
+                if (lrScale != 0.0f)
+                {
                     const float minLogScale = sycl::log(minSurfelScale);
                     const float maxLogScale = sycl::log(maxSurfelScale);
-                    point.scale.x() = clampValue(sycl::exp(clampValue(sycl::log(scaleX) - scaleUpdateX, minLogScale, maxLogScale)), minSurfelScale, maxSurfelScale);
-                    point.scale.y() = clampValue(sycl::exp(clampValue(sycl::log(scaleY) - scaleUpdateY, minLogScale, maxLogScale)), minSurfelScale, maxSurfelScale);
+                    point.scale.x() = clampValue(
+                        sycl::exp(clampValue(sycl::log(scaleX) - scaleUpdateX, minLogScale, maxLogScale)),
+                        minSurfelScale, maxSurfelScale);
+                    point.scale.y() = clampValue(
+                        sycl::exp(clampValue(sycl::log(scaleY) - scaleUpdateY, minLogScale, maxLogScale)),
+                        minSurfelScale, maxSurfelScale);
                 }
 
                 const float albedoUpdateX = adamUpdate(
@@ -4945,14 +5582,17 @@ private:
                     lrBeta);
                 point.beta = clampValue(cleanParameter(point.beta, 1.0f) - betaUpdate, -2.0f, 5.0f);
             });
-        if (timeKernel) {
+        if (timeKernel)
+        {
             updateEvent.wait_and_throw();
         }
     }
 
-    void freePointBvhRefitPlan(sycl::queue queue) {
+    void freePointBvhRefitPlan(sycl::queue queue)
+    {
         // USM frees do not wait for kernels holding these pointers.
-        if (pointBvhRefitTasks || pointQbvhRefitTasks) {
+        if (pointBvhRefitTasks || pointQbvhRefitTasks)
+        {
             queue.wait_and_throw();
             sycl::free(pointBvhRefitTasks, queue);
             sycl::free(pointQbvhRefitTasks, queue);
@@ -4964,7 +5604,8 @@ private:
         pointBvhRefitPlanReady = false;
     }
 
-    void ensurePointBvhRefitPlan(sycl::queue queue) {
+    void ensurePointBvhRefitPlan(sycl::queue queue)
+    {
         if (pointBvhRefitPlanReady) return;
         // Also clear a partially uploaded plan if a previous allocation failed.
         freePointBvhRefitPlan(queue);
@@ -4972,18 +5613,23 @@ private:
         std::vector<std::vector<NodeTask>> levels;
         std::vector<NodeTask> qbvhTasks;
         std::unordered_set<std::uint32_t> scheduledRanges;
-        for (const Pale::InstanceRecord &instance : buildProducts.instances) {
+        for (const Pale::InstanceRecord& instance : buildProducts.instances)
+        {
             if (instance.geometryType != Pale::GeometryType::PointCloud ||
-                !scheduledRanges.insert(instance.blasRangeIndex).second) continue;
+                !scheduledRanges.insert(instance.blasRangeIndex).second)
+                continue;
             const auto range = buildProducts.bottomLevelRanges.at(instance.blasRangeIndex);
             std::vector<std::uint32_t> heights(range.nodeCount, 0u);
             // The builder appends both children after their parent. Schedule by
             // height, not storage depth, so each parent reads completed children.
-            for (std::uint32_t remaining = range.nodeCount; remaining > 0u; --remaining) {
+            for (std::uint32_t remaining = range.nodeCount; remaining > 0u; --remaining)
+            {
                 const std::uint32_t index = remaining - 1u;
-                const auto &node = buildProducts.bottomLevelNodes.at(range.firstNode + index);
-                if (node.triCount == 0u) {
-                    if (node.leftFirst <= index || node.leftFirst + 1u >= range.nodeCount) {
+                const auto& node = buildProducts.bottomLevelNodes.at(range.firstNode + index);
+                if (node.triCount == 0u)
+                {
+                    if (node.leftFirst <= index || node.leftFirst + 1u >= range.nodeCount)
+                    {
                         throw std::runtime_error("Invalid point BVH child order for refit");
                     }
                     heights[index] = 1u + std::max(heights[node.leftFirst], heights[node.leftFirst + 1u]);
@@ -4992,27 +5638,35 @@ private:
                 levels[heights[index]].push_back({instance.blasRangeIndex, index});
             }
             if (sceneGpu.pointQbvhNodes && sceneGpu.pointQbvhRanges &&
-                instance.blasRangeIndex < sceneGpu.pointQbvhRangeCount) {
+                instance.blasRangeIndex < sceneGpu.pointQbvhRangeCount)
+            {
                 const auto packed = buildProducts.pointQbvhRanges.at(instance.blasRangeIndex);
-                if (packed.firstNode + packed.nodeCount <= sceneGpu.pointQbvhNodeCount) {
-                    for (std::uint32_t i = 0u; i < packed.nodeCount; ++i) {
+                if (packed.firstNode + packed.nodeCount <= sceneGpu.pointQbvhNodeCount)
+                {
+                    for (std::uint32_t i = 0u; i < packed.nodeCount; ++i)
+                    {
                         qbvhTasks.push_back({instance.blasRangeIndex, i});
                     }
                 }
             }
         }
         std::vector<NodeTask> tasks;
-        for (const auto &level : levels) {
-            pointBvhRefitLevels.push_back({static_cast<std::uint32_t>(tasks.size()),
-                                           static_cast<std::uint32_t>(level.size())});
+        for (const auto& level : levels)
+        {
+            pointBvhRefitLevels.push_back({
+                static_cast<std::uint32_t>(tasks.size()),
+                static_cast<std::uint32_t>(level.size())
+            });
             tasks.insert(tasks.end(), level.begin(), level.end());
         }
-        if (!tasks.empty()) {
+        if (!tasks.empty())
+        {
             pointBvhRefitTasks = sycl::malloc_device<NodeTask>(tasks.size(), queue);
             if (!pointBvhRefitTasks) throw std::bad_alloc();
             queue.memcpy(pointBvhRefitTasks, tasks.data(), tasks.size() * sizeof(NodeTask)).wait_and_throw();
         }
-        if (!qbvhTasks.empty()) {
+        if (!qbvhTasks.empty())
+        {
             pointQbvhRefitTasks = sycl::malloc_device<NodeTask>(qbvhTasks.size(), queue);
             if (!pointQbvhRefitTasks) throw std::bad_alloc();
             queue.memcpy(pointQbvhRefitTasks, qbvhTasks.data(), qbvhTasks.size() * sizeof(NodeTask)).wait_and_throw();
@@ -5021,8 +5675,10 @@ private:
         pointBvhRefitPlanReady = true;
     }
 
-    void launchPointBvhRefitKernel(sycl::queue queue) {
-        if (!parallelBvhRefit) {
+    void launchPointBvhRefitKernel(sycl::queue queue)
+    {
+        if (!parallelBvhRefit)
+        {
             const bool timeKernel = Pale::ScopedTimerDetail::isProfilingEnabled() ||
                 Pale::ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug);
             Pale::ScopedTimer timer("Device optimizer: point BVH refit", spdlog::level::debug);
@@ -5034,82 +5690,101 @@ private:
             !sceneGpu.tlasNodes || !sceneGpu.instances || !sceneGpu.transforms ||
             !sceneGpu.pointPermutation || !sceneGpu.pointTraversalData ||
             buildProducts.instances.empty() || sceneGpu.blasNodeCount == 0u ||
-            sceneGpu.tlasNodeCount == 0u) return;
+            sceneGpu.tlasNodeCount == 0u)
+            return;
 
         ensurePointBvhRefitPlan(queue);
         const bool timeKernel = Pale::ScopedTimerDetail::isProfilingEnabled() ||
             Pale::ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug);
         Pale::ScopedTimer timer("Device optimizer: point BVH refit", spdlog::level::debug);
         const auto scene = sceneGpu;
-        const auto *tasks = pointBvhRefitTasks;
+        const auto* tasks = pointBvhRefitTasks;
         // DeviceSelector supplies an in-order queue: parameter updates precede
         // leaves, each level precedes its parents, and traversal follows refit.
-        for (std::size_t level = 0; level < pointBvhRefitLevels.size(); ++level) {
+        for (std::size_t level = 0; level < pointBvhRefitLevels.size(); ++level)
+        {
             const auto range = pointBvhRefitLevels[level];
             if (range.nodeCount == 0u) continue;
-            if (level == 0u) {
+            if (level == 0u)
+            {
                 queue.parallel_for<class PointBvhLeafRefitKernelTag>(
-                    sycl::range<1>(range.nodeCount), [=](sycl::id<1> index) {
+                    sycl::range<1>(range.nodeCount), [=](sycl::id<1> index)
+                    {
                         Pale::PointBvhRefitDetail::refitNode<true>(scene, tasks[range.firstNode + index[0]]);
                     });
-            } else {
+            }
+            else
+            {
                 queue.parallel_for<class PointBvhInternalRefitKernelTag>(
-                    sycl::range<1>(range.nodeCount), [=](sycl::id<1> index) {
+                    sycl::range<1>(range.nodeCount), [=](sycl::id<1> index)
+                    {
                         Pale::PointBvhRefitDetail::refitNode<false>(scene, tasks[range.firstNode + index[0]]);
                     });
             }
         }
-        if (pointQbvhRefitTaskCount != 0u) {
-            const auto *qbvhTasks = pointQbvhRefitTasks;
+        if (pointQbvhRefitTaskCount != 0u)
+        {
+            const auto* qbvhTasks = pointQbvhRefitTasks;
             queue.parallel_for<class PointQbvhRefitKernelTag>(
-                sycl::range<1>(pointQbvhRefitTaskCount), [=](sycl::id<1> index) {
+                sycl::range<1>(pointQbvhRefitTaskCount), [=](sycl::id<1> index)
+                {
                     Pale::PointBvhRefitDetail::refitQbvhNode(scene, qbvhTasks[index[0]]);
                 });
         }
         const auto instanceCount = static_cast<std::uint32_t>(buildProducts.instances.size());
-        sycl::event refitEvent = queue.single_task<class PointTlasRefitKernelTag>([=]() {
+        sycl::event refitEvent = queue.single_task<class PointTlasRefitKernelTag>([=]()
+        {
             Pale::PointBvhRefitDetail::refitTlas(scene, instanceCount);
         });
         if (timeKernel) refitEvent.wait_and_throw();
     }
 
-    sycl::event launchSerialPointBvhRefitKernel(sycl::queue queue) {
+    sycl::event launchSerialPointBvhRefitKernel(sycl::queue queue)
+    {
         if (!sceneGpu.points || !sceneGpu.blasNodes || !sceneGpu.blasRanges ||
             !sceneGpu.tlasNodes || !sceneGpu.instances || !sceneGpu.transforms ||
-            !sceneGpu.pointPermutation || !sceneGpu.pointTraversalData) {
+            !sceneGpu.pointPermutation || !sceneGpu.pointTraversalData)
+        {
             return {};
         }
 
         const std::uint32_t instanceCount =
-                static_cast<std::uint32_t>(buildProducts.instances.size());
-        if (instanceCount == 0u || sceneGpu.blasNodeCount == 0u || sceneGpu.tlasNodeCount == 0u) {
+            static_cast<std::uint32_t>(buildProducts.instances.size());
+        if (instanceCount == 0u || sceneGpu.blasNodeCount == 0u || sceneGpu.tlasNodeCount == 0u)
+        {
             return {};
         }
 
         sycl::event refitEvent = queue.single_task<class PointBvhRefitKernelTag>(
-            [scene = sceneGpu, instanceCount]() {
+            [scene = sceneGpu, instanceCount]()
+            {
                 using namespace Pale::PointBvhRefitDetail;
 
-                for (std::uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex) {
-                    const Pale::InstanceRecord &instance = scene.instances[instanceIndex];
-                    if (instance.geometryType != Pale::GeometryType::PointCloud) {
+                for (std::uint32_t instanceIndex = 0u; instanceIndex < instanceCount; ++instanceIndex)
+                {
+                    const Pale::InstanceRecord& instance = scene.instances[instanceIndex];
+                    if (instance.geometryType != Pale::GeometryType::PointCloud)
+                    {
                         continue;
                     }
 
                     const Pale::BLASRange blasRange = scene.blasRanges[instance.blasRangeIndex];
-                    if (blasRange.nodeCount == 0u) {
+                    if (blasRange.nodeCount == 0u)
+                    {
                         continue;
                     }
 
-                    Pale::BVHNode *nodes = scene.blasNodes + blasRange.firstNode;
-                    Pale::PackedPointQBVHNode *qbvhNodes = nullptr;
+                    Pale::BVHNode* nodes = scene.blasNodes + blasRange.firstNode;
+                    Pale::PackedPointQBVHNode* qbvhNodes = nullptr;
                     std::uint32_t qbvhNodeCount = 0u;
                     if (scene.pointQbvhNodes != nullptr &&
                         scene.pointQbvhRanges != nullptr &&
-                        instance.blasRangeIndex < scene.pointQbvhRangeCount) {
+                        instance.blasRangeIndex < scene.pointQbvhRangeCount)
+                    {
                         const Pale::BLASRange qbvhRange = scene.pointQbvhRanges[instance.blasRangeIndex];
                         if (qbvhRange.nodeCount > 0u &&
-                            qbvhRange.firstNode + qbvhRange.nodeCount <= scene.pointQbvhNodeCount) {
+                            qbvhRange.firstNode + qbvhRange.nodeCount <= scene.pointQbvhNodeCount)
+                        {
                             qbvhNodes = scene.pointQbvhNodes + qbvhRange.firstNode;
                             qbvhNodeCount = qbvhRange.nodeCount;
                         }
@@ -5117,20 +5792,28 @@ private:
 
                     for (int localNodeIndex = static_cast<int>(blasRange.nodeCount) - 1;
                          localNodeIndex >= 0;
-                         --localNodeIndex) {
-                        const NodeTask task{instance.blasRangeIndex,
-                                            static_cast<std::uint32_t>(localNodeIndex)};
-                        if (nodes[localNodeIndex].triCount > 0u) {
+                         --localNodeIndex)
+                    {
+                        const NodeTask task{
+                            instance.blasRangeIndex,
+                            static_cast<std::uint32_t>(localNodeIndex)
+                        };
+                        if (nodes[localNodeIndex].triCount > 0u)
+                        {
                             refitNode<true>(scene, task);
-                        } else {
+                        }
+                        else
+                        {
                             refitNode<false>(scene, task);
                         }
                     }
 
-                    if (qbvhNodes != nullptr) {
+                    if (qbvhNodes != nullptr)
+                    {
                         for (std::uint32_t qbvhNodeIndex = 0u;
                              qbvhNodeIndex < qbvhNodeCount;
-                             ++qbvhNodeIndex) {
+                             ++qbvhNodeIndex)
+                        {
                             updatePackedPointQbvhNode(qbvhNodes[qbvhNodeIndex], nodes);
                         }
                     }
@@ -5141,7 +5824,8 @@ private:
         return refitEvent;
     }
 
-    static py::dict makeZeroLossValuesDictionary() {
+    static py::dict makeZeroLossValuesDictionary()
+    {
         py::dict result;
         result["total_rgb_loss_value"] = 0.0f;
         result["total_depth_distortion_loss_raw"] = 0.0f;
@@ -5158,44 +5842,50 @@ private:
 
     static void launchSurfaceRegularizerLossAccumulationKernel(
         sycl::queue queue,
-        const Pale::SensorGPU &sensor,
-        float *depthDistortionSum,
-        float *normalConsistencySum,
-        float *intraSlabDepthSum,
-        float *curvatureScaleSum,
-        std::uint32_t *normalConsistencyValidCount,
-        std::uint32_t *intraSlabDepthActiveSlabCount,
-        std::uint32_t *curvatureScaleActiveSlabCount,
+        const Pale::SensorGPU& sensor,
+        float* depthDistortionSum,
+        float* normalConsistencySum,
+        float* intraSlabDepthSum,
+        float* curvatureScaleSum,
+        std::uint32_t* normalConsistencyValidCount,
+        std::uint32_t* intraSlabDepthActiveSlabCount,
+        std::uint32_t* curvatureScaleActiveSlabCount,
         bool useDepthDistortion,
         bool useNormalConsistency,
         bool useIntraSlabDepth,
-        bool useCurvatureScale) {
+        bool useCurvatureScale)
+    {
         const std::uint32_t pixelCount = sensor.width * sensor.height;
-        if (pixelCount == 0u) {
+        if (pixelCount == 0u)
+        {
             return;
         }
 
-        if (useDepthDistortion && (!sensor.depthDistortionBuffer || !depthDistortionSum)) {
+        if (useDepthDistortion && (!sensor.depthDistortionBuffer || !depthDistortionSum))
+        {
             throw std::runtime_error(
                 "launchSurfaceRegularizerLossAccumulationKernel: missing depth distortion buffers");
         }
         if (useNormalConsistency &&
             (!sensor.visibleNormalBuffer ||
-             !sensor.normalFromDepthBuffer ||
-             !normalConsistencySum ||
-             !normalConsistencyValidCount)) {
+                !sensor.normalFromDepthBuffer ||
+                !normalConsistencySum ||
+                !normalConsistencyValidCount))
+        {
             throw std::runtime_error(
                 "launchSurfaceRegularizerLossAccumulationKernel: missing normal consistency buffers");
         }
         if (useIntraSlabDepth &&
             (!sensor.intraSlabDepthBuffer || !sensor.intraSlabDepthActiveSlabCountBuffer ||
-             !intraSlabDepthSum || !intraSlabDepthActiveSlabCount)) {
+                !intraSlabDepthSum || !intraSlabDepthActiveSlabCount))
+        {
             throw std::runtime_error(
                 "launchSurfaceRegularizerLossAccumulationKernel: missing intra-slab depth buffers");
         }
         if (useCurvatureScale &&
             (!sensor.curvatureScaleBuffer || !sensor.curvatureScaleActiveSlabCountBuffer ||
-             !curvatureScaleSum || !curvatureScaleActiveSlabCount)) {
+                !curvatureScaleSum || !curvatureScaleActiveSlabCount))
+        {
             throw std::runtime_error(
                 "launchSurfaceRegularizerLossAccumulationKernel: missing curvature-scale buffers");
         }
@@ -5203,30 +5893,33 @@ private:
         queue.parallel_for<class SurfaceRegularizerLossAccumulationKernelTag>(
             sycl::range<1>(pixelCount),
             [depthDistortionBuffer = sensor.depthDistortionBuffer,
-             visibleNormalBuffer = sensor.visibleNormalBuffer,
-             normalFromDepthBuffer = sensor.normalFromDepthBuffer,
-             intraSlabDepthBuffer = sensor.intraSlabDepthBuffer,
-             intraSlabDepthCountBuffer = sensor.intraSlabDepthActiveSlabCountBuffer,
-             curvatureScaleBuffer = sensor.curvatureScaleBuffer,
-             curvatureScaleCountBuffer = sensor.curvatureScaleActiveSlabCountBuffer,
-             depthDistortionSum,
-             normalConsistencySum,
-             intraSlabDepthSum,
-             curvatureScaleSum,
-             normalConsistencyValidCount,
-             intraSlabDepthActiveSlabCount,
-             curvatureScaleActiveSlabCount,
-             useDepthDistortion,
-             useNormalConsistency,
-             useIntraSlabDepth,
-             useCurvatureScale](sycl::id<1> pixelId) {
+                visibleNormalBuffer = sensor.visibleNormalBuffer,
+                normalFromDepthBuffer = sensor.normalFromDepthBuffer,
+                intraSlabDepthBuffer = sensor.intraSlabDepthBuffer,
+                intraSlabDepthCountBuffer = sensor.intraSlabDepthActiveSlabCountBuffer,
+                curvatureScaleBuffer = sensor.curvatureScaleBuffer,
+                curvatureScaleCountBuffer = sensor.curvatureScaleActiveSlabCountBuffer,
+                depthDistortionSum,
+                normalConsistencySum,
+                intraSlabDepthSum,
+                curvatureScaleSum,
+                normalConsistencyValidCount,
+                intraSlabDepthActiveSlabCount,
+                curvatureScaleActiveSlabCount,
+                useDepthDistortion,
+                useNormalConsistency,
+                useIntraSlabDepth,
+                useCurvatureScale](sycl::id<1> pixelId)
+            {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
 
-                auto clean = [](float value) -> float {
+                auto clean = [](float value) -> float
+                {
                     return sycl::isfinite(value) ? value : 0.0f;
                 };
 
-                if (useDepthDistortion) {
+                if (useDepthDistortion)
+                {
                     const float depthValue = clean(depthDistortionBuffer[pixelIndex]);
                     auto depthAtomic = sycl::atomic_ref<
                         float,
@@ -5237,7 +5930,8 @@ private:
                 }
 
 
-                if (useIntraSlabDepth) {
+                if (useIntraSlabDepth)
+                {
                     const float lossValue = clean(intraSlabDepthBuffer[pixelIndex]);
                     const std::uint32_t activeCount = intraSlabDepthCountBuffer[pixelIndex];
                     auto lossAtomic = sycl::atomic_ref<
@@ -5254,7 +5948,8 @@ private:
                     countAtomic.fetch_add(activeCount);
                 }
 
-                if (useCurvatureScale) {
+                if (useCurvatureScale)
+                {
                     const float lossValue = clean(curvatureScaleBuffer[pixelIndex]);
                     const std::uint32_t activeCount = curvatureScaleCountBuffer[pixelIndex];
                     auto lossAtomic = sycl::atomic_ref<
@@ -5271,13 +5966,15 @@ private:
                     countAtomic.fetch_add(activeCount);
                 }
 
-                if (useNormalConsistency) {
+                if (useNormalConsistency)
+                {
                     const Pale::float4 visibleNormal = visibleNormalBuffer[pixelIndex];
                     const Pale::float4 depthNormal = normalFromDepthBuffer[pixelIndex];
 
                     const float visibleW = clean(visibleNormal.w());
                     const float depthW = clean(depthNormal.w());
-                    if (visibleW > 0.0f && depthW > 0.0f) {
+                    if (visibleW > 0.0f && depthW > 0.0f)
+                    {
                         const float visibleX = clean(visibleNormal.x());
                         const float visibleY = clean(visibleNormal.y());
                         const float visibleZ = clean(visibleNormal.z());
@@ -5285,7 +5982,7 @@ private:
                         const float depthY = clean(depthNormal.y());
                         const float depthZ = clean(depthNormal.z());
                         const float dotNormal =
-                                visibleX * depthX + visibleY * depthY + visibleZ * depthZ;
+                            visibleX * depthX + visibleY * depthY + visibleZ * depthZ;
 
                         auto normalAtomic = sycl::atomic_ref<
                             float,
@@ -5307,7 +6004,7 @@ private:
 
     static void launchSurfaceRegularizerAdjointFillKernel(
         sycl::queue queue,
-        const Pale::SensorGPU &sensor,
+        const Pale::SensorGPU& sensor,
         float depthDistortionWeight,
         float normalConsistencyWeight,
         float intraSlabDepthWeight,
@@ -5318,9 +6015,11 @@ private:
         bool useDepthDistortion,
         bool useNormalConsistency,
         bool useIntraSlabDepth,
-        bool useCurvatureScale) {
+        bool useCurvatureScale)
+    {
         const std::uint32_t pixelCount = sensor.width * sensor.height;
-        if (pixelCount == 0u) {
+        if (pixelCount == 0u)
+        {
             return;
         }
 
@@ -5329,12 +6028,14 @@ private:
             !sensor.curvatureScaleAdjointBuffer ||
             !sensor.visibleNormalAdjointBuffer ||
             !sensor.normalFromDepthAdjointBuffer ||
-            !sensor.medianDepthAdjointBuffer) {
+            !sensor.medianDepthAdjointBuffer)
+        {
             throw std::runtime_error(
                 "launchSurfaceRegularizerAdjointFillKernel: missing surface regularizer adjoint buffers");
         }
         if (useNormalConsistency &&
-            (!sensor.visibleNormalBuffer || !sensor.normalFromDepthBuffer)) {
+            (!sensor.visibleNormalBuffer || !sensor.normalFromDepthBuffer))
+        {
             throw std::runtime_error(
                 "launchSurfaceRegularizerAdjointFillKernel: missing normal consistency forward buffers");
         }
@@ -5344,39 +6045,41 @@ private:
                                      : 0.0f;
         const float normalScale = useNormalConsistency
                                       ? normalConsistencyWeight /
-                                        static_cast<float>(std::max(normalConsistencyValidCount, 1u))
+                                      static_cast<float>(std::max(normalConsistencyValidCount, 1u))
                                       : 0.0f;
         const float intraSlabDepthScale = useIntraSlabDepth
-            ? intraSlabDepthWeight /
-              static_cast<float>(std::max(intraSlabDepthActiveSlabCount, 1u))
-            : 0.0f;
+                                              ? intraSlabDepthWeight /
+                                              static_cast<float>(std::max(intraSlabDepthActiveSlabCount, 1u))
+                                              : 0.0f;
         const float curvatureScale = useCurvatureScale
-            ? curvatureScaleWeight /
-              static_cast<float>(std::max(curvatureScaleActiveSlabCount, 1u))
-            : 0.0f;
+                                         ? curvatureScaleWeight /
+                                         static_cast<float>(std::max(curvatureScaleActiveSlabCount, 1u))
+                                         : 0.0f;
 
         queue.parallel_for<class SurfaceRegularizerAdjointFillKernelTag>(
             sycl::range<1>(pixelCount),
             [visibleNormalBuffer = sensor.visibleNormalBuffer,
-             normalFromDepthBuffer = sensor.normalFromDepthBuffer,
-             depthDistortionAdjointBuffer = sensor.depthDistortionAdjointBuffer,
-             intraSlabDepthAdjointBuffer = sensor.intraSlabDepthAdjointBuffer,
-             intraSlabDepthCountBuffer = sensor.intraSlabDepthActiveSlabCountBuffer,
-             curvatureScaleAdjointBuffer = sensor.curvatureScaleAdjointBuffer,
-             curvatureScaleCountBuffer = sensor.curvatureScaleActiveSlabCountBuffer,
-             visibleNormalAdjointBuffer = sensor.visibleNormalAdjointBuffer,
-             normalFromDepthAdjointBuffer = sensor.normalFromDepthAdjointBuffer,
-             medianDepthAdjointBuffer = sensor.medianDepthAdjointBuffer,
-             depthScale,
-             normalScale,
-             intraSlabDepthScale,
-             curvatureScale,
-             useIntraSlabDepth,
-             useCurvatureScale,
-             useNormalConsistency](sycl::id<1> pixelId) {
+                normalFromDepthBuffer = sensor.normalFromDepthBuffer,
+                depthDistortionAdjointBuffer = sensor.depthDistortionAdjointBuffer,
+                intraSlabDepthAdjointBuffer = sensor.intraSlabDepthAdjointBuffer,
+                intraSlabDepthCountBuffer = sensor.intraSlabDepthActiveSlabCountBuffer,
+                curvatureScaleAdjointBuffer = sensor.curvatureScaleAdjointBuffer,
+                curvatureScaleCountBuffer = sensor.curvatureScaleActiveSlabCountBuffer,
+                visibleNormalAdjointBuffer = sensor.visibleNormalAdjointBuffer,
+                normalFromDepthAdjointBuffer = sensor.normalFromDepthAdjointBuffer,
+                medianDepthAdjointBuffer = sensor.medianDepthAdjointBuffer,
+                depthScale,
+                normalScale,
+                intraSlabDepthScale,
+                curvatureScale,
+                useIntraSlabDepth,
+                useCurvatureScale,
+                useNormalConsistency](sycl::id<1> pixelId)
+            {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
 
-                auto clean = [](float value) -> float {
+                auto clean = [](float value) -> float
+                {
                     return sycl::isfinite(value) ? value : 0.0f;
                 };
 
@@ -5394,13 +6097,15 @@ private:
                 Pale::float4 visibleAdjoint{0.0f, 0.0f, 0.0f, 0.0f};
                 Pale::float4 depthAdjoint{0.0f, 0.0f, 0.0f, 0.0f};
 
-                if (useNormalConsistency) {
+                if (useNormalConsistency)
+                {
                     const Pale::float4 visibleNormal = visibleNormalBuffer[pixelIndex];
                     const Pale::float4 depthNormal = normalFromDepthBuffer[pixelIndex];
                     const float visibleW = clean(visibleNormal.w());
                     const float depthW = clean(depthNormal.w());
 
-                    if (visibleW > 0.0f && depthW > 0.0f) {
+                    if (visibleW > 0.0f && depthW > 0.0f)
+                    {
                         const float visibleX = clean(visibleNormal.x());
                         const float visibleY = clean(visibleNormal.y());
                         const float visibleZ = clean(visibleNormal.z());
@@ -5428,19 +6133,24 @@ private:
             });
     }
 
-    bool syncPointParametersFromGpuIfDirty() {
+    bool syncPointParametersFromGpuIfDirty()
+    {
         return syncPointParametersFromGpu(false);
     }
 
-    bool syncPointParametersFromGpu(bool forceSync) {
-        if (!forceSync && !devicePointParametersDirty) {
+    bool syncPointParametersFromGpu(bool forceSync)
+    {
+        if (!forceSync && !devicePointParametersDirty)
+        {
             return false;
         }
-        if (!sceneGpu.points || sceneGpu.pointCount == 0u) {
+        if (!sceneGpu.points || sceneGpu.pointCount == 0u)
+        {
             devicePointParametersDirty = false;
             return false;
         }
-        if (!assetManager) {
+        if (!assetManager)
+        {
             throw std::runtime_error("sync_point_parameters_from_gpu: assetManager is null");
         }
 
@@ -5452,16 +6162,19 @@ private:
         buildProducts.points = hostPoints;
 
         auto pointAssetSharedPtr = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
-        if (!pointAssetSharedPtr) {
-            throw std::runtime_error("sync_point_parameters_from_gpu: failed to get PointAsset for dynamic point cloud");
+        if (!pointAssetSharedPtr)
+        {
+            throw std::runtime_error(
+                "sync_point_parameters_from_gpu: failed to get PointAsset for dynamic point cloud");
         }
 
-        Pale::PointAsset &pointAsset = *pointAssetSharedPtr;
-        if (pointAsset.points.empty()) {
+        Pale::PointAsset& pointAsset = *pointAssetSharedPtr;
+        if (pointAsset.points.empty())
+        {
             throw std::runtime_error("sync_point_parameters_from_gpu: PointAsset has no PointGeometry blocks");
         }
 
-        Pale::PointGeometry &pointGeometry = pointAsset.points.front();
+        Pale::PointGeometry& pointGeometry = pointAsset.points.front();
         pointGeometry.positions.resize(pointCount);
         pointGeometry.quat.resize(pointCount);
         pointGeometry.scales.resize(pointCount);
@@ -5471,14 +6184,15 @@ private:
         pointGeometry.betas.resize(pointCount);
         pointGeometry.powers.resize(pointCount);
 
-        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
-            const Pale::Point &point = hostPoints[pointIndex];
+        for (std::size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+        {
+            const Pale::Point& point = hostPoints[pointIndex];
             pointGeometry.positions[pointIndex] =
-                    glm::vec3(point.position.x(), point.position.y(), point.position.z());
+                glm::vec3(point.position.x(), point.position.y(), point.position.z());
             pointGeometry.quat[pointIndex] = quaternionFromFrame(point.tanU, point.tanV);
             pointGeometry.scales[pointIndex] = glm::vec2(point.scale.x(), point.scale.y());
             pointGeometry.albedos[pointIndex] =
-                    glm::vec3(point.albedo.x(), point.albedo.y(), point.albedo.z());
+                glm::vec3(point.albedo.x(), point.albedo.y(), point.albedo.z());
             pointGeometry.opacities[pointIndex] = point.opacity;
             pointGeometry.shapes[pointIndex] = point.shape;
             pointGeometry.betas[pointIndex] = point.beta;
@@ -5489,16 +6203,20 @@ private:
         return true;
     }
 
-    static void freeTrainingTarget(TrainingTargetDevice &target, sycl::queue queue) {
-        if (target.relativeDensificationAdjoint) {
+    static void freeTrainingTarget(TrainingTargetDevice& target, sycl::queue queue)
+    {
+        if (target.relativeDensificationAdjoint)
+        {
             sycl::free(target.relativeDensificationAdjoint, queue);
             target.relativeDensificationAdjoint = nullptr;
         }
-        if (target.rgba) {
+        if (target.rgba)
+        {
             sycl::free(target.rgba, queue);
             target.rgba = nullptr;
         }
-        if (target.loss) {
+        if (target.loss)
+        {
             sycl::free(target.loss, queue);
             target.loss = nullptr;
         }
@@ -5506,24 +6224,28 @@ private:
         target.height = 0;
     }
 
-    void freeTrainingTargets(sycl::queue queue) {
-        for (auto &[cameraName, target]: trainingTargets) {
+    void freeTrainingTargets(sycl::queue queue)
+    {
+        for (auto& [cameraName, target] : trainingTargets)
+        {
             freeTrainingTarget(target, queue);
         }
         trainingTargets.clear();
     }
 
-    static void ensureTrainingTargetCapacity(TrainingTargetDevice &target,
-                                             const std::string &cameraName,
+    static void ensureTrainingTargetCapacity(TrainingTargetDevice& target,
+                                             const std::string& cameraName,
                                              std::uint32_t width,
                                              std::uint32_t height,
-                                             sycl::queue queue) {
+                                             sycl::queue queue)
+    {
         const bool sameShape =
-                target.rgba != nullptr &&
-                target.loss != nullptr &&
-                target.width == width &&
-                target.height == height;
-        if (sameShape) {
+            target.rgba != nullptr &&
+            target.loss != nullptr &&
+            target.width == width &&
+            target.height == height;
+        if (sameShape)
+        {
             return;
         }
 
@@ -5535,32 +6257,40 @@ private:
         const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         target.rgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
         target.loss = sycl::malloc_device<float>(3u, queue);
-        if (!target.rgba || !target.loss) {
+        if (!target.rgba || !target.loss)
+        {
             throw std::runtime_error("ensureTrainingTargetCapacity: failed to allocate device target buffers");
         }
     }
 
-    void freeSurfaceRegularizerScratch(sycl::queue queue) {
+    void freeSurfaceRegularizerScratch(sycl::queue queue)
+    {
         if (surfaceRegularizerScratch.sums) sycl::free(surfaceRegularizerScratch.sums, queue);
         if (surfaceRegularizerScratch.counts) sycl::free(surfaceRegularizerScratch.counts, queue);
         surfaceRegularizerScratch = {};
     }
 
-    void ensureSurfaceRegularizerScratchCapacity(std::size_t cameraCount, sycl::queue queue) {
+    void ensureSurfaceRegularizerScratchCapacity(std::size_t cameraCount, sycl::queue queue)
+    {
         if (cameraCount <= surfaceRegularizerScratch.cameraCapacity &&
-            surfaceRegularizerScratch.sums && surfaceRegularizerScratch.counts) return;
+            surfaceRegularizerScratch.sums && surfaceRegularizerScratch.counts)
+            return;
 
         queue.wait_and_throw();
         const std::size_t capacity = std::max<std::size_t>(cameraCount, 1u);
-        float *sums = nullptr;
-        std::uint32_t *counts = nullptr;
-        try {
+        float* sums = nullptr;
+        std::uint32_t* counts = nullptr;
+        try
+        {
             sums = sycl::malloc_device<float>(4u * capacity, queue);
             counts = sycl::malloc_device<std::uint32_t>(3u * capacity, queue);
-            if (!sums || !counts) {
+            if (!sums || !counts)
+            {
                 throw std::runtime_error("Failed to allocate surface regularizer loss buffers");
             }
-        } catch (...) {
+        }
+        catch (...)
+        {
             if (sums) sycl::free(sums, queue);
             if (counts) sycl::free(counts, queue);
             throw;
@@ -5569,9 +6299,12 @@ private:
         surfaceRegularizerScratch = {capacity, sums, counts};
     }
 
-    void freeRgbSsimScratch(sycl::queue queue) {
-        auto release = [&queue](Pale::float4 *&pointer) {
-            if (pointer) {
+    void freeRgbSsimScratch(sycl::queue queue)
+    {
+        auto release = [&queue](Pale::float4*& pointer)
+        {
+            if (pointer)
+            {
                 sycl::free(pointer, queue);
                 pointer = nullptr;
             }
@@ -5584,17 +6317,20 @@ private:
         rgbSsimScratch.pixelCapacity = 0;
     }
 
-    void ensureRgbSsimScratchCapacity(std::size_t pixelCount, sycl::queue queue) {
+    void ensureRgbSsimScratchCapacity(std::size_t pixelCount, sycl::queue queue)
+    {
         if (rgbSsimScratch.pixelCapacity >= pixelCount &&
             rgbSsimScratch.renderedMean && rgbSsimScratch.targetMean &&
             rgbSsimScratch.derivativeMean && rgbSsimScratch.derivativeVariance &&
-            rgbSsimScratch.derivativeCovariance) {
+            rgbSsimScratch.derivativeCovariance)
+        {
             return;
         }
 
         // A multi-camera batch reuses this storage serially. If a later camera is
         // larger, finish the already queued SSIM pass before replacing its storage.
-        if (rgbSsimScratch.pixelCapacity > 0u) {
+        if (rgbSsimScratch.pixelCapacity > 0u)
+        {
             queue.wait_and_throw();
         }
         freeRgbSsimScratch(queue);
@@ -5605,7 +6341,8 @@ private:
         rgbSsimScratch.derivativeCovariance = sycl::malloc_device<Pale::float4>(pixelCount, queue);
         if (!rgbSsimScratch.renderedMean || !rgbSsimScratch.targetMean ||
             !rgbSsimScratch.derivativeMean || !rgbSsimScratch.derivativeVariance ||
-            !rgbSsimScratch.derivativeCovariance) {
+            !rgbSsimScratch.derivativeCovariance)
+        {
             freeRgbSsimScratch(queue);
             throw std::runtime_error("ensureRgbSsimScratchCapacity: failed to allocate SSIM scratch buffers");
         }
@@ -5613,10 +6350,11 @@ private:
     }
 
     static float relativeDensificationWeight(
-        const Pale::float4 &rendered, const Pale::float4 &target, float floorSquared) {
+        const Pale::float4& rendered, const Pale::float4& target, float floorSquared)
+    {
         const float meanSquaredRadiance = (
-            rendered.x()*rendered.x() + rendered.y()*rendered.y() + rendered.z()*rendered.z() +
-            target.x()*target.x() + target.y()*target.y() + target.z()*target.z()) / 6.0f;
+            rendered.x() * rendered.x() + rendered.y() * rendered.y() + rendered.z() * rendered.z() +
+            target.x() * target.x() + target.y() * target.y() + target.z() * target.z()) / 6.0f;
         return 1.0f / (meanSquaredRadiance + floorSquared);
     }
 
@@ -5625,49 +6363,56 @@ private:
     // The ordinary half-MSE path instead fuses the statistic into its existing
     // adjoint traversal using the frozen per-pixel multiplier in framebuffer.w.
     void runRelativeDensificationAdjoint(
-        SelectedTrainingBatch &batch, const RgbLossOptions &options, sycl::queue queue) {
+        SelectedTrainingBatch& batch, const RgbLossOptions& options, sycl::queue queue)
+    {
         if (!options.relativeDensification || options.ssimWeight <= 0.0f) return;
         if (densificationGradients.numPoints != gradients.numPoints ||
             densificationGradients.cameraSlotCount != gradients.cameraSlotCount ||
-            !densificationGradients.gradPosition) {
+            !densificationGradients.gradPosition)
+        {
             Pale::freeGradientsForScene(queue, densificationGradients);
             densificationGradients = Pale::makeGradientsForScene(queue, buildProducts, nullptr);
         }
         std::vector<Pale::SensorGPU> relativeSensors = batch.sensors;
-        for (std::size_t i = 0; i < relativeSensors.size(); ++i) {
+        for (std::size_t i = 0; i < relativeSensors.size(); ++i)
+        {
             relativeSensors[i].framebuffer = batch.targets[i]->relativeDensificationAdjoint;
             relativeSensors[i].relativeDensification = true;
             relativeSensors[i].densificationFullPosition = options.densificationFullPosition;
             relativeSensors[i].densificationRadianceFloorSquared =
-                    options.densificationRadianceFloor * options.densificationRadianceFloor;
+                options.densificationRadianceFloor * options.densificationRadianceFloor;
         }
         pathTracer->renderBackward(relativeSensors, densificationGradients, nullptr);
         const std::size_t n = gradients.numPoints;
         const std::size_t nc = n * gradients.cameraSlotCount;
-        queue.memcpy(gradients.cloneSignal, densificationGradients.cloneSignal, n*sizeof(Pale::float3));
+        queue.memcpy(gradients.cloneSignal, densificationGradients.cloneSignal, n * sizeof(Pale::float3));
         queue.memcpy(gradients.cloneSignalPerPrimitivePerCamera,
-                     densificationGradients.cloneSignalPerPrimitivePerCamera, nc*sizeof(Pale::float3));
+                     densificationGradients.cloneSignalPerPrimitivePerCamera, nc * sizeof(Pale::float3));
         queue.memcpy(gradients.cloneSignalRecordCountPerPrimitivePerCamera,
-                     densificationGradients.cloneSignalRecordCountPerPrimitivePerCamera, nc*sizeof(uint32_t));
+                     densificationGradients.cloneSignalRecordCountPerPrimitivePerCamera, nc * sizeof(uint32_t));
         queue.memcpy(gradients.cloneRadianceRmsSumPerPrimitivePerCamera,
-                     densificationGradients.cloneRadianceRmsSumPerPrimitivePerCamera, nc*sizeof(float));
-        queue.memcpy(gradients.cloneSignalMeanNorm, densificationGradients.cloneSignalMeanNorm, n*sizeof(float));
-        queue.memcpy(gradients.cloneSignalStd, densificationGradients.cloneSignalStd, n*sizeof(float));
-        queue.memcpy(gradients.cloneSignalCoherence, densificationGradients.cloneSignalCoherence, n*sizeof(float));
-        queue.memcpy(gradients.cloneSignalDisagreement, densificationGradients.cloneSignalDisagreement, n*sizeof(float));
+                     densificationGradients.cloneRadianceRmsSumPerPrimitivePerCamera, nc * sizeof(float));
+        queue.memcpy(gradients.cloneSignalMeanNorm, densificationGradients.cloneSignalMeanNorm, n * sizeof(float));
+        queue.memcpy(gradients.cloneSignalStd, densificationGradients.cloneSignalStd, n * sizeof(float));
+        queue.memcpy(gradients.cloneSignalCoherence, densificationGradients.cloneSignalCoherence, n * sizeof(float));
+        queue.memcpy(gradients.cloneSignalDisagreement, densificationGradients.cloneSignalDisagreement,
+                     n * sizeof(float));
         queue.memcpy(gradients.cloneSignalActiveCameraCount,
-                     densificationGradients.cloneSignalActiveCameraCount, n*sizeof(uint32_t));
+                     densificationGradients.cloneSignalActiveCameraCount, n * sizeof(uint32_t));
         queue.wait_and_throw();
     }
 
     void launchRgbLossAdjointKernel(sycl::queue queue,
-                                    Pale::SensorGPU &sensor,
-                                    TrainingTargetDevice &target,
-                                    const RgbLossOptions &options) {
-        if (!sensor.framebuffer || !target.rgba || !target.loss) {
+                                    Pale::SensorGPU& sensor,
+                                    TrainingTargetDevice& target,
+                                    const RgbLossOptions& options)
+    {
+        if (!sensor.framebuffer || !target.rgba || !target.loss)
+        {
             throw std::runtime_error("launchRgbLossAdjointKernel: missing framebuffer or target buffer");
         }
-        if (sensor.width != target.width || sensor.height != target.height) {
+        if (sensor.width != target.width || sensor.height != target.height)
+        {
             throw std::runtime_error("launchRgbLossAdjointKernel: sensor/target resolution mismatch");
         }
 
@@ -5680,37 +6425,44 @@ private:
         sensor.densificationFullPosition = options.densificationFullPosition;
         const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
         sensor.densificationRadianceFloorSquared = floorSquared;
-        if (options.relativeDensification && options.ssimWeight > 0.0f) {
-            if (!target.relativeDensificationAdjoint) {
+        if (options.relativeDensification && options.ssimWeight > 0.0f)
+        {
+            if (!target.relativeDensificationAdjoint)
+            {
                 target.relativeDensificationAdjoint = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-                if (!target.relativeDensificationAdjoint) {
+                if (!target.relativeDensificationAdjoint)
+                {
                     throw std::runtime_error("Failed to allocate relative densification adjoint");
                 }
             }
             queue.parallel_for<class RelativeDensificationSourceKernelTag>(
                 sycl::range<1>(pixelCount),
                 [framebuffer = sensor.framebuffer, targetRgba = target.rgba,
-                 source = target.relativeDensificationAdjoint, invElementCount, floorSquared](sycl::id<1> id) {
+                    source = target.relativeDensificationAdjoint, invElementCount, floorSquared](sycl::id<1> id)
+                {
                     const Pale::float4 rendered = framebuffer[id[0]], targetPixel = targetRgba[id[0]];
                     const float relativeWeight = relativeDensificationWeight(
                         rendered, targetPixel, floorSquared);
                     source[id[0]] = Pale::float4{
-                        (rendered.x()-targetPixel.x())*invElementCount,
-                        (rendered.y()-targetPixel.y())*invElementCount,
-                        (rendered.z()-targetPixel.z())*invElementCount,
-                        relativeWeight};
+                        (rendered.x() - targetPixel.x()) * invElementCount,
+                        (rendered.y() - targetPixel.y()) * invElementCount,
+                        (rendered.z() - targetPixel.z()) * invElementCount,
+                        relativeWeight
+                    };
                 });
         }
 
         queue.fill(target.loss, 0.0f, 3u);
-        if (options.ssimWeight <= 0.0f) {
+        if (options.ssimWeight <= 0.0f)
+        {
             queue.parallel_for<class RgbLossAdjointKernelTag>(
                 sycl::range<1>(pixelCount),
                 [framebuffer = sensor.framebuffer,
-                 targetRgba = target.rgba,
-                 lossOut = target.loss,
-                 invElementCount, relativeDensification = options.relativeDensification,
-                 floorSquared](sycl::id<1> pixelId) {
+                    targetRgba = target.rgba,
+                    lossOut = target.loss,
+                    invElementCount, relativeDensification = options.relativeDensification,
+                    floorSquared](sycl::id<1> pixelId)
+                {
                     const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
                     const Pale::float4 rendered = framebuffer[pixelIndex];
                     const Pale::float4 targetPixel = targetRgba[pixelIndex];
@@ -5719,7 +6471,7 @@ private:
                     const float diffG = rendered.y() - targetPixel.y();
                     const float diffB = rendered.z() - targetPixel.z();
                     const float l2Contribution =
-                            0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
+                        0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
 
                     auto combinedAtomic = sycl::atomic_ref<
                         float,
@@ -5748,9 +6500,10 @@ private:
 
         const int windowRadius = options.ssimWindowSize / 2;
         const float gaussianExponentScale =
-                -0.5f / (options.ssimSigma * options.ssimSigma);
+            -0.5f / (options.ssimSigma * options.ssimSigma);
         float gaussianSum = 0.0f;
-        for (int offset = -windowRadius; offset <= windowRadius; ++offset) {
+        for (int offset = -windowRadius; offset <= windowRadius; ++offset)
+        {
             gaussianSum += std::exp(
                 static_cast<float>(offset * offset) * gaussianExponentScale);
         }
@@ -5763,20 +6516,21 @@ private:
         queue.parallel_for<class RgbSsimStatisticsKernelTag>(
             sycl::range<1>(pixelCount),
             [framebuffer = sensor.framebuffer,
-             targetRgba = target.rgba,
-             lossOut = target.loss,
-             renderedMeanOut = rgbSsimScratch.renderedMean,
-             targetMeanOut = rgbSsimScratch.targetMean,
-             derivativeMeanOut = rgbSsimScratch.derivativeMean,
-             derivativeVarianceOut = rgbSsimScratch.derivativeVariance,
-             derivativeCovarianceOut = rgbSsimScratch.derivativeCovariance,
-             width = sensor.width,
-             height = sensor.height,
-             windowRadius,
-             gaussianExponentScale,
-             invGaussian2dSum,
-             invElementCount,
-             ssimWeight = options.ssimWeight](sycl::id<1> pixelId) {
+                targetRgba = target.rgba,
+                lossOut = target.loss,
+                renderedMeanOut = rgbSsimScratch.renderedMean,
+                targetMeanOut = rgbSsimScratch.targetMean,
+                derivativeMeanOut = rgbSsimScratch.derivativeMean,
+                derivativeVarianceOut = rgbSsimScratch.derivativeVariance,
+                derivativeCovarianceOut = rgbSsimScratch.derivativeCovariance,
+                width = sensor.width,
+                height = sensor.height,
+                windowRadius,
+                gaussianExponentScale,
+                invGaussian2dSum,
+                invElementCount,
+                ssimWeight = options.ssimWeight](sycl::id<1> pixelId)
+            {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
                 const int centerX = static_cast<int>(pixelIndex % width);
                 const int centerY = static_cast<int>(pixelIndex / width);
@@ -5787,10 +6541,12 @@ private:
                 Pale::float4 targetSecondMoment{0.0f, 0.0f, 0.0f, 0.0f};
                 Pale::float4 crossMoment{0.0f, 0.0f, 0.0f, 0.0f};
 
-                for (int offsetY = -windowRadius; offsetY <= windowRadius; ++offsetY) {
+                for (int offsetY = -windowRadius; offsetY <= windowRadius; ++offsetY)
+                {
                     const int sampleY = centerY + offsetY;
                     if (sampleY < 0 || sampleY >= static_cast<int>(height)) continue;
-                    for (int offsetX = -windowRadius; offsetX <= windowRadius; ++offsetX) {
+                    for (int offsetX = -windowRadius; offsetX <= windowRadius; ++offsetX)
+                    {
                         const int sampleX = centerX + offsetX;
                         if (sampleX < 0 || sampleX >= static_cast<int>(width)) continue;
                         const float radiusSquared = static_cast<float>(
@@ -5848,7 +6604,8 @@ private:
                 Pale::float4 derivativeCovariance{0.0f, 0.0f, 0.0f, 0.0f};
                 float ssimSum = 0.0f;
 
-                for (int channel = 0; channel < 3; ++channel) {
+                for (int channel = 0; channel < 3; ++channel)
+                {
                     const float meanRendered = renderedMean[channel];
                     const float meanTarget = targetMean[channel];
                     const float luminanceNumerator =
@@ -5865,8 +6622,8 @@ private:
                     ssimSum += luminance * contrast;
 
                     derivativeMean[channel] = contrast * (
-                        2.0f * meanTarget * luminanceDenominator -
-                        2.0f * meanRendered * luminanceNumerator) /
+                            2.0f * meanTarget * luminanceDenominator -
+                            2.0f * meanRendered * luminanceNumerator) /
                         (luminanceDenominator * luminanceDenominator);
                     derivativeVariance[channel] =
                         -luminance * contrastNumerator /
@@ -5920,19 +6677,20 @@ private:
         queue.parallel_for<class RgbSsimAdjointKernelTag>(
             sycl::range<1>(pixelCount),
             [framebuffer = sensor.framebuffer,
-             targetRgba = target.rgba,
-             renderedMean = rgbSsimScratch.renderedMean,
-             targetMean = rgbSsimScratch.targetMean,
-             derivativeMean = rgbSsimScratch.derivativeMean,
-             derivativeVariance = rgbSsimScratch.derivativeVariance,
-             derivativeCovariance = rgbSsimScratch.derivativeCovariance,
-             width = sensor.width,
-             height = sensor.height,
-             windowRadius,
-             gaussianExponentScale,
-             invGaussian2dSum,
-             invElementCount,
-             ssimWeight = options.ssimWeight](sycl::id<1> pixelId) {
+                targetRgba = target.rgba,
+                renderedMean = rgbSsimScratch.renderedMean,
+                targetMean = rgbSsimScratch.targetMean,
+                derivativeMean = rgbSsimScratch.derivativeMean,
+                derivativeVariance = rgbSsimScratch.derivativeVariance,
+                derivativeCovariance = rgbSsimScratch.derivativeCovariance,
+                width = sensor.width,
+                height = sensor.height,
+                windowRadius,
+                gaussianExponentScale,
+                invGaussian2dSum,
+                invElementCount,
+                ssimWeight = options.ssimWeight](sycl::id<1> pixelId)
+            {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
                 const int sampleX = static_cast<int>(pixelIndex % width);
                 const int sampleY = static_cast<int>(pixelIndex / width);
@@ -5940,10 +6698,12 @@ private:
                 const Pale::float4 targetPixel = targetRgba[pixelIndex];
                 Pale::float4 ssimGradient{0.0f, 0.0f, 0.0f, 0.0f};
 
-                for (int offsetY = -windowRadius; offsetY <= windowRadius; ++offsetY) {
+                for (int offsetY = -windowRadius; offsetY <= windowRadius; ++offsetY)
+                {
                     const int centerY = sampleY + offsetY;
                     if (centerY < 0 || centerY >= static_cast<int>(height)) continue;
-                    for (int offsetX = -windowRadius; offsetX <= windowRadius; ++offsetX) {
+                    for (int offsetX = -windowRadius; offsetX <= windowRadius; ++offsetX)
+                    {
                         const int centerX = sampleX + offsetX;
                         if (centerX < 0 || centerX >= static_cast<int>(width)) continue;
                         const float radiusSquared = static_cast<float>(
@@ -5953,24 +6713,25 @@ private:
                         const std::uint32_t centerIndex =
                             static_cast<std::uint32_t>(centerY) * width +
                             static_cast<std::uint32_t>(centerX);
-                        for (int channel = 0; channel < 3; ++channel) {
+                        for (int channel = 0; channel < 3; ++channel)
+                        {
                             ssimGradient[channel] += weight * (
                                 derivativeMean[centerIndex][channel] +
                                 2.0f * (rendered[channel] - renderedMean[centerIndex][channel]) *
-                                    derivativeVariance[centerIndex][channel] +
+                                derivativeVariance[centerIndex][channel] +
                                 (targetPixel[channel] - targetMean[centerIndex][channel]) *
-                                    derivativeCovariance[centerIndex][channel]);
+                                derivativeCovariance[centerIndex][channel]);
                         }
                     }
                 }
 
                 framebuffer[pixelIndex] = Pale::float4{
                     ((1.0f - ssimWeight) * (rendered.x() - targetPixel.x()) -
-                     ssimWeight * ssimGradient.x()) * invElementCount,
+                        ssimWeight * ssimGradient.x()) * invElementCount,
                     ((1.0f - ssimWeight) * (rendered.y() - targetPixel.y()) -
-                     ssimWeight * ssimGradient.y()) * invElementCount,
+                        ssimWeight * ssimGradient.y()) * invElementCount,
                     ((1.0f - ssimWeight) * (rendered.z() - targetPixel.z()) -
-                     ssimWeight * ssimGradient.z()) * invElementCount,
+                        ssimWeight * ssimGradient.z()) * invElementCount,
                     0.0f
                 };
             });
@@ -6006,115 +6767,116 @@ private:
     bool devicePointParametersDirty{false};
     bool parallelBvhRefit{true};
     bool pointBvhRefitPlanReady{false};
-    Pale::PointBvhRefitDetail::NodeTask *pointBvhRefitTasks{nullptr};
-    Pale::PointBvhRefitDetail::NodeTask *pointQbvhRefitTasks{nullptr};
+    Pale::PointBvhRefitDetail::NodeTask* pointBvhRefitTasks{nullptr};
+    Pale::PointBvhRefitDetail::NodeTask* pointQbvhRefitTasks{nullptr};
     std::vector<Pale::BLASRange> pointBvhRefitLevels{};
     std::size_t pointQbvhRefitTaskCount{0};
 
     // Adjoint buffers
     bool adjointBuffersAllocated{false};
-    float *adjointFramebuffer{nullptr};
-    float *adjointFramebufferGrad{nullptr};
-    Pale::float3 *gradientPkBuffer{nullptr};
+    float* adjointFramebuffer{nullptr};
+    float* adjointFramebufferGrad{nullptr};
+    Pale::float3* gradientPkBuffer{nullptr};
     size_t gradCount{1024}; // set to your point count or resize after build
 };
 
 // ---- pybind11 module ----
-PYBIND11_MODULE(pale, m) {
+PYBIND11_MODULE(pale, m)
+{
     py::class_<PythonRenderer>(m, "Renderer")
-            .def(py::init<
-                     const std::string &,
-                     const std::string &,
-                     const std::string &,
-                     const py::dict &>(),
-                 py::arg("assetRootDir"),
-                 py::arg("sceneXml") = "cbox_custom.xml",
-                 py::arg("pointCloudFile") = "initial.ply",
-                 py::arg("settings") = py::dict()
-            )
-            .def("get_backward_allocation_stats", &PythonRenderer::get_backward_allocation_stats,
-                 "Report allocated backward gradient bytes, sensor adjoint bytes, and ray scratch state.")
-            .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
-            .def("upload_training_targets",
-                 &PythonRenderer::upload_training_targets,
-                 py::arg("target_images"))
-            .def("render_rgb_loss_backward",
-                 &PythonRenderer::render_rgb_loss_backward,
-                 py::arg("camera_names"),
-                 py::arg("options") = py::dict())
-            .def("render_rgb_training_step",
-                 &PythonRenderer::render_rgb_training_step,
-                 py::arg("camera_names"),
-                 py::arg("options") = py::dict())
-            .def("render_rgb_backward_from_current_forward",
-                 &PythonRenderer::render_rgb_backward_from_current_forward,
-                 py::arg("camera_names"),
-                 py::arg("options") = py::dict())
-            .def("render_forward_surface_regularizer_loss_and_adjoint",
-                 &PythonRenderer::render_forward_surface_regularizer_loss_and_adjoint,
-                 py::arg("camera_names"),
-                 py::arg("options") = py::dict())
-            .def("render_surface_regularizers_backward_from_current_adjoint",
-                 &PythonRenderer::render_surface_regularizers_backward_from_current_adjoint,
-                 py::arg("camera_names"),
-                 py::arg("return_gradients") = false)
-            .def("apply_device_training_step",
-                 &PythonRenderer::apply_device_training_step,
-                 py::arg("options") = py::dict())
-            .def("get_training_camera_names", &PythonRenderer::getTrainingCameras)
-            .def("get_camera_names", &PythonRenderer::getCameraNames)
-            .def("render_backward", &PythonRenderer::render_backward, py::arg("targetRgb32f"))
-            .def("render_depth_distortion_backward",
-                 &PythonRenderer::render_depth_distortion_backward,
-                 py::arg("depthDistortionGrad32f"))
-            .def("render_normal_consistency_backward",
-                 &PythonRenderer::render_normal_consistency_backward,
-                 py::arg("visibleNormalGrad32f"),
-                 py::arg("normalFromDepthGrad32f"))
-            .def("get_point_parameters", &PythonRenderer::get_point_parameters)
-            .def("get_curvature_densification_stats",
-                 &PythonRenderer::get_curvature_densification_stats)
-            .def("get_primal_activity_stats",
-                 &PythonRenderer::get_primal_activity_stats)
-            .def("sync_point_parameters_from_gpu", &PythonRenderer::sync_point_parameters_from_gpu)
-            .def("capture_device_adam_state", &PythonRenderer::capture_device_adam_state)
-            .def("upload_device_adam_state",
-                 &PythonRenderer::upload_device_adam_state,
-                 py::arg("state"))
-            .def("apply_point_optimization", &PythonRenderer::apply_point_optimization, py::arg("parameters"))
-            .def("add_points", &PythonRenderer::add_new_points, py::arg("parameters"))
-            .def("remove_points", &PythonRenderer::remove_points, py::arg("parameters"))
-            .def("rebuild_bvh", &PythonRenderer::rebuild_bvh)
-            .def("set_point_properties",
-                 &PythonRenderer::set_point_properties,
-                 py::arg("translation3"), py::arg("rotation_quat4"),
-                 py::arg("scale3"), py::arg("albedo3"),
-                 py::arg("opacity"), py::arg("beta"),
-                 py::arg("index") = -1)
-            .def("set_point_opacity", &PythonRenderer::set_point_opacity, py::arg("opacity"), py::arg("index"))
-            .def("set_point_translation", &PythonRenderer::set_point_translation, py::arg("translation"),
-                 py::arg("axis"), py::arg("index"))
-            .def("set_point_albedo", &PythonRenderer::set_point_albedo, py::arg("intensity"), py::arg("axis"),
-                 py::arg("index"))
-            .def("set_point_rotation_degrees", &PythonRenderer::set_point_rotation_degrees, py::arg("rotation_deg"),
-                 py::arg("axis"), py::arg("index"))
-            .def("set_point_scale", &PythonRenderer::set_point_scale, py::arg("scale"), py::arg("axis"),
-                 py::arg("index"))
-            .def("set_point_beta", &PythonRenderer::set_point_beta, py::arg("beta"), py::arg("index")).def(
-                "render_surface_regularizers_backward",
-                &PythonRenderer::render_surface_regularizers_backward,
-                py::arg("camera_names"),
-                py::arg("depth_distortion_grad_images"),
-                py::arg("visible_normal_grad_images"),
-                py::arg("normal_from_depth_grad_images"),
-                py::arg("intra_slab_depth_grad_images"),
-                py::arg("curvature_scale_grad_images"))
-            .def("render_surface_regularizers_backward_no_gradients",
-                 &PythonRenderer::render_surface_regularizers_backward_no_gradients,
-                 py::arg("camera_names"),
-                 py::arg("depth_distortion_grad_images"),
-                 py::arg("visible_normal_grad_images"),
-                 py::arg("normal_from_depth_grad_images"),
-                 py::arg("intra_slab_depth_grad_images"),
-                 py::arg("curvature_scale_grad_images"));
+        .def(py::init<
+                 const std::string&,
+                 const std::string&,
+                 const std::string&,
+                 const py::dict&>(),
+             py::arg("assetRootDir"),
+             py::arg("sceneXml") = "cbox_custom.xml",
+             py::arg("pointCloudFile") = "initial.ply",
+             py::arg("settings") = py::dict()
+        ).def("supports_zero_gradient_surfel_skipping", [](const PythonRenderer &) -> bool { return true; })
+        .def("get_backward_allocation_stats", &PythonRenderer::get_backward_allocation_stats,
+             "Report allocated backward gradient bytes, sensor adjoint bytes, and ray scratch state.")
+        .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
+        .def("upload_training_targets",
+             &PythonRenderer::upload_training_targets,
+             py::arg("target_images"))
+        .def("render_rgb_loss_backward",
+             &PythonRenderer::render_rgb_loss_backward,
+             py::arg("camera_names"),
+             py::arg("options") = py::dict())
+        .def("render_rgb_training_step",
+             &PythonRenderer::render_rgb_training_step,
+             py::arg("camera_names"),
+             py::arg("options") = py::dict())
+        .def("render_rgb_backward_from_current_forward",
+             &PythonRenderer::render_rgb_backward_from_current_forward,
+             py::arg("camera_names"),
+             py::arg("options") = py::dict())
+        .def("render_forward_surface_regularizer_loss_and_adjoint",
+             &PythonRenderer::render_forward_surface_regularizer_loss_and_adjoint,
+             py::arg("camera_names"),
+             py::arg("options") = py::dict())
+        .def("render_surface_regularizers_backward_from_current_adjoint",
+             &PythonRenderer::render_surface_regularizers_backward_from_current_adjoint,
+             py::arg("camera_names"),
+             py::arg("return_gradients") = false)
+        .def("apply_device_training_step",
+             &PythonRenderer::apply_device_training_step,
+             py::arg("options") = py::dict())
+        .def("get_training_camera_names", &PythonRenderer::getTrainingCameras)
+        .def("get_camera_names", &PythonRenderer::getCameraNames)
+        .def("render_backward", &PythonRenderer::render_backward, py::arg("targetRgb32f"))
+        .def("render_depth_distortion_backward",
+             &PythonRenderer::render_depth_distortion_backward,
+             py::arg("depthDistortionGrad32f"))
+        .def("render_normal_consistency_backward",
+             &PythonRenderer::render_normal_consistency_backward,
+             py::arg("visibleNormalGrad32f"),
+             py::arg("normalFromDepthGrad32f"))
+        .def("get_point_parameters", &PythonRenderer::get_point_parameters)
+        .def("get_curvature_densification_stats",
+             &PythonRenderer::get_curvature_densification_stats)
+        .def("get_primal_activity_stats",
+             &PythonRenderer::get_primal_activity_stats)
+        .def("sync_point_parameters_from_gpu", &PythonRenderer::sync_point_parameters_from_gpu)
+        .def("capture_device_adam_state", &PythonRenderer::capture_device_adam_state)
+        .def("upload_device_adam_state",
+             &PythonRenderer::upload_device_adam_state,
+             py::arg("state"))
+        .def("apply_point_optimization", &PythonRenderer::apply_point_optimization, py::arg("parameters"))
+        .def("add_points", &PythonRenderer::add_new_points, py::arg("parameters"))
+        .def("remove_points", &PythonRenderer::remove_points, py::arg("parameters"))
+        .def("rebuild_bvh", &PythonRenderer::rebuild_bvh)
+        .def("set_point_properties",
+             &PythonRenderer::set_point_properties,
+             py::arg("translation3"), py::arg("rotation_quat4"),
+             py::arg("scale3"), py::arg("albedo3"),
+             py::arg("opacity"), py::arg("beta"),
+             py::arg("index") = -1)
+        .def("set_point_opacity", &PythonRenderer::set_point_opacity, py::arg("opacity"), py::arg("index"))
+        .def("set_point_translation", &PythonRenderer::set_point_translation, py::arg("translation"),
+             py::arg("axis"), py::arg("index"))
+        .def("set_point_albedo", &PythonRenderer::set_point_albedo, py::arg("intensity"), py::arg("axis"),
+             py::arg("index"))
+        .def("set_point_rotation_degrees", &PythonRenderer::set_point_rotation_degrees, py::arg("rotation_deg"),
+             py::arg("axis"), py::arg("index"))
+        .def("set_point_scale", &PythonRenderer::set_point_scale, py::arg("scale"), py::arg("axis"),
+             py::arg("index"))
+        .def("set_point_beta", &PythonRenderer::set_point_beta, py::arg("beta"), py::arg("index")).def(
+            "render_surface_regularizers_backward",
+            &PythonRenderer::render_surface_regularizers_backward,
+            py::arg("camera_names"),
+            py::arg("depth_distortion_grad_images"),
+            py::arg("visible_normal_grad_images"),
+            py::arg("normal_from_depth_grad_images"),
+            py::arg("intra_slab_depth_grad_images"),
+            py::arg("curvature_scale_grad_images"))
+        .def("render_surface_regularizers_backward_no_gradients",
+             &PythonRenderer::render_surface_regularizers_backward_no_gradients,
+             py::arg("camera_names"),
+             py::arg("depth_distortion_grad_images"),
+             py::arg("visible_normal_grad_images"),
+             py::arg("normal_from_depth_grad_images"),
+             py::arg("intra_slab_depth_grad_images"),
+             py::arg("curvature_scale_grad_images"));
 }
