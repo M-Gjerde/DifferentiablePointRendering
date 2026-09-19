@@ -66,7 +66,7 @@ class OptimizationConfig:
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.0001
+    learning_rate_position: float = 0.00006
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.005
     learning_rate_albedo: float = 0.001
@@ -79,7 +79,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 20.0
+    position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 30_000
@@ -90,12 +90,12 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.00075
+    depth_distort_weight: float = 0.001
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.0025
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 0.0e-7
+    curvature_scale_weight: float = 1.0e-1
     # Rendering model
     share_local_layer_direct_lighting: bool = True
 
@@ -107,7 +107,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 1000
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -128,7 +128,7 @@ class OptimizationConfig:
 
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_abs_min: float = 8.0e-4
     densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 10_000
@@ -148,8 +148,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.1
-    densification_split_offset_scale: float = 0.3
+    densification_split_scale_factor: float = 1.5
+    densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
