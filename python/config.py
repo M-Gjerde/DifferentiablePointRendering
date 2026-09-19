@@ -78,7 +78,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
+    position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 30_000
@@ -89,7 +89,7 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.05
+    depth_distort_weight: float = 0.0001
     depth_distort_world_space: bool = True     # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
@@ -147,8 +147,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.3
-    densification_split_offset_scale: float = 0.15
+    densification_split_scale_factor: float = 1.2
+    densification_split_offset_scale: float = 0.5
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.00
     densification_scene_extent: float = 0.0
