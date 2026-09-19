@@ -69,9 +69,9 @@ class OptimizationConfig:
     learning_rate_position: float = 0.0001
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.005
-    learning_rate_albedo: float = 0.0005
-    learning_rate_opacity: float = 0.0005
-    learning_rate_beta: float = 0.0005
+    learning_rate_albedo: float = 0.001
+    learning_rate_opacity: float = 0.001
+    learning_rate_beta: float = 0.001
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
@@ -159,6 +159,7 @@ class OptimizationConfig:
     prune_after: int = 0
     inactive_transport_prune_cycles: int = 1
     rebuild_bvh_interval: int = densification_interval
+    min_surfel_opacity: float = 0.3
 
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 2_000
