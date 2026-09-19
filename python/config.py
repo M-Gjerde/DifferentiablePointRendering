@@ -65,9 +65,9 @@ class OptimizationConfig:
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.00008
+    learning_rate_position: float = 0.0001
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.001
+    learning_rate_scale: float = 0.005
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0005
     learning_rate_beta: float = 0.0005
@@ -78,7 +78,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 50.0
+    position_lr_scale_init: float = 10.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 30_000
@@ -160,7 +160,7 @@ class OptimizationConfig:
     rebuild_bvh_interval: int = densification_interval
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 1_000
+    mesh_extraction_interval: int = 2_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
