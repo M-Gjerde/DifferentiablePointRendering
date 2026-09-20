@@ -59,7 +59,7 @@ class OptimizationConfig:
     iterations: int = 50_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
-    skip_zero_gradient_surfels: bool = True
+    skip_zero_gradient_surfels: bool = False
 
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
@@ -180,7 +180,7 @@ class OptimizationConfig:
     log_interval: int = 25
     # When enabled (> 0), save images on the first iteration, immediately before
     # each scheduled densification, and on the final iteration.
-    save_interval: int = mesh_extraction_interval
+    save_interval: int = 1_000
     # When enabled (> 0), also save the first iteration, matching image snapshots.
     save_ply_files_interval: int = 100
     # Debug snapshots at the iteration immediately before the next scheduled

@@ -183,18 +183,15 @@ def wait_for_stable_camera_dirs(
 
 
 def get_latest_png(render_directory: Path) -> Optional[Path]:
-    if not render_directory.exists():
+    if not render_directory.is_dir():
         return None
 
-    candidates = sorted(render_directory.glob("*.png"))
-    if not candidates:
+    # Select the highest-numbered filename, without deliberately skipping the newest.
+    # Natural ordering also handles unpadded numbers: render_100.png > render_99.png.
+    try:
+        return max(render_directory.glob("*.png"), key=camera_name_sort_key, default=None)
+    except OSError:
         return None
-
-    # Prefer 1 step behind newest to avoid reading a file that's still being written.
-    if len(candidates) >= 2:
-        return candidates[-2]
-
-    return candidates[-1]
 
 
 def get_target_path(run_dir: Path, camera_name: str) -> Optional[Path]:
