@@ -94,7 +94,7 @@ class OptimizationConfig:
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 0.0
+    curvature_scale_weight: float = 0.0e-6
 
     # Rendering model
     share_local_layer_direct_lighting: bool = True
@@ -128,8 +128,8 @@ class OptimizationConfig:
 
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 3.0e-3
-    densification_grad_abs_min_final: float = 3.0e-3
+    densification_grad_abs_min: float = 8.0e-3
+    densification_grad_abs_min_final: float = 8.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
