@@ -67,7 +67,7 @@ class OptimizationConfig:
     learning_rate_position: float = 0.0001
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.005
-    learning_rate_albedo: float = 0.0005
+    learning_rate_albedo: float = 0.0002
     learning_rate_opacity: float = 0.0005
     learning_rate_beta: float = 0.0005
 
@@ -128,8 +128,8 @@ class OptimizationConfig:
 
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 8.0e-3
-    densification_grad_abs_min_final: float = 8.0e-3
+    densification_grad_abs_min: float = 3.0e-3
+    densification_grad_abs_min_final: float = 3.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
