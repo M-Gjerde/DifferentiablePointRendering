@@ -81,71 +81,37 @@ def read_ply_vertex_count(path: Path | None) -> int | None:
     return None
 
 
-def infer_latest_iteration(dataset_root: Path) -> int | None:
-    iterations: list[int] = []
-    point_cloud_root = dataset_root / "point_cloud"
-    if point_cloud_root.is_dir():
-        for path in point_cloud_root.glob("iteration_*"):
-            match = re.fullmatch(r"iteration_(\d+)", path.name)
-            if match is not None:
-                iterations.append(int(match.group(1)))
-    return max(iterations) if iterations else None
+def discover_reconstructions(dataset: str, dataset_root: Path, reconstruction_name: str) -> list[Reconstruction]:
+    """Discover meshes produced by the current PGSR renderer.
 
-
-def discover_reconstructions(dataset: str, dataset_root: Path, reconstruction_name: str,
-                             include_legacy: bool) -> list[Reconstruction]:
-    mesh_root = dataset_root / "mesh"
-    if not mesh_root.is_dir():
-        raise NotADirectoryError(f"Could not find PGSR mesh directory: {mesh_root}")
-
+    Expected layout:
+        <dataset_root>/train/ours_<iteration>/<reconstruction_name>
+    """
+    train_root = dataset_root / "train"
     reconstructions: list[Reconstruction] = []
-    for reconstruction_path in mesh_root.glob(f"iteration_*/{reconstruction_name}"):
-        match = re.fullmatch(r"iteration_(\d+)", reconstruction_path.parent.name)
-        if match is None:
-            continue
-        iteration = int(match.group(1))
-        checkpoint_path = dataset_root / "point_cloud" / f"iteration_{iteration}" / "point_cloud.ply"
-        reconstructions.append(
-            Reconstruction(
-                dataset=dataset,
-                method=f"iteration_{iteration}",
-                iteration=iteration,
-                path=reconstruction_path.resolve(),
-                checkpoint_path=checkpoint_path if checkpoint_path.is_file() else None,
-            )
-        )
 
-    if include_legacy:
-        legacy_candidates = [
-            mesh_root / "tsdf_fusion_post.ply",
-            mesh_root / reconstruction_name,
-        ]
-        for legacy_path in legacy_candidates:
-            if not legacy_path.is_file():
+    if train_root.is_dir():
+        for reconstruction_path in train_root.glob(f"ours_*/{reconstruction_name}"):
+            match = re.fullmatch(r"ours_(\d+)", reconstruction_path.parent.name)
+            if match is None or not reconstruction_path.is_file():
                 continue
-            resolved = legacy_path.resolve()
-            if any(item.path == resolved for item in reconstructions):
-                continue
-            iteration = infer_latest_iteration(dataset_root)
-            if iteration is None:
-                iteration = -1
+
+            iteration = int(match.group(1))
             checkpoint_path = dataset_root / "point_cloud" / f"iteration_{iteration}" / "point_cloud.ply"
             reconstructions.append(
                 Reconstruction(
                     dataset=dataset,
-                    method="legacy_mesh" if iteration < 0 else f"legacy_mesh@{iteration}",
+                    method=f"ours_{iteration}",
                     iteration=iteration,
-                    path=resolved,
+                    path=reconstruction_path.resolve(),
                     checkpoint_path=checkpoint_path if checkpoint_path.is_file() else None,
                 )
             )
 
     reconstructions.sort(key=lambda reconstruction: (reconstruction.iteration, reconstruction.method))
     if not reconstructions:
-        raise FileNotFoundError(
-            f"No PGSR reconstructions found under {mesh_root}; expected "
-            f"iteration_*/{reconstruction_name}" + (" or tsdf_fusion_post.ply" if include_legacy else "")
-        )
+        expected = dataset_root / "train" / "ours_<iteration>" / reconstruction_name
+        raise FileNotFoundError(f"No PGSR reconstructions found. Expected {expected}")
     return reconstructions
 
 
@@ -229,7 +195,6 @@ def evaluate_reconstructions(args: argparse.Namespace) -> list[dict[str, object]
             dataset=dataset.name,
             dataset_root=dataset.root,
             reconstruction_name=args.reconstruction_name,
-            include_legacy=args.include_legacy,
         )
 
         set_random_seed(args.seed)
@@ -390,9 +355,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--datasets", type=str, default=None,
                         help="Optional comma-separated dataset names. Default: discover pgsr_* folders.")
     parser.add_argument("--reconstruction-name", type=str, default="fuse_post_auto.ply",
-                        help="Mesh filename inside mesh/iteration_* directories.")
-    parser.add_argument("--include-legacy", action=argparse.BooleanOptionalAction, default=True,
-                        help="Also evaluate legacy mesh/tsdf_fusion_post.ply when present.")
+                        help="Mesh filename inside train/ours_<iteration> directories.")
     parser.add_argument("--use-vertices", action=argparse.BooleanOptionalAction, default=False,
                         help="Use raw mesh vertices instead of uniform surface samples.")
     parser.add_argument("--samples", type=int, default=5_000_000,
