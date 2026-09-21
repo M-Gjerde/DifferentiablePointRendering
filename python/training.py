@@ -344,6 +344,8 @@ def make_device_training_step_options(
     return {
         "optimizer": config.optimizer_type,
         "skip_zero_gradient_surfels": bool(config.skip_zero_gradient_surfels),
+        "use_log_scale": bool(config.use_log_scale),
+        "shifted_log_scale_offset": float(config.shifted_log_scale_offset),
         "learning_rate_position": active_learning_rates.get(
             "position",
             float(config.learning_rate_position),
@@ -790,6 +792,28 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 "Rebuild and load the updated C++ binding."
             )
     if use_device_training_step:
+        supports_optional_log_scale = getattr(renderer, "supports_optional_log_scale", None)
+        if not callable(supports_optional_log_scale) or not supports_optional_log_scale():
+            raise RuntimeError(
+                "The loaded pale module does not support optional log-scale optimization. "
+                "Rebuild and load the updated C++ binding."
+            )
+        if config.use_log_scale and float(config.shifted_log_scale_offset) > 0.0:
+            supports_shifted_log_scale = getattr(renderer, "supports_shifted_log_scale", None)
+            if not callable(supports_shifted_log_scale) or not supports_shifted_log_scale():
+                raise RuntimeError(
+                    "The loaded pale module does not support shifted log-scale optimization. "
+                    "Rebuild and load the updated C++ binding."
+                )
+            scale_parameterization = (
+                "shifted logarithmic "
+                f"rho=log(s+s0), s0={float(config.shifted_log_scale_offset):.6g}"
+            )
+        elif config.use_log_scale:
+            scale_parameterization = "logarithmic rho=log(s)"
+        else:
+            scale_parameterization = "linear physical radius"
+        print(f"[scale-optimization] Device scale parameterization: {scale_parameterization}.")
         print("[device-training-step] Enabled device-resident optimizer path.")
         print(
             f"[device-training-step] skip_zero_gradient_surfels={config.skip_zero_gradient_surfels}; "
@@ -799,6 +823,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         print(
             "[device-training-step] Disabled: "
             + "; ".join(device_training_disabled_reasons)
+        )
+
+    if not use_device_training_step:
+        print(
+            "[scale-optimization] Host optimizer unchanged; "
+            "--log-scale/--no-log-scale and --shifted-log-scale-offset control only the device optimizer."
         )
 
     densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)

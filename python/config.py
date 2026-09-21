@@ -56,19 +56,24 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 50_000
+    iterations: int = 30_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False
+    # Device optimizer only: False selects additive physical-radius updates.
+    use_log_scale: bool = True
+    # Opt-in shifted-log parameterization rho=log(s+s0), in scene units.
+    # Zero preserves ordinary rho=log(s).
+    shifted_log_scale_offset: float = 0.5
 
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.0001
+    learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.005
-    learning_rate_albedo: float = 0.0002
-    learning_rate_opacity: float = 0.0005
+    learning_rate_scale: float = 0.0005
+    learning_rate_albedo: float = 0.0005
+    learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -78,10 +83,10 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.33
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 30.0
+    position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 30_000
+    lr_decay_max_steps: int = 10_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.0
@@ -107,7 +112,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 1000
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -125,11 +130,10 @@ class OptimizationConfig:
     densification_tangent_only: bool = True
     densification_max_new_fraction: float = 1.0
     densification_verbose: bool = False
-
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 3.0e-3
-    densification_grad_abs_min_final: float = 3.0e-3
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -149,22 +153,22 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.2
-    densification_split_offset_scale: float = 0.3
+    densification_split_scale_factor: float = 1.7
+    densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
 
     # Pruning and topology maintenance
-    prune_interval: int = densification_interval
+    prune_interval: int = 100
     prune_after: int = 0
     inactive_transport_prune_cycles: int = 1
     rebuild_bvh_interval: int = densification_interval
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 2_000
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 1024
+    mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
     mesh_albedo_texture_size: int = 1024
     mesh_uv_partitions: int = 0
@@ -180,7 +184,7 @@ class OptimizationConfig:
     log_interval: int = 25
     # When enabled (> 0), save images on the first iteration, immediately before
     # each scheduled densification, and on the final iteration.
-    save_interval: int = 1_000
+    save_interval: int = 500
     # When enabled (> 0), also save the first iteration, matching image snapshots.
     save_ply_files_interval: int = 100
     # Debug snapshots at the iteration immediately before the next scheduled
@@ -413,6 +417,23 @@ def parse_args() -> OptimizationConfig:
         ("beta", "beta"),
     ):
         optimizer.add_argument(f"--lr-{suffix}", dest=f"learning_rate_{field_name}", type=float)
+    _add_boolean_argument(
+        optimizer, "--log-scale", dest="use_log_scale",
+        help=(
+            "Device optimizer: optimize log radii (default). "
+            "--no-log-scale uses additive physical-radius updates. "
+            "Retune --lr-scale when switching; host optimizer is unchanged."
+        ),
+    )
+    optimizer.add_argument(
+        "--shifted-log-scale-offset",
+        type=float,
+        help=(
+            "Device log-scale optimizer: opt into rho=log(s+s0) using non-negative "
+            "offset s0 in scene units. 0 keeps ordinary rho=log(s). Small surfels "
+            "then update more linearly while large surfels retain log-like growth."
+        ),
+    )
     _add_boolean_argument(optimizer, "--global-lr-decay", dest="use_global_lr_decay")
     _add_boolean_argument(optimizer, "--position-lr-decay", dest="use_position_lr_decay")
     _add_boolean_argument(
@@ -692,6 +713,10 @@ def parse_args() -> OptimizationConfig:
         parser.error("--densification-radiance-bias-min-weight must be finite and in (0, 1]")
     if not math.isfinite(config.densification_radiance_bias_max_weight) or config.densification_radiance_bias_max_weight < 1:
         parser.error("--densification-radiance-bias-max-weight must be finite and at least 1")
+    if not math.isfinite(config.shifted_log_scale_offset) or config.shifted_log_scale_offset < 0.0:
+        parser.error("--shifted-log-scale-offset must be finite and non-negative")
+    if not config.use_log_scale and config.shifted_log_scale_offset != 0.0:
+        parser.error("--shifted-log-scale-offset requires --log-scale")
 
     resolve_learning_rates(config)
 
