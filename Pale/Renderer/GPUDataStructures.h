@@ -185,7 +185,7 @@ namespace Pale {
         uint32_t height = 0;
 
         // Legacy (keep for debug / fallback)
-        float fovy = 60.0f; // degrees
+        float fovy = 30.0f; // degrees
 
         // New: pinhole intrinsics in pixels
         float fx = 0.0f;

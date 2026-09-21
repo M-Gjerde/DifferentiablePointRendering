@@ -206,6 +206,8 @@ class PythonRenderer
     {
         std::string optimizer = "adam";
         bool skipZeroGradientSurfels = false;
+        bool useLogScale = true;
+        float shiftedLogScaleOffset = 0.0f;
         float learningRatePosition = 0.0f;
         float learningRateRotation = 0.0f;
         float learningRateScale = 0.0f;
@@ -223,6 +225,8 @@ class PythonRenderer
     {
         std::size_t pointCount = 0;
         std::uint32_t step = 0;
+        bool useLogScale = true;
+        float shiftedLogScaleOffset = 0.0f;
 
         Pale::float3* positionM = nullptr;
         Pale::float3* positionV = nullptr;
@@ -3473,6 +3477,8 @@ public:
         py::dict state;
         state["point_count"] = static_cast<std::uint64_t>(0u);
         state["step"] = static_cast<std::uint64_t>(0u);
+        state["use_log_scale"] = deviceTrainingState.useLogScale;
+        state["shifted_log_scale_offset"] = deviceTrainingState.shiftedLogScaleOffset;
 
         if (!isDeviceTrainingStateAllocated())
         {
@@ -3536,6 +3542,9 @@ public:
             static_cast<std::size_t>(get_u64(state, "point_count", 0u));
         const std::uint32_t step =
             static_cast<std::uint32_t>(get_u64(state, "step", 0u));
+        // Snapshots from the previous implementation used pure log-space scale moments.
+        const bool useLogScale = get_b(state, "use_log_scale", true);
+        const float shiftedLogScaleOffset = get_f(state, "shifted_log_scale_offset", 0.0f);
 
         if (pointCount == 0u)
         {
@@ -3593,6 +3602,8 @@ public:
             syclQueue.wait_and_throw();
         }
         deviceTrainingState.step = step;
+        deviceTrainingState.useLogScale = useLogScale;
+        deviceTrainingState.shiftedLogScaleOffset = shiftedLogScaleOffset;
     }
 
     py::dict get_point_parameters()
@@ -4753,6 +4764,17 @@ private:
             get_f(optionsDictionary, "learning_rate_rotation", options.learningRateRotation);
         options.learningRateScale =
             get_f(optionsDictionary, "learning_rate_scale", options.learningRateScale);
+        options.useLogScale = get_b(optionsDictionary, "use_log_scale", options.useLogScale);
+        options.shiftedLogScaleOffset =
+            get_f(optionsDictionary, "shifted_log_scale_offset", options.shiftedLogScaleOffset);
+        if (!std::isfinite(options.shiftedLogScaleOffset) || options.shiftedLogScaleOffset < 0.0f)
+        {
+            throw std::invalid_argument("shifted_log_scale_offset must be finite and non-negative");
+        }
+        if (!options.useLogScale && options.shiftedLogScaleOffset != 0.0f)
+        {
+            throw std::invalid_argument("shifted_log_scale_offset requires use_log_scale=true");
+        }
         options.learningRateAlbedo =
             get_f(optionsDictionary, "learning_rate_albedo", options.learningRateAlbedo);
         options.learningRateOpacity =
@@ -5024,6 +5046,8 @@ private:
         releasePointer(deviceTrainingState.betaV);
         deviceTrainingState.pointCount = 0;
         deviceTrainingState.step = 0;
+        deviceTrainingState.useLogScale = true;
+        deviceTrainingState.shiftedLogScaleOffset = 0.0f;
     }
 
     void ensureDeviceTrainingState(std::size_t pointCount, sycl::queue queue)
@@ -5128,6 +5152,19 @@ private:
         validateOptionalGradientSource(intraSlabGradients, "intraSlabDepthGradients");
         validateOptionalGradientSource(curvatureGradients, "curvatureScaleGradients");
 
+        // A scale-parameterization change invalidates the existing scale moments.
+        const bool scaleParameterizationChanged =
+            deviceTrainingState.useLogScale != options.useLogScale ||
+            (options.useLogScale &&
+             std::fabs(deviceTrainingState.shiftedLogScaleOffset - options.shiftedLogScaleOffset) > 1.0e-12f);
+        if (deviceTrainingState.step != 0u && scaleParameterizationChanged)
+        {
+            throw std::invalid_argument(
+                "Changing use_log_scale or shifted_log_scale_offset requires a fresh device optimizer state. "
+                "Create a new renderer or call upload_device_adam_state({}) before continuing.");
+        }
+        deviceTrainingState.useLogScale = options.useLogScale;
+        deviceTrainingState.shiftedLogScaleOffset = options.shiftedLogScaleOffset;
         const bool useAdam = options.optimizer == "adam";
         const std::uint32_t adamStep = ++deviceTrainingState.step;
         const float biasCorrection1 =
@@ -5185,6 +5222,8 @@ private:
                 betaV = deviceTrainingState.betaV,
                 useAdam,
                 skipZeroGradientSurfels = options.skipZeroGradientSurfels,
+                useLogScale = options.useLogScale,
+                shiftedLogScaleOffset = options.shiftedLogScaleOffset,
                 beta1 = options.beta1,
                 beta2 = options.beta2,
                 epsilon = options.epsilon,
@@ -5383,6 +5422,27 @@ private:
                     curvatureGradBeta,
                     gradBeta[primitiveIndex]);
 
+                // Scene storage remains in physical radii in every optimization mode.
+                constexpr float minSurfelScale = 1.0e-6f;
+                constexpr float maxSurfelScale = 5.0f;
+                const float physicalScaleX = clampValue(
+                    cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale, maxSurfelScale);
+                const float physicalScaleY = clampValue(
+                    cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale, maxSurfelScale);
+                // Pure log uses rho=log(s). The opt-in shifted mode uses
+                // rho=log(s+s0), giving dL/drho=(s+s0)dL/ds. For s << s0
+                // the physical update is approximately additive; for s >> s0 it
+                // approaches ordinary multiplicative log-scale optimization.
+                const float scaleParameterizationOffset =
+                    useLogScale ? shiftedLogScaleOffset : 0.0f;
+                const float scaleGradientMultiplierX =
+                    useLogScale ? physicalScaleX + scaleParameterizationOffset : 1.0f;
+                const float scaleGradientMultiplierY =
+                    useLogScale ? physicalScaleY + scaleParameterizationOffset : 1.0f;
+                const float optimizerScaleGradientX = cleanGradient(
+                    scaleGradientX * cameraBatchScale * scaleGradientMultiplierX);
+                const float optimizerScaleGradientY = cleanGradient(
+                    scaleGradientY * cameraBatchScale * scaleGradientMultiplierY);
                 // Whole-surfel gating: zero components of an active surfel still use Adam.
                 if (skipZeroGradientSurfels)
                 {
@@ -5396,14 +5456,10 @@ private:
                             hasGradientComponent(gradientValue.y() * cameraBatchScale) ||
                             hasGradientComponent(gradientValue.z() * cameraBatchScale);
                     };
-                    // Match the existing log-radius chain rule and physical-scale bounds.
-                    const float physicalScaleX = clampValue(cleanParameter(point.scale.x(), 1.0e-6f), 1.0e-6f, 5.0f);
-                    const float physicalScaleY = clampValue(cleanParameter(point.scale.y(), 1.0e-6f), 1.0e-6f, 5.0f);
+                    // Use exactly the same cleaned scale gradients as the optimizer.
                     const bool hasPositionGradient = lrPosition != 0.0f && hasVectorGradient(positionGradient);
                     const bool hasRotationGradient = lrRotation != 0.0f && hasVectorGradient(rotationGradient);
-                    const bool hasScaleGradient = lrScale != 0.0f &&
-                    (hasGradientComponent(scaleGradientX * cameraBatchScale * physicalScaleX) ||
-                        hasGradientComponent(scaleGradientY * cameraBatchScale * physicalScaleY));
+                    const bool hasScaleGradient = lrScale != 0.0f && (optimizerScaleGradientX != 0.0f || optimizerScaleGradientY != 0.0f);
                     const bool hasAlbedoGradient = lrAlbedo != 0.0f && hasVectorGradient(albedoGradient);
                     const bool hasOpacityGradient = lrOpacity != 0.0f && hasGradientComponent(
                         opacityGradient * cameraBatchScale);
@@ -5518,35 +5574,34 @@ private:
                     point.tanV = updatedTangentV;
                 }
 
-                // Optimize rho = log(s): the adjoint returns dL/ds, so Adam's
-                // moments must accumulate dL/drho = s * dL/ds. Scene storage
-                // remains in physical radii for rendering, splitting and PLY IO.
-                constexpr float minSurfelScale = 1.0e-6f;
-                constexpr float maxSurfelScale = 5.0f;
-                const float scaleX = clampValue(cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale,
-                                                maxSurfelScale);
-                const float scaleY = clampValue(cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale,
-                                                maxSurfelScale);
-                const float scaleUpdateX = adamUpdate(
-                    cleanGradient(scaleGradientX * cameraBatchScale * scaleX),
-                    scaleM[primitiveIndex].x(),
-                    scaleV[primitiveIndex].x(),
-                    lrScale);
-                const float scaleUpdateY = adamUpdate(
-                    cleanGradient(scaleGradientY * cameraBatchScale * scaleY),
-                    scaleM[primitiveIndex].y(),
-                    scaleV[primitiveIndex].y(),
-                    lrScale);
+                const float scaleUpdateX = adamUpdate(optimizerScaleGradientX, scaleM[primitiveIndex].x(), scaleV[primitiveIndex].x(), lrScale);
+                const float scaleUpdateY = adamUpdate(optimizerScaleGradientY, scaleM[primitiveIndex].y(), scaleV[primitiveIndex].y(), lrScale);
                 if (lrScale != 0.0f)
                 {
-                    const float minLogScale = sycl::log(minSurfelScale);
-                    const float maxLogScale = sycl::log(maxSurfelScale);
-                    point.scale.x() = clampValue(
-                        sycl::exp(clampValue(sycl::log(scaleX) - scaleUpdateX, minLogScale, maxLogScale)),
-                        minSurfelScale, maxSurfelScale);
-                    point.scale.y() = clampValue(
-                        sycl::exp(clampValue(sycl::log(scaleY) - scaleUpdateY, minLogScale, maxLogScale)),
-                        minSurfelScale, maxSurfelScale);
+                    if (useLogScale)
+                    {
+                        const float minLogScale = sycl::log(minSurfelScale + scaleParameterizationOffset);
+                        const float maxLogScale = sycl::log(maxSurfelScale + scaleParameterizationOffset);
+                        const float shiftedScaleX = physicalScaleX + scaleParameterizationOffset;
+                        const float shiftedScaleY = physicalScaleY + scaleParameterizationOffset;
+                        point.scale.x() = clampValue(
+                            sycl::exp(clampValue(
+                                sycl::log(shiftedScaleX) - scaleUpdateX, minLogScale, maxLogScale)) -
+                                scaleParameterizationOffset,
+                            minSurfelScale, maxSurfelScale);
+                        point.scale.y() = clampValue(
+                            sycl::exp(clampValue(
+                                sycl::log(shiftedScaleY) - scaleUpdateY, minLogScale, maxLogScale)) -
+                                scaleParameterizationOffset,
+                            minSurfelScale, maxSurfelScale);
+                    }
+                    else
+                    {
+                        point.scale.x() = clampValue(
+                            physicalScaleX - scaleUpdateX, minSurfelScale, maxSurfelScale);
+                        point.scale.y() = clampValue(
+                            physicalScaleY - scaleUpdateY, minSurfelScale, maxSurfelScale);
+                    }
                 }
 
                 const float albedoUpdateX = adamUpdate(
@@ -6794,6 +6849,8 @@ PYBIND11_MODULE(pale, m)
              py::arg("pointCloudFile") = "initial.ply",
              py::arg("settings") = py::dict()
         ).def("supports_zero_gradient_surfel_skipping", [](const PythonRenderer &) -> bool { return true; })
+        .def("supports_optional_log_scale", [](const PythonRenderer&) -> bool { return true; })
+        .def("supports_shifted_log_scale", [](const PythonRenderer&) -> bool { return true; })
         .def("get_backward_allocation_stats", &PythonRenderer::get_backward_allocation_stats,
              "Report allocated backward gradient bytes, sensor adjoint bytes, and ray scratch state.")
         .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")

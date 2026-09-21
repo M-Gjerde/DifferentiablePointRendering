@@ -410,7 +410,7 @@ namespace {
         float distance = 3.0f;
         float yaw = 0.0f;
         float pitch = 0.0f;
-        float fovyDegrees = 60.0f;
+        float fovyDegrees = 30.0f;
         float nearClip = 0.01f;
         float farClip = 1000.0f;
 

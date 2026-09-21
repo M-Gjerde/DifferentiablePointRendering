@@ -350,6 +350,9 @@ def migrate_device_adam_state_snapshot(
     migrated: dict[str, Any] = {
         "point_count": new_n,
         "step": int(snapshot.get("step", 0)),
+        # Legacy device snapshots predate these fields and use pure log-space moments.
+        "use_log_scale": bool(snapshot.get("use_log_scale", True)),
+        "shifted_log_scale_offset": float(snapshot.get("shifted_log_scale_offset", 0.0)),
     }
 
     for key in DEVICE_ADAM_STATE_ARRAY_KEYS:
