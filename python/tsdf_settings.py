@@ -39,8 +39,8 @@ def add_tsdf_arguments(parser):
                         help='Automatic voxel size is at least this many median pixel footprints (default 1).')
     parser.add_argument('--num-cluster', '--num_cluster', type=int, default=0,
                         help='Keep largest N connected components; 0 keeps all (default).')
-    parser.add_argument('--min-cluster-triangles', '--min_cluster_triangles', type=int, default=0,
-                        help='Optional minimum triangles per component; default 0 removes no components.')
+    parser.add_argument('--min-cluster-triangles', '--min_cluster_triangles', type=int, default=50,
+                        help='Minimum triangles per component (default 50); 0 disables small-component filtering.')
     parser.add_argument('--tsdf-settings', '--tsdf_settings', type=Path,
                         help='Reuse depth/voxel/SDF values from an extraction JSON; explicit numeric flags win.')
 

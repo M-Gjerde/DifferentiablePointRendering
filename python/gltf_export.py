@@ -10,6 +10,7 @@ import json
 import math
 import os
 import struct
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -17,6 +18,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from scipy.spatial import cKDTree
+from tqdm import tqdm
 
 
 # Blender's standard glTF importer uses this RGB rendering convention. This is
@@ -39,6 +41,48 @@ def resolve_uv_parallelism(triangle_count: int, partitions: int = 0, threads: in
         available = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
         threads = min(8, available)
     return partitions, min(threads, partitions)
+
+
+def compute_uvatlas_with_elapsed_progress(
+        tensor_mesh,
+        *,
+        texture_size: int,
+        partitions: int,
+        threads: int,
+) -> tuple[float, int, int]:
+    """Run Open3D's opaque unwrap call with an elapsed-time indicator."""
+    result: dict[str, tuple[float, int, int]] = {}
+    error: dict[str, BaseException] = {}
+    completed = threading.Event()
+
+    def unwrap() -> None:
+        try:
+            result["value"] = tensor_mesh.compute_uvatlas(
+                size=texture_size,
+                gutter=4.0,
+                parallel_partitions=partitions,
+                nthreads=threads,
+            )
+        except BaseException as exception:
+            error["value"] = exception
+        finally:
+            completed.set()
+
+    worker = threading.Thread(target=unwrap, name="uv-atlas", daemon=False)
+    worker.start()
+    with tqdm(
+            desc="Unwrapping UV atlas",
+            unit="s",
+            dynamic_ncols=True,
+            bar_format="{desc}: {elapsed} elapsed",
+    ) as progress:
+        while not completed.wait(timeout=1.0):
+            progress.update(1)
+    worker.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result["value"]
 
 
 def linear_to_srgb8(linear: np.ndarray) -> np.ndarray:
@@ -232,6 +276,25 @@ def split_disconnected_vertex_fans(mesh) -> int:
     return len(extra_vertices)
 
 
+def repair_non_manifold_edges(mesh) -> tuple[int, int]:
+    """Remove the smallest set of incident triangles needed for edge manifoldness."""
+    mesh.remove_duplicated_vertices()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_degenerate_triangles()
+    mesh.remove_unreferenced_vertices()
+
+    non_manifold_edge_count = len(mesh.get_non_manifold_edges(allow_boundary_edges=True))
+    if non_manifold_edge_count == 0:
+        return 0, 0
+
+    triangle_count_before = len(mesh.triangles)
+    mesh.remove_non_manifold_edges()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_degenerate_triangles()
+    mesh.remove_unreferenced_vertices()
+    return non_manifold_edge_count, triangle_count_before - len(mesh.triangles)
+
+
 def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
                       *, uv_partitions: int = 0, uv_threads: int = 0):
     """Return a UV-mapped tensor mesh, sRGB texture, and transfer diagnostics."""
@@ -246,11 +309,15 @@ def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
     print(f"Preparing {len(mesh.triangles):,} triangles for UV export", flush=True)
     # Work on a copy: preserve the mesh used for geometry metrics / PLY output.
     mesh = o3d.geometry.TriangleMesh(mesh)
-    mesh.remove_duplicated_triangles()
-    mesh.remove_degenerate_triangles()
-    mesh.remove_unreferenced_vertices()
+    non_manifold_edges, removed_triangles = repair_non_manifold_edges(mesh)
     if len(mesh.triangles) == 0:
         raise ValueError("No non-degenerate triangles to export")
+    if non_manifold_edges:
+        print(
+            f"UV repair: removed {removed_triangles:,} triangles across "
+            f"{non_manifold_edges:,} non-manifold edges.",
+            flush=True,
+        )
     if not mesh.is_edge_manifold(allow_boundary_edges=True):
         raise ValueError("UV unwrapping requires manifold edges; repair the extracted mesh first")
     split_vertices = split_disconnected_vertex_fans(mesh)
@@ -263,10 +330,13 @@ def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
           f"({split_vertices:,} pinched vertices split)", flush=True)
     print(f"Unwrapping {len(mesh.triangles):,} triangles for a {texture_size}px albedo atlas "
           f"on CPU: {partitions} requested partitions, {threads} threads. "
-          "Open3D reports no intermediate unwrap progress.", flush=True)
+          "Showing elapsed time; Open3D does not report completion progress.", flush=True)
     unwrap_started = time.perf_counter()
-    stretch, charts, actual_partitions = tensor_mesh.compute_uvatlas(
-        size=texture_size, gutter=4.0, parallel_partitions=partitions, nthreads=threads,
+    stretch, charts, actual_partitions = compute_uvatlas_with_elapsed_progress(
+        tensor_mesh,
+        texture_size=texture_size,
+        partitions=partitions,
+        threads=threads,
     )
     unwrap_seconds = time.perf_counter() - unwrap_started
     print(f"UV unwrap finished in {unwrap_seconds:.1f}s: {charts:,} charts, "

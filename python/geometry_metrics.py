@@ -4,6 +4,7 @@ import csv
 import tempfile
 import warnings
 from pathlib import Path
+from threading import RLock
 from typing import Any, Mapping
 
 
@@ -15,6 +16,7 @@ class GeometryMetricsTrail:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.run_dir / "geometry_metrics.csv"
         self._rows_by_iteration: dict[int, dict[str, Any]] = {}
+        self._lock = RLock()
         self._load_existing_rows()
 
     def _load_existing_rows(self) -> None:
@@ -45,9 +47,10 @@ class GeometryMetricsTrail:
 
     @property
     def latest_row(self) -> Mapping[str, Any] | None:
-        if not self._rows_by_iteration:
-            return None
-        return self._rows_by_iteration[max(self._rows_by_iteration)]
+        with self._lock:
+            if not self._rows_by_iteration:
+                return None
+            return self._rows_by_iteration[max(self._rows_by_iteration)]
 
     def _write(self) -> None:
         rows = [
@@ -82,11 +85,12 @@ class GeometryMetricsTrail:
                 temporary_path.unlink(missing_ok=True)
 
     def record(self, row: Mapping[str, Any], iteration: int) -> dict[str, Any]:
-        persisted_row = dict(row)
-        persisted_row["iteration"] = int(iteration)
-        self._rows_by_iteration[int(iteration)] = persisted_row
-        self._write()
-        return persisted_row
+        with self._lock:
+            persisted_row = dict(row)
+            persisted_row["iteration"] = int(iteration)
+            self._rows_by_iteration[int(iteration)] = persisted_row
+            self._write()
+            return persisted_row
 
     def evaluate(
             self,

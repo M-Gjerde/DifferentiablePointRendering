@@ -938,11 +938,12 @@ def compute_geometry_rows(
     rows: list[dict[str, Any]] = []
     best_row: dict[str, Any] | None = None
     for checkpoint in checkpoints:
-        print(
-            f"Evaluating geometry: {run_dir.name} iter {checkpoint.iteration} | "
-            f"reconstruction={checkpoint.mesh_path} | gt={ground_truth_path}",
-            flush=True,
-        )
+        if print_each_score:
+            print(
+                f"Evaluating geometry: {run_dir.name} iter {checkpoint.iteration} | "
+                f"reconstruction={checkpoint.mesh_path} | gt={ground_truth_path}",
+                flush=True,
+            )
         set_random_seed(seed)
         (
             reconstruction_mesh,

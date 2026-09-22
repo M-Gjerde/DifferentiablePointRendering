@@ -5,6 +5,7 @@ import csv
 import json
 from pathlib import Path
 import statistics
+import math
 
 DEFAULTS = {
     'pgsr': ('/home/magnus/phd/pbdr/PGSR/output/batch_pgsr', '_2dgs', 'fuse_post_auto.ply'),
@@ -28,6 +29,51 @@ def point_count(path):
                     raise ValueError(f'Missing/invalid vertex count: {path}')
                 return count
         raise ValueError(f'Incomplete PLY: {path}')
+
+
+def training_time(model, iteration):
+    """Prefer checkpoint timing; label whole-run timings as totals."""
+    def read(path):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return {}
+    def valid(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    stats = read(model / 'training_stats.json').get('iterations', {}).get(str(iteration), {})
+    seconds = stats.get('runtime_seconds')
+    if valid(seconds):
+        return float(seconds), 'checkpoint'
+    latest = None
+    try:
+        with (model.parent / 'train_runs.jsonl').open() as stream:
+            for line in stream:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if record.get('model_path') == str(model):
+                    latest = record
+    except OSError:
+        pass
+    if latest is not None:
+        seconds = latest.get('elapsed_seconds')
+        if latest.get('status') == 'complete' and valid(seconds):
+            return float(seconds), 'total'
+        return None, 'unavailable'
+    native = read(model / 'training_time.json')
+    start, stop = native.get('start_time'), native.get('stop_time')
+    if valid(start) and valid(stop) and stop >= start:
+        return float(stop - start), 'total'
+    return None, 'unavailable'
+
+
+def format_training_time(seconds):
+    if seconds is None:
+        return 'N/A'
+    hours, rest = divmod(int(round(seconds)), 3600)
+    minutes, seconds = divmod(rest, 60)
+    return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
 def checkpoints(model):
@@ -122,6 +168,9 @@ def main(method, argv=None):
             if a.list_only:
                 print(f'{name} [{iteration}]: mesh={mesh} | checkpoint={checkpoint} | GT={gt_path}')
                 continue
+            seconds, scope = training_time(model, iteration)
+            row.update(training_seconds=seconds, training_time=format_training_time(seconds), training_time_scope=scope)
+            time_label = 'Training(total)' if scope == 'total' else 'Training'
             try:
                 if iteration is None:
                     raise FileNotFoundError(f'No saved checkpoints under {model / "point_cloud"}')
@@ -138,7 +187,7 @@ def main(method, argv=None):
                 values=compute_paper_ready_point_to_triangle_distance(recon_points,recon,gt_points,gt_mesh,scale=1.0)
                 row.update(cd=values['cd'],accuracy=values['accuracy'],completion=values['completion'],
                            cd_bbox_percent=100*values['cd']/diagonal,gt_bbox_diagonal=diagonal,status='complete')
-                print(f"{name} [{iteration}]: CD={row['cd']:.6g}, Accuracy={row['accuracy']:.6g}, Completion={row['completion']:.6g}, Points={row['point_count']:,}",flush=True)
+                print(f"{name} [{iteration}]: CD={row['cd']:.6g}, Accuracy={row['accuracy']:.6g}, Completion={row['completion']:.6g}, Points={row['point_count']:,}, {time_label}={row['training_time']}",flush=True)
             except Exception as error:
                 row['error']=f'{type(error).__name__}: {error}'
                 print(f"{name} [{iteration}]: {row['error']}",flush=True)

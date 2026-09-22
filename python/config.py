@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -73,7 +73,7 @@ class OptimizationConfig:
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0005
     learning_rate_albedo: float = 0.0005
-    learning_rate_opacity: float = 0.0002
+    learning_rate_opacity: float = 0.0001
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -112,7 +112,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 300
+    densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -132,8 +132,8 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 8.0e-4
-    densification_grad_abs_min_final: float = 8.0e-4
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -153,8 +153,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.7
-    densification_split_offset_scale: float = 0.1
+    densification_split_scale_factor: float = 1.5
+    densification_split_offset_scale: float = 0.3
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
@@ -162,6 +162,8 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
+    # Consecutive full camera cycles with no forward camera/slab or shadow activity.
+    # Independent of adjoint samples and prune_interval; 0 disables this pruning.
     inactive_transport_prune_cycles: int = 1
     rebuild_bvh_interval: int = densification_interval
 

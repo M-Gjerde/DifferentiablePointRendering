@@ -44,9 +44,12 @@ Use `--depth_ratio 0` for mean depth, or `1` (default) for median depth.
 From PALE's `python` directory, in its normal renderer environment:
 
 ```bash
-python extract_mesh.py --output-root OptimizationOutput/MY_RUN --no-export-gltf
+python extract_mesh.py --run-dir OptimizationOutput/MY_RUN --no-export-gltf
+# Without --run-dir, uses the run with the newest metrics.csv under OptimizationOutput:
+python extract_mesh.py --no-export-gltf
 # A checkpoint can be used even when training has not written points_final.ply:
-python extract_mesh.py --ply OptimizationOutput/MY_RUN/points/iter_02000_points.ply \
+python extract_mesh.py --run-dir OptimizationOutput/MY_RUN \
+  --ply OptimizationOutput/MY_RUN/points/iter_02000_points.ply \
   --mesh-output-subdir mesh_auto --no-export-gltf
 ```
 
@@ -90,12 +93,16 @@ The previously tested restaurant settings remain available as explicit overrides
 
 Other controls: `--mesh-res`, `--voxel-pixels`, `--depth-percentile`, and
 `--depth-margin`. The pixel-footprint floor limits automatic voxel refinement;
-use an explicit `--voxel-size` to override it. `--num-cluster 0` keeps all parts;
-positive N keeps the largest N components. `--min-cluster-triangles N` is a
-separate optional size filter. The old radius-based auto cutoff is not used.
+use an explicit `--voxel-size` to override it. `--num-cluster 0` imposes no
+largest-component limit; positive N keeps the largest N components.
+`--min-cluster-triangles` defaults to **50**, removing components with fewer than
+50 triangles, as in the current 2DGS/PGSR cleanup. Set it to `0` to disable this
+size filter. Raw `fuse*.ply` meshes remain available alongside the cleaned
+`fuse_post*.ply` meshes. The old radius-based auto cutoff is not used.
 
 PALE training defaults and the object/scene config templates now use 512 for
-mesh resolution and 0 for component filtering. Explicit older command-line or
+mesh resolution and 0 for the largest-component limit. Small-component filtering
+also applies to extraction launched by training. Explicit older command-line or
 experiment settings still take precedence; already-running training retains its
 in-memory settings.
 

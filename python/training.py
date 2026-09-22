@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import csv
-import shlex
 import shutil
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,10 +36,15 @@ def extract_mesh_from_point_cloud(
         export_gltf: bool = False,
 ) -> Path | None:
     extract_mesh_script = Path(__file__).resolve().with_name("extract_mesh.py")
+    mesh_output_dir = config.output_dir / mesh_output_subdir
+    mesh_output_dir.mkdir(parents=True, exist_ok=True)
+    extraction_log_path = mesh_output_dir / "extraction.log"
 
     command = [
         sys.executable,
         str(extract_mesh_script),
+        "--run-dir",
+        str(config.output_dir),
         "--ply",
         str(points_path),
         "--mesh-output-subdir",
@@ -57,25 +62,23 @@ def extract_mesh_from_point_cloud(
         command.extend(["--uv-partitions", str(int(config.mesh_uv_partitions)),
                         "--uv-threads", str(int(config.mesh_uv_threads))])
 
-    print(
-        f"{log_prefix} Extracting mesh to "
-        f"{config.output_dir / mesh_output_subdir}"
-    )
-
-    result = subprocess.run(
-        command,
-        cwd=extract_mesh_script.parent,
-        check=False,
-    )
+    with extraction_log_path.open("w", encoding="utf-8") as extraction_log:
+        result = subprocess.run(
+            command,
+            cwd=extract_mesh_script.parent,
+            check=False,
+            stdout=extraction_log,
+            stderr=subprocess.STDOUT,
+        )
 
     if result.returncode != 0:
         print(
             f"{log_prefix} Mesh extraction failed "
-            f"with exit code {result.returncode}: {shlex.join(command)}"
+            f"with exit code {result.returncode}; see {extraction_log_path}"
         )
         return None
 
-    mesh_path = config.output_dir / mesh_output_subdir / "fuse_post.ply"
+    mesh_path = mesh_output_dir / "fuse_post.ply"
     if not mesh_path.is_file():
         print(f"{log_prefix} Mesh extraction completed but did not create {mesh_path}")
         return None
@@ -130,6 +133,86 @@ def log_geometry_checkpoint(
         scale=float(config.geometry_scale),
         use_vertices=bool(config.geometry_use_vertices),
     )
+
+
+class MeshCheckpointWorker:
+    """Serialize asynchronous mesh checkpoints without accumulating stale work."""
+
+    def __init__(
+            self,
+            config: OptimizationConfig,
+            geometry_metrics: GeometryMetricsTrail | None,
+    ) -> None:
+        self._config = config
+        self._geometry_metrics = geometry_metrics
+        self._executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="mesh-checkpoint",
+        )
+        self._futures: list[Future[None]] = []
+        self._latest_future: Future[None] | None = None
+        self._closed = False
+
+    def submit(
+            self,
+            iteration: int,
+            points_path: Path,
+            *,
+            export_gltf: bool = False,
+    ) -> None:
+        if self._closed:
+            raise RuntimeError("Cannot submit work after the mesh checkpoint worker has closed.")
+
+        if self._latest_future is not None:
+            self._latest_future.cancel()
+        future = self._executor.submit(
+            self._extract_and_evaluate,
+            iteration,
+            Path(points_path),
+            export_gltf,
+        )
+        self._futures.append(future)
+        self._latest_future = future
+
+    def _extract_and_evaluate(
+            self,
+            iteration: int,
+            points_path: Path,
+            export_gltf: bool,
+    ) -> None:
+        mesh_path = extract_mesh_checkpoint(
+            self._config,
+            iteration,
+            points_path,
+            export_gltf=export_gltf,
+        )
+        log_geometry_checkpoint(
+            self._geometry_metrics,
+            self._config,
+            mesh_path,
+            iteration,
+        )
+
+    def wait(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        pending_count = sum(not future.done() for future in self._futures)
+        if pending_count:
+            print(
+                f"Waiting for {pending_count} background mesh checkpoint "
+                f"{'task' if pending_count == 1 else 'tasks'}..."
+            )
+        self._executor.shutdown(wait=True)
+
+        for future in self._futures:
+            if future.cancelled():
+                continue
+            try:
+                future.result()
+            except Exception as exception:
+                print(f"[mesh-checkpoint] Background task failed: {exception}")
 
 
 @dataclass
@@ -685,6 +768,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
     if geometry_metrics is not None:
         print(f"Geometry metrics trail: {geometry_metrics.path}")
+    mesh_checkpoint_worker = MeshCheckpointWorker(config, geometry_metrics)
 
     optimizer = optimizers.create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
     learning_rate_schedules = optimizers.create_learning_rate_schedules(config)
@@ -1567,11 +1651,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_position_base_threshold=
                                     snapshot_densification_position_base_threshold,
                             )
-                        checkpoint_mesh_path = extract_mesh_checkpoint(
-                            config, global_iteration, iteration_point_cloud_path,
-                        )
-                        log_geometry_checkpoint(
-                            geometry_metrics, config, checkpoint_mesh_path, global_iteration,
+                        mesh_checkpoint_worker.submit(
+                            global_iteration,
+                            iteration_point_cloud_path,
                         )
 
                     num_points = int(positions.shape[0])
@@ -1702,12 +1784,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densification_position_base_threshold=
                                     snapshot_densification_position_base_threshold,
                             )
-                            manual_mesh_path = extract_mesh_checkpoint(
-                                config, global_iteration, manual_points_path,
+                            mesh_checkpoint_worker.submit(
+                                global_iteration,
+                                manual_points_path,
                                 export_gltf=True,
-                            )
-                            log_geometry_checkpoint(
-                                geometry_metrics, config, manual_mesh_path, global_iteration,
                             )
                         elif hotkey == "g":
                             print(
@@ -1940,11 +2020,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
                     active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
                     inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
-                    # A surfel with any position-gradient record in this
-                    # complete camera cycle is no longer considered inactive.
+                    # Any forward camera/slab or shadow activity in this
+                    # complete camera cycle keeps the surfel alive.
                     inactive_transport_cycle_count_np[active_this_cycle_np] = 0
-                    # Count consecutive complete cycles with no position-gradient
-                    # record. Saturate at the threshold; larger values are irrelevant.
+                    # Count consecutive cycles with no forward transport activity.
+                    # Saturate at the threshold; larger values are irrelevant.
                     inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
                         inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
                         inactive_transport_prune_cycles, )
@@ -2278,11 +2358,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 snapshot_densification_position_base_threshold,
                         )
 
-                    checkpoint_mesh_path = extract_mesh_checkpoint(
-                        config, global_iteration, iteration_point_cloud_path,
-                    )
-                    log_geometry_checkpoint(
-                        geometry_metrics, config, checkpoint_mesh_path, global_iteration,
+                    mesh_checkpoint_worker.submit(
+                        global_iteration,
+                        iteration_point_cloud_path,
                     )
 
                 num_points = positions.shape[0]
@@ -2407,12 +2485,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_position_base_threshold=
                                 snapshot_densification_position_base_threshold,
                         )
-                        manual_mesh_path = extract_mesh_checkpoint(
-                            config, global_iteration, manual_points_path,
+                        mesh_checkpoint_worker.submit(
+                            global_iteration,
+                            manual_points_path,
                             export_gltf=True,
-                        )
-                        log_geometry_checkpoint(
-                            geometry_metrics, config, manual_mesh_path, global_iteration,
                         )
                     elif hotkey == "g":
                         helpers.save_gradients_snapshot(config.output_dir, global_iteration, grad_position_np, grad_rotation_np,
@@ -2581,6 +2657,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                               snapshot_densification_position_radiance_rms_np,
                           densification_position_base_threshold=
                               snapshot_densification_position_base_threshold)
+
+    mesh_checkpoint_worker.wait()
 
     print(f"Final parameters written to PLY: {ply_path}")
     final_mesh_path = None

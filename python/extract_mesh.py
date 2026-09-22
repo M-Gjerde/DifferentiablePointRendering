@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import numpy as np
@@ -167,67 +165,44 @@ def as_numpy(value) -> np.ndarray:
     return np.asarray(value)
 
 
-def parse_run_timestamp(path_name: str) -> datetime | None:
-    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})", path_name)
-    if match is None:
-        return None
-    return datetime.strptime(match.group(1), "%Y-%m-%d_%H-%M-%S")
-
-
-def find_run(output_root: Path, run_index: int) -> tuple[Path, Path]:
-    output_root = output_root.resolve()
-
-    if output_root.is_file():
-        if output_root.name != "points_final.ply":
-            raise ValueError(f"Expected points_final.ply, got {output_root}")
-        return output_root.parent, output_root
-
-    if (output_root / "points_final.ply").is_file():
-        return output_root, output_root / "points_final.ply"
-
-    candidates = []
-    for run_dir in output_root.iterdir():
-        points_path = run_dir / "points_final.ply"
-        if not run_dir.is_dir() or not points_path.is_file():
-            continue
-
-        timestamp = parse_run_timestamp(run_dir.name)
-        candidates.append((timestamp is not None, timestamp or datetime.min, points_path.stat().st_mtime, run_dir))
-
-    if not candidates:
-        raise FileNotFoundError(f"No run folders with points_final.ply found under {output_root}")
-
-    candidates.sort(reverse=True)
-
-    if run_index < 0 or run_index >= len(candidates):
-        available_runs = "\n".join(f"[{i}] {item[3].name}" for i, item in enumerate(candidates))
-        raise IndexError(f"--index {run_index} is out of range.\nAvailable runs:\n{available_runs}")
-
-    run_dir = candidates[run_index][3]
-    return run_dir, run_dir / "points_final.ply"
-
-
-def find_run_dir_for_ply(points_path: Path) -> Path | None:
-    points_path = points_path.expanduser().resolve()
-
-    for parent in points_path.parents:
-        if (parent / "run_config.json").is_file():
-            return parent
-
-    return None
-
-
 def find_run_and_points(args: argparse.Namespace) -> tuple[Path, Path]:
-    if args.ply is None:
-        return find_run(args.output_root, args.index)
+    if args.run_dir is not None:
+        run_dir = args.run_dir.expanduser().resolve()
+    else:
+        output_root = args.output_root.expanduser().resolve()
+        if not output_root.is_dir():
+            raise NotADirectoryError(f"--output-root is not a directory: {output_root}")
 
-    points_path = args.ply.expanduser().resolve()
+        candidates = [
+            metrics_path
+            for metrics_path in output_root.rglob("metrics.csv")
+            if (metrics_path.parent / "run_config.json").is_file()
+        ]
+        if not candidates:
+            raise FileNotFoundError(
+                f"No run directories with metrics.csv found under {output_root}. "
+                "Pass --run-dir explicitly."
+            )
+        run_dir = max(
+            candidates,
+            key=lambda metrics_path: (
+                metrics_path.stat().st_mtime_ns,
+                str(metrics_path.parent),
+            ),
+        ).parent
+
+    if not run_dir.is_dir():
+        raise NotADirectoryError(f"--run-dir is not a directory: {run_dir}")
+    if not (run_dir / "run_config.json").is_file():
+        raise FileNotFoundError(f"--run-dir is missing run_config.json: {run_dir}")
+
+    if args.ply is None:
+        points_path = run_dir / "points_final.ply"
+    else:
+        points_path = args.ply.expanduser().resolve()
+
     if not points_path.is_file():
         raise FileNotFoundError(f"PLY file does not exist: {points_path}")
-
-    run_dir = find_run_dir_for_ply(points_path)
-    if run_dir is None:
-        run_dir, _ = find_run(args.output_root, args.index)
 
     return run_dir, points_path
 
@@ -605,16 +580,29 @@ class PaleExtractor:
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="PALE TSDF extraction with depth-driven scale selection for objects and scenes")
 
-    parser.add_argument("--output-root", "-o", type=Path, default=Path("OptimizationOutput"))
-    parser.add_argument("--index", type=int, default=0)
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optimization run directory containing run_config.json. If omitted, "
+            "the run with the most recently updated metrics.csv is selected."
+        ),
+    )
+    parser.add_argument(
+        "--output-root",
+        "-o",
+        type=Path,
+        default=Path("OptimizationOutput"),
+        help="Root searched recursively for the latest metrics.csv when --run-dir is omitted.",
+    )
     parser.add_argument(
         "--ply",
         type=Path,
         default=None,
         help=(
-            "Use this PLY instead of the selected run's points_final.ply. "
-            "If the PLY is inside a run folder, that run_config.json is used; "
-            "otherwise --output-root/--index provide the run context."
+            "Use this PLY instead of <run-dir>/points_final.ply. "
+            "The selected run directory still provides the scene and renderer configuration."
         ),
     )
     parser.add_argument("--camera-names", type=str, default=None)
@@ -634,7 +622,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     add_tsdf_arguments(parser)
     parser.add_argument("--export-gltf", action=argparse.BooleanOptionalAction, default=True,
                         help="Export reconstruction.glb with a UV albedo texture and point lights.")
-    parser.add_argument("--texture-size", default=2048, type=int,
+    parser.add_argument("--texture-size", default=512, type=int,
                         help="Width and height of the reconstructed albedo texture in pixels.")
     parser.add_argument("--uv-partitions", default=0, type=int,
                         help="UV unwrap partitions (0: automatic; 1: single partition). More partitions add UV seams.")

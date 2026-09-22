@@ -798,11 +798,32 @@ def plot_geometry_rows(axis, geometry_rows: list[dict[str, Any]]) -> None:
     completions = [float(row["completion"]) for row in sorted_rows]
 
     axis.plot(iterations, cds, marker="o", linewidth=1.8, label="symmetric CD")
+    for iteration, cd in zip(iterations, cds):
+        axis.annotate(
+            f"{cd:.2e}",
+            xy=(iteration, cd),
+            xytext=(5, 5),
+            textcoords="offset points",
+            fontsize=10,
+            color="tab:blue",
+            clip_on=True,
+        )
     axis.plot(iterations, accuracies, marker="o", linewidth=1.1, alpha=0.8, label="accuracy")
     axis.plot(iterations, completions, marker="o", linewidth=1.1, alpha=0.8, label="completion")
     axis.set_ylabel("Chamfer")
     axis.grid(True)
     place_legend_inside(axis, loc="best")
+
+
+def latest_geometry_cd_summary(geometry_rows: list[dict[str, Any]]) -> str:
+    for row in sorted(geometry_rows, key=lambda item: int(item["iteration"]), reverse=True):
+        try:
+            cd = float(row["cd"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(cd):
+            return f"CD={cd:.4e} @iter={int(row['iteration'])}"
+    return ""
 
 
 def draw_metrics_figure(
@@ -864,6 +885,8 @@ def draw_metrics_figure(
 
         latest_iteration = int(loss_dataframe["iteration"].iloc[-1])
         title_run_name = shorten_middle(metrics_csv_path.parent.name, max_chars=80)
+        geometry_cd_summary = latest_geometry_cd_summary(visible_geometry_rows)
+        geometry_cd_text = f" | {geometry_cd_summary}" if geometry_cd_summary else ""
         axis.set_xlabel("Iteration")
         axis.set_ylabel(loss_column_name)
         axis.set_title(
@@ -871,6 +894,7 @@ def draw_metrics_figure(
             f"{title_run_name}\n"
             f"iter={latest_iteration} | "
             f"{optimization_status_text(dataframe, latest_iteration)}"
+            f"{geometry_cd_text}"
         )
         axis.grid(True)
 
@@ -1286,12 +1310,15 @@ def draw_metrics_figure(
         point_count_windowed=point_count_windowed,
         point_count_row_count=point_count_row_count,
     )
+    geometry_cd_summary = latest_geometry_cd_summary(visible_geometry_rows)
+    geometry_cd_text = f" | {geometry_cd_summary}" if geometry_cd_summary else ""
 
     ax_top.set_title(
         f"Live optimization metrics\n"
         f"{shorten_middle(metrics_csv_path.parent.name, max_chars=80)}\n"
         f"iter={latest_iteration} | loss rows={loss_row_count}{loss_average_text} | "
         f"{optimization_status_text(dataframe, latest_iteration)}"
+        f"{geometry_cd_text}"
         f"\npoints={point_count_history_label}"
     )
 
