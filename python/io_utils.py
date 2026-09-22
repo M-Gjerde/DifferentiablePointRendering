@@ -140,7 +140,11 @@ def save_gradient_sign_png_py(
     return True
 
 
-def load_target_image(path: Path, color_space: str = "auto") -> np.ndarray:
+def load_target_image(
+        path: Path,
+        color_space: str = "auto",
+        log_color_interpretation: bool = True,
+) -> np.ndarray:
     """Load a target into the canonical linear-light sRGB/Rec.709 working space.
 
     ``auto`` honors embedded ICC profiles for ordinary images, treats untagged
@@ -188,10 +192,11 @@ def load_target_image(path: Path, color_space: str = "auto") -> np.ndarray:
     if interpreted_color_space == "srgb":
         image = srgb_to_linear(image)
 
-    print(
-        f"    color: {interpretation} interpreted as {interpreted_color_space}; "
-        "training copy converted to linear sRGB"
-    )
+    if log_color_interpretation:
+        print(
+            f"    color: {interpretation} interpreted as {interpreted_color_space}; "
+            "training copy converted to linear sRGB"
+        )
     return np.ascontiguousarray(image, dtype=np.float32)
 
 

@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 10
+    adjoint_passes: int = 2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -59,7 +59,7 @@ class OptimizationConfig:
     iterations: int = 30_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
-    skip_zero_gradient_surfels: bool = False
+    skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
     # Device optimizer only: False selects additive physical-radius updates.
     use_log_scale: bool = True
     # Opt-in shifted-log parameterization rho=log(s+s0), in scene units.
@@ -79,7 +79,7 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = True
+    use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
@@ -112,7 +112,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 300
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -132,8 +132,8 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min: float = 8.0e-4
+    densification_grad_abs_min_final: float = 8.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 

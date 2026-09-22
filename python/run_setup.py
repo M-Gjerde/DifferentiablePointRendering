@@ -12,6 +12,15 @@ from config import OptimizationConfig, RendererSettingsConfig
 from io_utils import configure_paths_from_dataset_folder, resolve_output_dir, save_run_config
 
 
+def _format_camera_summary(camera_ids: list[str]) -> str:
+    count = len(camera_ids)
+    if count <= 6:
+        return f"{count}: {', '.join(camera_ids)}"
+
+    preview = ", ".join((*camera_ids[:3], "…", *camera_ids[-3:]))
+    return f"{count}: {preview}"
+
+
 def _recreate_output_dir(output_dir: Path) -> Path:
     output_dir = output_dir.expanduser().resolve()
     if output_dir in {Path("/"), Path.home().resolve(), Path.cwd().resolve()}:
@@ -126,7 +135,7 @@ def print_run_configuration(
         ("image_preview", config.enable_image_preview),
         ("optimizer", config.optimizer_type),
         ("run_output_dir", config.output_dir),
-        ("cameras", camera_ids),
+        ("cameras", _format_camera_summary(camera_ids)),
         ("main camera", main_camera),
     )
     print("Starting optimization with configuration:")

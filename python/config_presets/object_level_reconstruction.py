@@ -17,15 +17,17 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 2
+    adjoint_passes: int = 10
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
+    local_layer_depth_mode: str = "symmetric_ray_depth"
 
-    def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool]:
+    def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool | str]:
         settings = asdict(self)
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
+            "depth_distort_world_space": config.depth_distort_world_space,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
@@ -41,7 +43,6 @@ class RendererSettingsConfig:
         })
         return settings
 
-
 @dataclass
 class OptimizationConfig:
     # Inputs and run location
@@ -53,84 +54,142 @@ class OptimizationConfig:
     output_dir: Path = Path("OptimizationOutput")
     checkpoint: Path | None = None
 
-    # Execution and optimizer
+    # Execution
     device: str = "cpu"
-    iterations: int = 20_000
+    iterations: int = 30_000
     optimizer_type: str = "adam"
+    use_device_training_step: bool = True
+    skip_zero_gradient_surfels: bool = False
+    # Device optimizer only: False selects additive physical-radius updates.
+    use_log_scale: bool = True
+    # Opt-in shifted-log parameterization rho=log(s+s0), in scene units.
+    # Zero preserves ordinary rho=log(s).
+    shifted_log_scale_offset: float = 0.5
+
+    # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    # Calibrated from the photometric-only global LR search (0.11x).
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0001
+    learning_rate_scale: float = 0.0005
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
-    learning_rate_beta: float = 0.0003
-    # Multiplicative learning-rate decay. All parameter groups receive the
+    learning_rate_beta: float = 0.0005
+
+    # Optimizer: learning-rate schedules
+    # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = False
+    use_global_lr_decay: bool = True
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.3
+    global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
-    position_lr_scale_final: float = 5.0
+    position_lr_scale_init: float = 20.0
+    position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 10_000
-    use_device_training_step: bool = True
 
-    # Objective and regularizers
-    ssim_weight: float = 0.00
+    # Objective: photometric loss
+    ssim_weight: float = 0.0
     ssim_window_size: int = 5
     ssim_sigma: float = 0.75
-    depth_distort_weight: float = 100.0
+
+    # Objective: geometric regularizers
+    depth_distort_weight: float = 0.0005
+    depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
-    # Rendering and camera sampling
+    # Rendering model
     share_local_layer_direct_lighting: bool = True
+
+    # Camera sampling
     one_camera_per_iteration: bool = True
     camera_sampling_mode: str = "round_robin"  # "round_robin" or "random"
     camera_sampling_seed: int = 0
     scale_single_camera_gradients: bool = False
     normal_from_depth_use_mean_depth: bool = False
 
-    # Densification
+    # Densification: schedule
     densification_interval: int = 200
     densify_after: int = 0
-    densification_stats_skip_interval_start: bool = False
+    densification_stats_skip_interval_start: bool = True
+
+    # Densification: gradient signal
+    # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
+    densification_relative_error: bool = True
+    densification_radiance_floor: float = 0.001  # linear RGB radiance units
+    # False uses only the surfel's local footprint-translation derivative as
+    # the clone signal. True also includes non-local position derivatives from
+    # visibility, shadowing, attenuation, and other transport effects.
+    densification_full_position: bool = False
     densification_downweight_normal_gradients: bool = False
-    # When false, position-triggered densification may displace children along
-    # the full 3D gradient, including the surfel normal direction.
-    densification_tangent_only: bool = False
-    densification_grad_abs_min: float = 7.0e-4
-    densification_grad_abs_min_final: float = 1.5e-4
-    densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 5_000
-    # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = 35.0
-    densification_scale_min: float = 6.0e-3
-    densification_split_offset_scale: float = 0.35
-    densification_split_scale_factor: float = math.sqrt(2)
-    densification_exact_clone_percent_dense: float = 0.00
-    densification_scene_extent: float = 0.0
+    # When false, position-triggered splits may use the full 3D gradient,
+    # including the surfel-normal direction.
+    densification_tangent_only: bool = True
     densification_max_new_fraction: float = 1.0
-    densify_bsdf_floor: float = 0.01
-    densify_bsdf_gamma: float = 1.0
     densification_verbose: bool = False
+    # Densification: base selection threshold
+    # Scheduled absolute threshold with bounded brightness preference below.
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min_decay_start_iteration: int = 0
+    densification_grad_abs_min_decay_end_iteration: int = 0
+
+    # Densification: radiance balancing
+    # Divide final selection thresholds by a bounded, median-relative brightness
+    # weight. Applied after threshold selection; strength 0 disables the bias.
+    densification_radiance_bias_strength: float = 0.8
+    densification_radiance_bias_min_weight: float = 0.25
+    densification_radiance_bias_max_weight: float = 1.5
+
+    # Pruning and topology maintenance
+    min_surfel_area: float = math.pi * 8.0e-5
+    min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
+
+    # Densification: curvature trigger and clone/split policy
+    # Minimum child semi-axis, in scene units (not area). The split selector
+    # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
+    # so the smallest circular children have area just above min_surfel_area.
+    curvature_violation_threshold: float = -1
+    densification_split_scale_factor: float = 1.7
+    densification_split_offset_scale: float = 0.1
+    densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
+    densification_exact_clone_percent_dense: float = 0.0
+    densification_scene_extent: float = 0.0
 
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
-    min_surfel_area: float = math.pi * 2.0e-5
     inactive_transport_prune_cycles: int = 1
     rebuild_bvh_interval: int = densification_interval
 
+    # Mesh extraction and evaluation
+    mesh_extraction_interval: int = 1_000
+    mesh_extraction_depth_key: str = "median_depth"
+    mesh_extraction_mesh_res: int = 2048
+    mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
+    mesh_albedo_texture_size: int = 1024
+    mesh_uv_partitions: int = 0
+    mesh_uv_threads: int = 0
+    save_final_mesh: bool = True
+    ground_truth: Path | None = None
+    geometry_samples: int = 500_000
+    geometry_seed: int = 0
+    geometry_scale: float = 1.0
+    geometry_use_vertices: bool = False
+
     # Output and monitoring
     log_interval: int = 25
-    save_interval: int = 50
-    save_ply_files_interval: int = save_interval
+    # When enabled (> 0), save images on the first iteration, immediately before
+    # each scheduled densification, and on the final iteration.
+    save_interval: int = 500
+    # When enabled (> 0), also save the first iteration, matching image snapshots.
+    save_ply_files_interval: int = 100
+    # Debug snapshots at the iteration immediately before the next scheduled
+    # densification, replacing periodic PLY saves. Interval 0 still disables saves.
+    save_ply_before_densification: bool = False
     save_snapshot_rgb: bool = True
     save_snapshot_median_depth: bool = False
     save_snapshot_depth_distortion: bool = False
@@ -140,24 +199,11 @@ class OptimizationConfig:
     enable_metrics: bool = True
     enable_image_preview: bool = True
 
-    # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 1_000
-    mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 512
-    mesh_extraction_num_cluster: int = 0  # Preserve disconnected geometry by default.
-    save_final_mesh: bool = True
-    ground_truth: Path | None = None
-    geometry_samples: int = 500_000
-    geometry_seed: int = 0
-    geometry_scale: float = 1.0
-    geometry_use_vertices: bool = False
-
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
     resume_iteration_offset: int = 0
-
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     learning_rate_fields = (
@@ -318,10 +364,11 @@ def parse_args() -> OptimizationConfig:
     inputs.add_argument(
         "--target-color-space",
         choices=["auto", "srgb", "linear"],
+        default="linear",
         help=(
             "Target image encoding (default: auto). 'auto' uses ICC metadata, "
             "decodes untagged integer images as sRGB, and treats EXR/HDR as linear; "
-            "all targets are converted to linear sRGB for optimization."
+            "all targets are converted to linear sRGB for preview, optimization itself uses linear."
         ),
     )
     inputs.add_argument("--output", "-o", "-m", "--output-dir", dest="output_dir", type=Path)
@@ -370,8 +417,30 @@ def parse_args() -> OptimizationConfig:
         ("beta", "beta"),
     ):
         optimizer.add_argument(f"--lr-{suffix}", dest=f"learning_rate_{field_name}", type=float)
+    _add_boolean_argument(
+        optimizer, "--log-scale", dest="use_log_scale",
+        help=(
+            "Device optimizer: optimize log radii (default). "
+            "--no-log-scale uses additive physical-radius updates. "
+            "Retune --lr-scale when switching; host optimizer is unchanged."
+        ),
+    )
+    optimizer.add_argument(
+        "--shifted-log-scale-offset",
+        type=float,
+        help=(
+            "Device log-scale optimizer: opt into rho=log(s+s0) using non-negative "
+            "offset s0 in scene units. 0 keeps ordinary rho=log(s). Small surfels "
+            "then update more linearly while large surfels retain log-like growth."
+        ),
+    )
     _add_boolean_argument(optimizer, "--global-lr-decay", dest="use_global_lr_decay")
     _add_boolean_argument(optimizer, "--position-lr-decay", dest="use_position_lr_decay")
+    _add_boolean_argument(
+        optimizer,
+        "--skip-zero-gradient-surfels",
+        help="Device Adam: preserve a surfel and its moments when all enabled parameter gradients are zero; retain global bias correction.",
+    )
     _add_typed_fields(
         optimizer,
         float,
@@ -415,6 +484,11 @@ def parse_args() -> OptimizationConfig:
         "intra_slab_depth_weight",
         "curvature_scale_weight",
     )
+    _add_boolean_argument(
+        objective,
+        "--depth-distort-world-space",
+        help="Use absolute camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
+    )
     objective.add_argument("--depth-distort-start-iteration", type=int)
     _add_boolean_argument(
         objective,
@@ -430,49 +504,15 @@ def parse_args() -> OptimizationConfig:
         help="Share one point-light transport vertex and shadow connection across each local slab.",
     )
 
-    densification = parser.add_argument_group("densification")
-    _add_typed_fields(densification, int, "densification_interval", "densify_after")
+    densification_schedule = parser.add_argument_group("densification: schedule")
     _add_typed_fields(
-        densification,
-        float,
-        "densification_grad_abs_min",
-        "densification_grad_abs_min_final",
-        "densification_scale_min",
-        "densification_split_offset_scale",
-        "densification_split_scale_factor",
-        "densification_scene_extent",
-        "densification_max_new_fraction",
-        "densify_bsdf_floor",
-        "densify_bsdf_gamma",
-    )
-    densification.add_argument(
-        "--curvature-violation-threshold",
-        type=float,
-        help=(
-            "Mean raw curvature-scale violation required to split a surfel; "
-            "a non-positive value disables curvature densification."
-        ),
-    )
-    densification.add_argument(
-        "--densification-exact-clone-percent-dense",
-        "--densification-percent-dense",
-        dest="densification_exact_clone_percent_dense",
-        type=float,
-    )
-    densification.add_argument(
-        "--densification-grad-abs-min-decay-start-iteration",
-        "--densification-grad-abs-min-iter-start",
-        dest="densification_grad_abs_min_decay_start_iteration",
-        type=int,
-    )
-    densification.add_argument(
-        "--densification-grad-abs-min-decay-end-iteration",
-        "--densification-grad-abs-min-iter-end",
-        dest="densification_grad_abs_min_decay_end_iteration",
-        type=int,
+        densification_schedule,
+        int,
+        "densification_interval",
+        "densify_after",
     )
     _add_boolean_argument(
-        densification,
+        densification_schedule,
         "--densification-stats-skip-interval-start",
         "--densification-stats-warmup",
         dest="densification_stats_skip_interval_start",
@@ -482,16 +522,84 @@ def parse_args() -> OptimizationConfig:
             "spelling is accepted as an alias."
         ),
     )
+
+    densification_signal = parser.add_argument_group("densification: gradient signal")
     _add_boolean_argument(
-        densification,
+        densification_signal, "--densification-relative-error",
+        help="Use a frozen per-pixel relative-MSE source for densification and disable the albedo boost.",
+    )
+    _add_boolean_argument(
+        densification_signal, "--densification-full-position",
+        help="Include all position derivatives in relative statistics; disable to retain the local footprint signal.",
+    )
+    densification_signal.add_argument(
+        "--densification-radiance-floor", type=float,
+        help="Positive linear-RGB floor in the symmetric relative-error normalizer.",
+    )
+    _add_boolean_argument(
+        densification_signal,
         "--densification-downweight-normal-gradients",
         help=(
             "Downweight tangent densification statistics when position gradients "
             "point mostly along the surfel normal. Disabled by default."
         ),
     )
+
+    densification_selection = parser.add_argument_group("densification: candidate selection")
+    _add_typed_fields(
+        densification_selection,
+        float,
+        "densification_grad_abs_min",
+        "densification_grad_abs_min_final",
+    )
+    densification_selection.add_argument(
+        "--densification-grad-abs-min-decay-start-iteration",
+        "--densification-grad-abs-min-iter-start",
+        dest="densification_grad_abs_min_decay_start_iteration",
+        type=int,
+    )
+    densification_selection.add_argument(
+        "--densification-grad-abs-min-decay-end-iteration",
+        "--densification-grad-abs-min-iter-end",
+        dest="densification_grad_abs_min_decay_end_iteration",
+        type=int,
+    )
+
+    densification_radiance = parser.add_argument_group("densification: radiance balancing")
+    _add_typed_fields(
+        densification_radiance,
+        float,
+        "densification_radiance_bias_strength",
+        "densification_radiance_bias_min_weight",
+        "densification_radiance_bias_max_weight",
+    )
+
+    densification_split = parser.add_argument_group("densification: curvature and split policy")
+    _add_typed_fields(
+        densification_split,
+        float,
+        "densification_scale_min",
+        "densification_split_offset_scale",
+        "densification_split_scale_factor",
+        "densification_scene_extent",
+        "densification_max_new_fraction",
+    )
+    densification_split.add_argument(
+        "--curvature-violation-threshold",
+        type=float,
+        help=(
+            "Mean raw curvature-scale violation required to split a surfel; "
+            "a non-positive value disables curvature densification."
+        ),
+    )
+    densification_split.add_argument(
+        "--densification-exact-clone-percent-dense",
+        "--densification-percent-dense",
+        dest="densification_exact_clone_percent_dense",
+        type=float,
+    )
     _add_boolean_argument(
-        densification,
+        densification_split,
         "--densification-tangent-only",
         help=(
             "Restrict position-triggered densification displacement to the surfel "
@@ -499,9 +607,14 @@ def parse_args() -> OptimizationConfig:
             "full 3D gradient direction."
         ),
     )
-    _add_boolean_argument(densification, "--densification-verbose")
+    _add_boolean_argument(densification_split, "--densification-verbose")
 
     pruning = parser.add_argument_group("pruning and topology maintenance")
+    pruning.add_argument(
+        "--min-surfel-opacity",
+        type=float,
+        help="Prune trainable surfels with stored opacity strictly below this threshold (default: 0.3); 0 disables opacity pruning.",
+    )
     _add_typed_fields(
         pruning,
         int,
@@ -518,6 +631,10 @@ def parse_args() -> OptimizationConfig:
 
     output = parser.add_argument_group("output and monitoring")
     _add_typed_fields(output, int, "log_interval", "save_interval", "save_ply_files_interval")
+    _add_boolean_argument(
+        output, "--save-ply-before-densification",
+        help="Save PLY one iteration before each scheduled densification instead of periodically; --save-ply-files-interval 0 disables these saves.",
+    )
     _add_boolean_argument(
         output,
         "--metrics",
@@ -543,7 +660,8 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
-    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster")
+    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
+                      "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
     _add_boolean_argument(mesh, "--save-final-mesh")
     mesh.add_argument(
         "--ground-truth",
@@ -560,7 +678,10 @@ def parse_args() -> OptimizationConfig:
     _add_boolean_argument(
         mesh,
         "--geometry-use-vertices",
-        help="Use reconstructed mesh vertices as point-to-triangle geometry queries.",
+        help=(
+            "Use raw mesh vertices as point-to-triangle geometry queries. "
+            "The default uniformly samples both mesh surfaces."
+        ),
     )
 
     args = parser.parse_args()
@@ -580,6 +701,22 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
+    if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
+        parser.error("--min-surfel-opacity must be finite and in [0, 1]")
+
+
+    if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
+        parser.error("--densification-radiance-floor must be finite and positive")
+    if not math.isfinite(config.densification_radiance_bias_strength) or config.densification_radiance_bias_strength < 0:
+        parser.error("--densification-radiance-bias-strength must be finite and non-negative")
+    if not math.isfinite(config.densification_radiance_bias_min_weight) or not 0 < config.densification_radiance_bias_min_weight <= 1:
+        parser.error("--densification-radiance-bias-min-weight must be finite and in (0, 1]")
+    if not math.isfinite(config.densification_radiance_bias_max_weight) or config.densification_radiance_bias_max_weight < 1:
+        parser.error("--densification-radiance-bias-max-weight must be finite and at least 1")
+    if not math.isfinite(config.shifted_log_scale_offset) or config.shifted_log_scale_offset < 0.0:
+        parser.error("--shifted-log-scale-offset must be finite and non-negative")
+    if not config.use_log_scale and config.shifted_log_scale_offset != 0.0:
+        parser.error("--shifted-log-scale-offset requires --log-scale")
 
     resolve_learning_rates(config)
 

@@ -1348,7 +1348,10 @@ def load_target_images(
     if not images_path.is_dir():
         raise RuntimeError(f"Target dataset is missing images directory: {images_path}")
 
-    print(f"Loading target images from directory: {target_path}")
+    print(
+        f"Loading {len(training_camera_ids)} target images from directory: {target_path} "
+        f"({target_color_space} -> linear sRGB training)"
+    )
     for camera_name in training_camera_ids:
         candidates = sorted(
             path for path in images_path.iterdir()
@@ -1369,14 +1372,19 @@ def load_target_images(
             )
         image_path = candidates[0]
 
-        print(f"  Camera '{camera_name}': loading target {image_path}")
         target_images[camera_name] = io_utils.load_target_image(
             image_path,
             color_space=target_color_space,
+            log_color_interpretation=False,
         )
-        print(
-            f"    loaded linear training target with shape {target_images[camera_name].shape}"
-        )
+
+    image_shapes = {image.shape for image in target_images.values()}
+    shape_summary = (
+        str(next(iter(image_shapes)))
+        if len(image_shapes) == 1
+        else f"{len(image_shapes)} distinct shapes"
+    )
+    print(f"Loaded {len(target_images)} target images ({shape_summary}).")
 
     return target_images, training_camera_ids, all_camera_ids
 
