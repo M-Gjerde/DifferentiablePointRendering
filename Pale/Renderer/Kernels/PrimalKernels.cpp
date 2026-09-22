@@ -689,6 +689,16 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                     }
                     renderPointLocalLayer(localLayer, renderingRay);
                     renderingRay.origin += renderingRay.direction * (localLayer.furthestT + RayEpsilon);
+                    // Match batched traversal: later slabs cannot contribute
+                    // after opacity termination, including through their shadow
+                    // connections. Do not mark them as live for pruning.
+                    if (renderingTransmittance <= kAlphaEpsilon) {
+                        if (profileEnabled && !profileStoppedByOpacity) {
+                            profileOpacityTerminations += 1u;
+                            profileStoppedByOpacity = true;
+                        }
+                        break;
+                    }
                     continue;
                 }
                 if (instance.geometryType == GeometryType::Mesh) {
