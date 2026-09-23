@@ -97,7 +97,7 @@ class OptimizationConfig:
     depth_distort_weight: float = 0.00025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.0025
+    normal_consistency_weight: float = 0.0015
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
