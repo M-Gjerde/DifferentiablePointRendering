@@ -79,12 +79,12 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = False
+    use_global_lr_decay: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
     position_lr_scale_init: float = 20.0
-    position_lr_scale_final: float = 1.0
+    position_lr_scale_final: float = 2.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 15_000
 
@@ -94,10 +94,10 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0005
+    depth_distort_weight: float = 0.00025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.0025
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
