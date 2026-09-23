@@ -218,7 +218,6 @@ class PythonRenderer
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float epsilon = 1.0e-8f;
-        float maxRotationStepRadians = 0.01f;
     };
 
     struct DeviceAdamState
@@ -4786,8 +4785,6 @@ private:
         options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
         options.beta2 = get_f(optionsDictionary, "adam_beta2", options.beta2);
         options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
-        options.maxRotationStepRadians =
-            get_f(optionsDictionary, "max_rotation_step_radians", options.maxRotationStepRadians);
         return options;
     }
 
@@ -5235,8 +5232,7 @@ private:
                 lrAlbedo = options.learningRateAlbedo,
                 lrOpacity = options.learningRateOpacity,
                 lrBeta = options.learningRateBeta,
-                cameraBatchScale = options.cameraBatchScale,
-                maxRotationStepRadians = options.maxRotationStepRadians](sycl::id<1> itemId)
+                cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
             {
                 const std::uint32_t primitiveIndex = static_cast<std::uint32_t>(itemId[0]);
                 Pale::Point& point = points[primitiveIndex];
@@ -5518,25 +5514,13 @@ private:
                     rotationDeltaZ * rotationDeltaZ);
                 if (rotationLength > 1.0e-12f && sycl::isfinite(rotationLength))
                 {
-                    if (maxRotationStepRadians > 0.0f && rotationLength > maxRotationStepRadians)
-                    {
-                        const float clampScale = maxRotationStepRadians / rotationLength;
-                        rotationDeltaX *= clampScale;
-                        rotationDeltaY *= clampScale;
-                        rotationDeltaZ *= clampScale;
-                    }
-
-                    const float clampedRotationLength = sycl::sqrt(
-                        rotationDeltaX * rotationDeltaX +
-                        rotationDeltaY * rotationDeltaY +
-                        rotationDeltaZ * rotationDeltaZ);
-                    const float invRotationLength = 1.0f / sycl::fmax(clampedRotationLength, 1.0e-12f);
+                    const float invRotationLength = 1.0f / sycl::fmax(rotationLength, 1.0e-12f);
                     const float axisX = rotationDeltaX * invRotationLength;
                     const float axisY = rotationDeltaY * invRotationLength;
                     const float axisZ = rotationDeltaZ * invRotationLength;
 
-                    const float c = sycl::cos(clampedRotationLength);
-                    const float s = sycl::sin(clampedRotationLength);
+                    const float c = sycl::cos(rotationLength);
+                    const float s = sycl::sin(rotationLength);
                     const float t = 1.0f - c;
 
                     const float r00 = t * axisX * axisX + c;
