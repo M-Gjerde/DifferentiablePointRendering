@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 10
+    adjoint_passes: int = 8
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -56,7 +56,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 20_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -79,14 +79,14 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = True
+    use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
     position_lr_scale_init: float = 20.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 10_000
+    lr_decay_max_steps: int = 15_000
 
     # Objective: photometric loss
     ssim_weight: float = 0.0
@@ -175,6 +175,8 @@ class OptimizationConfig:
     mesh_albedo_texture_size: int = 1024
     mesh_uv_partitions: int = 0
     mesh_uv_threads: int = 0
+    mesh_export_lights: bool = True
+    mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
     geometry_samples: int = 500_000
@@ -664,6 +666,14 @@ def parse_args() -> OptimizationConfig:
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
     _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
                       "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
+    _add_boolean_argument(
+        mesh, "--mesh-export-lights",
+        help="Include point lights in exported reconstruction GLBs.",
+    )
+    _add_boolean_argument(
+        mesh, "--mesh-export-cameras",
+        help="Include scene cameras in exported reconstruction GLBs.",
+    )
     _add_boolean_argument(mesh, "--save-final-mesh")
     mesh.add_argument(
         "--ground-truth",

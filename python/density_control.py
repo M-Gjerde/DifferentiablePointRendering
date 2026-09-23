@@ -67,7 +67,6 @@ def apply_local_rotation_update_to_quaternions_inplace(
         rotations: torch.Tensor,
         rotation_delta: torch.Tensor,
         trainable_surfel_mask: torch.Tensor | None = None,
-        max_rotation_step_radians: float = 0.0,
 ) -> dict[str, float]:
     if rotations.ndim != 2 or rotations.shape[1] != 4:
         raise ValueError(f"rotations must be (N,4), got {tuple(rotations.shape)}")
@@ -78,10 +77,6 @@ def apply_local_rotation_update_to_quaternions_inplace(
         if trainable_surfel_mask is not None:
             mask = trainable_surfel_mask.to(device=rotations.device, dtype=torch.bool).view(-1, 1)
             delta = torch.where(mask, delta, torch.zeros_like(delta))
-        if max_rotation_step_radians is not None and max_rotation_step_radians > 0.0:
-            delta_norm = torch.linalg.norm(delta, dim=1, keepdim=True)
-            clamp_scale = torch.clamp(float(max_rotation_step_radians) / delta_norm.clamp_min(1.0e-12), max=1.0)
-            delta = delta * clamp_scale
         before = normalize_quaternions_torch(rotations.detach())
         dq = quaternion_exp_from_local_delta(delta)
         after = normalize_quaternions_torch(quaternion_multiply_wxyz(before, dq))
@@ -343,63 +338,14 @@ def make_under_reconstruction_clones(
             tv_n = tv - torch.sum(tv * tu_n, dim=1, keepdim=True) * tu_n
             tv_n = torch.nn.functional.normalize(tv_n, dim=1, eps=1.0e-12)
 
-            position_descent = -(
-                tangent_grad[split_idx]
-                if split_tangent_only
-                else grad_pos[split_idx]
-            )
+            # Project the accumulated world-space gradient onto today's tangent
+            # frame. Both tu and tv contribute to the split direction.
+            position_descent = -tangent_grad[split_idx]
             position_descent_norm = torch.linalg.norm(position_descent, dim=1, keepdim=True)
-            position_direction = torch.where(
-                position_descent_norm > 1.0e-12,
-                position_descent / torch.clamp(position_descent_norm, min=1.0e-12),
-                tu_n,
-            )
-
-            tensor_uu = curvature_uu[split_idx]
-            tensor_uv = curvature_uv[split_idx]
-            tensor_vv = curvature_vv[split_idx]
-            tensor_trace = tensor_uu + tensor_vv
-            tensor_anisotropy = torch.sqrt(
-                torch.clamp(
-                    torch.square(tensor_uu - tensor_vv) + 4.0 * torch.square(tensor_uv),
-                    min=0.0,
-                )
-            )
-            tensor_finite = (
-                    torch.isfinite(tensor_uu)
-                    & torch.isfinite(tensor_uv)
-                    & torch.isfinite(tensor_vv)
-                    & torch.isfinite(tensor_anisotropy)
-            )
-            tensor_valid = (
-                    tensor_finite
-                    & (tensor_trace > 1.0e-12)
-                    & (tensor_anisotropy > 1.0e-6 * torch.clamp(tensor_trace, min=1.0e-12))
-            )
-
-            theta = 0.5 * torch.atan2(2.0 * tensor_uv, tensor_uu - tensor_vv)
-            curvature_axis_u = torch.cos(theta)
-            curvature_axis_v = torch.sin(theta)
-            curvature_direction = (
-                    curvature_axis_u[:, None] * tu_n
-                    + curvature_axis_v[:, None] * tv_n
-            )
-            curvature_direction = torch.nn.functional.normalize(
-                curvature_direction, dim=1, eps=1.0e-12
-            )
-
-            curvature_requested = curvature_requested_all[split_idx]
-            use_curvature_direction = curvature_requested & tensor_valid
-            curvature_direction_count = int(
-                torch.count_nonzero(use_curvature_direction).item()
-            )
             split_direction = torch.where(
-                use_curvature_direction[:, None],
-                curvature_direction,
-                position_direction,
-            )
-            split_direction = torch.nn.functional.normalize(
-                split_direction, dim=1, eps=1.0e-12
+                position_descent_norm > 1.0e-12,
+                position_descent / position_descent_norm.clamp_min(1.0e-12),
+                tu_n,
             )
 
             axis_u = torch.sum(split_direction * tu_n, dim=1)
@@ -484,8 +430,7 @@ def make_under_reconstruction_clones(
             "split_count": int(split_idx.numel()),
             "position_trigger_count": int(torch.count_nonzero(position_score[selected_idx] >= 1.0).item()),
             "curvature_trigger_count": int(torch.count_nonzero(curvature_requested_all[selected_idx]).item()),
-            # Exclusive split attribution. Curvature has direction priority when
-            # both thresholds fire, so the two counts sum exactly to split_count.
+            # Exclusive attribution by trigger; both paths use the projected gradient.
             "position_split_count": int(
                 torch.count_nonzero(~curvature_requested_all[split_idx]).item()
             ),

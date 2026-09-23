@@ -11,6 +11,8 @@ DEFAULTS = {
     'pgsr': ('/home/magnus/phd/pbdr/PGSR/output/batch_pgsr', '_2dgs', 'fuse_post_auto.ply'),
     '2dgs': ('/home/magnus/projects/2D-GS-Viser-Viewer/output/batch_2dgs', '_2dgs', 'fuse_post_auto.ply'),
     'radiosity_gs': ('/home/magnus/phd/pbdr/RadiosityGS/output/batch_radiosity_gs', '_pbdr', 'fuse_post.ply'),
+    'neus': ('/home/magnus/phd/pbdr/NeuS/output/batch_neus', '_2dgs', 'mesh.ply'),
+    'gaussian_wrapping': ('/home/magnus/phd/pbdr/GaussianWrapping/output/batch_gaussian_wrapping', '_2dgs', 'mesh.ply'),
 }
 SCENES = ('horse', 'teapot', 'dragon', 'plant', 'workbench', 'restaurant')
 
@@ -44,6 +46,12 @@ def training_time(model, iteration):
     seconds = stats.get('runtime_seconds')
     if valid(seconds):
         return float(seconds), 'checkpoint'
+    batch = read(model / 'batch_train.json')
+    if batch:
+        seconds = batch.get('training_seconds')
+        if batch.get('status') == 'complete' and valid(seconds):
+            return float(seconds), 'total'
+        return None, 'unavailable'
     latest = None
     try:
         with (model.parent / 'train_runs.jsonl').open() as stream:
@@ -76,9 +84,24 @@ def format_training_time(seconds):
     return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
-def checkpoints(model):
+def checkpoints(model, method=None):
+    if method == 'neus':
+        return sorted(int(p.stem[5:]) for p in (model / 'checkpoints').glob('ckpt_*.pth')
+                      if p.stem[5:].isdigit() and p.is_file())
     return sorted(int(p.name.split('_')[-1]) for p in (model / 'point_cloud').glob('iteration_*')
                   if p.name.split('_')[-1].isdigit() and (p/'point_cloud.ply').is_file())
+
+
+def input_paths(model, method, iteration, mesh_name):
+    if method == 'neus':
+        checkpoint = model / 'checkpoints' / (f'ckpt_{iteration:06d}.pth' if iteration is not None else 'ckpt_missing.pth')
+    else:
+        checkpoint = model / 'point_cloud' / f'iteration_{iteration}' / 'point_cloud.ply'
+    if method in ('neus', 'gaussian_wrapping'):
+        mesh = model / 'meshes' / f'iteration_{iteration}' / mesh_name
+    else:
+        mesh = model / 'train' / f'ours_{iteration}' / mesh_name
+    return checkpoint, mesh
 
 
 def mean(values):
@@ -128,7 +151,7 @@ def main(method, argv=None):
     p.add_argument('--ground-truth-root',type=Path,default=Path('/home/magnus/phd/models'))
     p.add_argument('--scenes','--scene','--datasets',nargs='+',default=list(SCENES))
     p.add_argument('--iterations',type=int,nargs='+',help='Default: 7000 30000 for 2DGS; latest saved checkpoint otherwise')
-    p.add_argument('--mesh-name',default=mesh_name,help='Exact mesh filename in train/ours_<iteration> (no fallback)')
+    p.add_argument('--mesh-name',default=mesh_name,help='Exact filename in the method\'s extracted-mesh directory (no fallback)')
     p.add_argument('--samples',type=int,default=5_000_000)
     p.add_argument('--seed',type=int,default=0)
     p.add_argument('--results-dir',type=Path,default=Path(__file__).resolve().parent/'evaluation_results'/method)
@@ -156,13 +179,12 @@ def main(method, argv=None):
         import numpy as np
     for name in names:
         model=output/(name+suffix)
-        available=checkpoints(model)
+        available=checkpoints(model, method)
         iterations=a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None])
         gt_path=gt_root/(name+'.ply')
         gt=None
         for iteration in dict.fromkeys(iterations):
-            checkpoint=model/'point_cloud'/f'iteration_{iteration}'/'point_cloud.ply'
-            mesh=model/'train'/f'ours_{iteration}'/a.mesh_name
+            checkpoint, mesh = input_paths(model, method, iteration, a.mesh_name)
             row=dict(method=method,scene=name,iteration=iteration,status='failed',point_count=None,
                      checkpoint=str(checkpoint),reconstruction=str(mesh),ground_truth=str(gt_path))
             if a.list_only:
@@ -173,9 +195,26 @@ def main(method, argv=None):
             time_label = 'Training(total)' if scope == 'total' else 'Training'
             try:
                 if iteration is None:
-                    raise FileNotFoundError(f'No saved checkpoints under {model / "point_cloud"}')
-                row['point_count']=point_count(checkpoint)
-                if not mesh.is_file():raise FileNotFoundError(f'Missing reconstruction: {mesh}')
+                    raise FileNotFoundError(f'No saved checkpoints under {model}')
+                if not checkpoint.is_file():raise FileNotFoundError(f'Missing checkpoint: {checkpoint}')
+                if method != 'neus':
+                    row['point_count']=point_count(checkpoint)
+                else:
+                    row['point_count_note']='Not applicable: implicit SDF network, not optimized surface points'
+                if not mesh.is_file():
+                    if method == 'neus':
+                        preview = model / 'meshes' / f'{iteration:08d}.ply'
+                        detail = (' The numbered mesh exists, but may be a resolution-64 training preview in normalized coordinates; it is not used as a fallback.'
+                                  if preview.is_file() else '')
+                        raise FileNotFoundError(
+                            f'Missing evaluation mesh: {mesh}.{detail} '
+                            f'Run NeuS extract_mesh_all.py --scenes {name} --output-root {output} first.')
+                    raise FileNotFoundError(f'Missing reconstruction: {mesh}')
+                extraction_record = mesh.parent / 'batch_mesh.json'
+                if method in ('neus', 'gaussian_wrapping') and extraction_record.exists():
+                    extraction = json.loads(extraction_record.read_text())
+                    if extraction.get('status') != 'complete':
+                        raise ValueError(f'Extraction is not marked complete: {extraction_record}')
                 if gt is None:
                     set_random_seed(a.seed)
                     gt=load_triangle_mesh_with_query_points(gt_path,a.samples,False)
@@ -187,7 +226,8 @@ def main(method, argv=None):
                 values=compute_paper_ready_point_to_triangle_distance(recon_points,recon,gt_points,gt_mesh,scale=1.0)
                 row.update(cd=values['cd'],accuracy=values['accuracy'],completion=values['completion'],
                            cd_bbox_percent=100*values['cd']/diagonal,gt_bbox_diagonal=diagonal,status='complete')
-                print(f"{name} [{iteration}]: CD={row['cd']:.6g}, Accuracy={row['accuracy']:.6g}, Completion={row['completion']:.6g}, Points={row['point_count']:,}, {time_label}={row['training_time']}",flush=True)
+                count_label = f"{row['point_count']:,}" if row['point_count'] is not None else 'N/A (implicit SDF)'
+                print(f"{name} [{iteration}]: CD={row['cd']:.6g}, Accuracy={row['accuracy']:.6g}, Completion={row['completion']:.6g}, Points={count_label}, {time_label}={row['training_time']}",flush=True)
             except Exception as error:
                 row['error']=f'{type(error).__name__}: {error}'
                 print(f"{name} [{iteration}]: {row['error']}",flush=True)
@@ -202,5 +242,8 @@ def main(method, argv=None):
     write_csv(result/'per_scene.csv',rows)
     write_csv(result/'scene_averages.csv',summary['per_scene'])
     write_csv(result/'iteration_averages.csv',summary['per_iteration'])
-    print(f"Average points per measured scene: {summary['average_points_per_scene']} ({summary['point_count_scene_count']} scenes).\nResults: {result}")
+    if method == 'neus':
+        print(f"Average points per scene: N/A (implicit SDF).\nResults: {result}")
+    else:
+        print(f"Average points per measured scene: {summary['average_points_per_scene']} ({summary['point_count_scene_count']} scenes).\nResults: {result}")
     return int(any(row['status']!='complete' for row in rows) or not rows)

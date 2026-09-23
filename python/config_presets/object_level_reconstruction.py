@@ -173,6 +173,8 @@ class OptimizationConfig:
     mesh_albedo_texture_size: int = 1024
     mesh_uv_partitions: int = 0
     mesh_uv_threads: int = 0
+    mesh_export_lights: bool = True
+    mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
     geometry_samples: int = 500_000
@@ -662,6 +664,14 @@ def parse_args() -> OptimizationConfig:
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
     _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
                       "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
+    _add_boolean_argument(
+        mesh, "--mesh-export-lights",
+        help="Include point lights in exported reconstruction GLBs.",
+    )
+    _add_boolean_argument(
+        mesh, "--mesh-export-cameras",
+        help="Include scene cameras in exported reconstruction GLBs.",
+    )
     _add_boolean_argument(mesh, "--save-final-mesh")
     mesh.add_argument(
         "--ground-truth",

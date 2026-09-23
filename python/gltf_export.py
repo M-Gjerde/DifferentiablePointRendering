@@ -424,8 +424,9 @@ class GlbBuilder:
 def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
                               *, cameras=(), texture_size: int = 2048,
                               meters_per_unit: float = 1.0,
-                              uv_partitions: int = 0, uv_threads: int = 0) -> Path:
-    """Export a standard base-color UV texture, Lambertian material and point lights.
+                              uv_partitions: int = 0, uv_threads: int = 0,
+                              include_lights: bool = True) -> Path:
+    """Export a standard base-color UV texture, Lambertian material, and optional scene nodes.
 
     Input coordinates use PALE's Z-up convention. Cameras use OpenCV extrinsics.
     Power is total RGB radiant flux; light conversion matches Blender's SPEC mode.
@@ -479,18 +480,19 @@ def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
     builder.node({"name": "Reconstruction", "mesh": 0})
 
     lights = []
-    for index in np.flatnonzero(parameters["power"] > 0):
-        light_id = len(lights)
-        power = float(parameters["power"][index])
-        lights.append({"name": f"Point light {index}", "type": "point",
-                       "color": parameters["albedo"][index].tolist(),
-                       # Geometry rescaling needs square-scaled power to preserve
-                       # irradiance at the reconstructed surface.
-                       "intensity": power * meters_per_unit**2 * BLENDER_WATTS_TO_LUMENS / (4 * math.pi),
-                       "extras": {"pale_power": power, "pale_surfel_index": int(index)}})
-        position = Z_UP_TO_Y_UP @ parameters["position"][index] * meters_per_unit
-        builder.node({"name": lights[-1]["name"], "translation": position.tolist(),
-                      "extensions": {"KHR_lights_punctual": {"light": light_id}}})
+    if include_lights:
+        for index in np.flatnonzero(parameters["power"] > 0):
+            light_id = len(lights)
+            power = float(parameters["power"][index])
+            lights.append({"name": f"Point light {index}", "type": "point",
+                           "color": parameters["albedo"][index].tolist(),
+                           # Geometry rescaling needs square-scaled power to preserve
+                           # irradiance at the reconstructed surface.
+                           "intensity": power * meters_per_unit**2 * BLENDER_WATTS_TO_LUMENS / (4 * math.pi),
+                           "extras": {"pale_power": power, "pale_surfel_index": int(index)}})
+            position = Z_UP_TO_Y_UP @ parameters["position"][index] * meters_per_unit
+            builder.node({"name": lights[-1]["name"], "translation": position.tolist(),
+                          "extensions": {"KHR_lights_punctual": {"light": light_id}}})
     if lights:
         doc["extensions"] = {"KHR_lights_punctual": {"lights": lights}}
         doc["extensionsUsed"].append("KHR_lights_punctual")
@@ -519,7 +521,7 @@ def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
                        "fx": camera.fx, "fy": camera.fy, "cx": camera.cx, "cy": camera.cy}})
         builder.node({"name": camera.name, "camera": camera_id,
                       "matrix": transform.flatten(order="F").tolist()})
-    diagnostics.update(point_lights=len(lights), cameras=len(doc.get("cameras", [])),
+    diagnostics.update(export_lights=include_lights, point_lights=len(lights), cameras=len(doc.get("cameras", [])),
                        omitted_cameras=omitted_cameras, meters_per_unit=meters_per_unit,
                        watts_to_lumens=BLENDER_WATTS_TO_LUMENS)
     doc["asset"]["extras"] = diagnostics

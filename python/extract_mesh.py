@@ -621,14 +621,17 @@ def parse_args(argv=None) -> argparse.Namespace:
 
     add_tsdf_arguments(parser)
     parser.add_argument("--export-gltf", action=argparse.BooleanOptionalAction, default=True,
-                        help="Export reconstruction.glb with a UV albedo texture and point lights.")
+                        help="Export reconstruction.glb with a UV albedo texture.")
+    parser.add_argument("--export-lights", action=argparse.BooleanOptionalAction, default=True,
+                        help="Include point lights in reconstruction.glb.")
     parser.add_argument("--texture-size", default=512, type=int,
                         help="Width and height of the reconstructed albedo texture in pixels.")
     parser.add_argument("--uv-partitions", default=0, type=int,
                         help="UV unwrap partitions (0: automatic; 1: single partition). More partitions add UV seams.")
     parser.add_argument("--uv-threads", default=0, type=int,
                         help="UV unwrap CPU threads (0: automatic, up to 8).")
-    parser.add_argument("--export-cameras", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--export-cameras", action=argparse.BooleanOptionalAction, default=False,
+                        help="Include scene cameras in reconstruction.glb.")
     parser.add_argument("--meters-per-unit", default=1.0, type=float,
                         help="Convert PALE coordinates to meters; scales light power to preserve illumination.")
     parser.add_argument("--reuse-mesh", type=Path, default=None,
@@ -711,7 +714,7 @@ if __name__ == "__main__":
                 mesh_dir / f"reconstruction{mesh_name_suffix}.glb",
                 cameras=export_cameras, texture_size=args.texture_size,
                 uv_partitions=args.uv_partitions, uv_threads=args.uv_threads,
-                meters_per_unit=args.meters_per_unit,
+                meters_per_unit=args.meters_per_unit, include_lights=args.export_lights,
             )
         raise SystemExit(0)
 
@@ -782,5 +785,5 @@ if __name__ == "__main__":
             cameras=[cameras[name] for name in camera_names if name in cameras] if args.export_cameras else (),
             texture_size=args.texture_size,
             uv_partitions=args.uv_partitions, uv_threads=args.uv_threads,
-            meters_per_unit=args.meters_per_unit,
+            meters_per_unit=args.meters_per_unit, include_lights=args.export_lights,
         )

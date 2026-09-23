@@ -56,6 +56,8 @@ python extract_mesh.py --run-dir OptimizationOutput/MY_RUN \
 PALE retains `fuse.ply` / `fuse_post.ply` naming and adds `extraction.json` in the
 mesh directory. Its depth flag is `--depth-key median_depth` (default) or
 `--depth-key mean_depth`. GLB export is still enabled unless disabled explicitly.
+Point lights are included by default; cameras are omitted unless `--export-cameras`
+is passed. Use `--no-export-lights` to omit lights.
 
 PALE allocates backward buffers on first use. Mesh extraction only calls
 `render_forward()`, so it does not allocate adjoint ray/event scratch, gradient

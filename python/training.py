@@ -61,6 +61,8 @@ def extract_mesh_from_point_cloud(
         command.extend(["--texture-size", str(int(config.mesh_albedo_texture_size))])
         command.extend(["--uv-partitions", str(int(config.mesh_uv_partitions)),
                         "--uv-threads", str(int(config.mesh_uv_threads))])
+        command.append("--export-lights" if config.mesh_export_lights else "--no-export-lights")
+        command.append("--export-cameras" if config.mesh_export_cameras else "--no-export-cameras")
 
     with extraction_log_path.open("w", encoding="utf-8") as extraction_log:
         result = subprocess.run(

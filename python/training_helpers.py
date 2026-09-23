@@ -1851,17 +1851,6 @@ def update_densification_statistics(
     dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
     dot_w_np = np.sum(per_camera_grad_np * tangent_w_unit_np[:, None, :], axis=2)
 
-    per_camera_local_grad_np = np.concatenate(
-        [
-            dot_u_np,
-            dot_v_np,
-            np.zeros_like(dot_u_np)
-            if densification_tangent_only
-            else dot_w_np[:, :, None],
-        ],
-        axis=2,
-    )
-
     visible_camera_mask_np = per_camera_count_np > 0
     active_camera_count_np = visible_camera_mask_np.sum(axis=1, keepdims=True).astype(np.float32)
 
@@ -1905,12 +1894,10 @@ def update_densification_statistics(
                                          per_camera_tangent_grad_norm_np * visible_downweight_np
                                  ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
 
-    # Signed vector direction:
-    #     mean_visible((dot_u, dot_v, dot_w) * optional_tangent_fraction(g_camera))
-    # dot_w is zeroed in tangent-only mode. Accumulating local coordinates keeps
-    # the direction stable if the surfel rotates.
+    # Keep the signed direction in world space across optimizer iterations.
+    # Project it onto the surfel's current tangent frame when densifying.
     density_grad_position_vector_np = (
-                                              per_camera_local_grad_np * visible_downweight_np[:, :, None]
+                                              per_camera_grad_np * visible_downweight_np[:, :, None]
                                       ).sum(axis=1) / safe_active_camera_count_np
 
     density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
@@ -2240,28 +2227,12 @@ def maybe_make_densification_result(
             densification_radiance_bias_max_weight=float(config.densification_radiance_bias_max_weight),
         )
         valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
-        avg_density_grad_vector_local_np = np.zeros(tuple(positions.shape), dtype=np.float32)
+        avg_density_grad_vector_np = np.zeros(tuple(positions.shape), dtype=np.float32)
 
-        avg_density_grad_vector_local_np[valid_denom_np] = (
+        avg_density_grad_vector_np[valid_denom_np] = (
                 densify_position_grad_vector_accum_np[valid_denom_np]
                 / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
         )
-        avg_density_grad_vector_local_np = np.nan_to_num(
-            avg_density_grad_vector_local_np,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-
-        tangent_u, tangent_v, tangent_w = density.quaternion_to_tangent_frame_torch(rotations.detach())
-        tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
-        tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
-        tangent_w_np = tangent_w.detach().cpu().numpy().astype(np.float32)
-        avg_density_grad_vector_np = (
-                avg_density_grad_vector_local_np[:, 0:1] * tangent_u_np
-                + avg_density_grad_vector_local_np[:, 1:2] * tangent_v_np
-                + avg_density_grad_vector_local_np[:, 2:3] * tangent_w_np
-        ).astype(np.float32)
         avg_density_grad_vector_np = np.nan_to_num(
             avg_density_grad_vector_np,
             nan=0.0,
@@ -2448,6 +2419,7 @@ def maybe_make_densification_result(
                 curvature_direction_vv_np=curvature_tensor_vv_np,
                 curvature_violation_threshold=curvature_violation_threshold,
                 split_tangent_only=bool(config.densification_tangent_only),
+                tangent_project_position_grad=True,
             )
 
             if densification_result is not None:
