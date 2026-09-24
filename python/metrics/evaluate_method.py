@@ -8,6 +8,7 @@ import statistics
 import math
 
 DEFAULTS = {
+    'gof': ('/home/magnus/phd/pbdr/GOF/output/batch_gof', '_2dgs', 'mesh.ply'),
     'pgsr': ('/home/magnus/phd/pbdr/PGSR/output/batch_pgsr', '_2dgs', 'fuse_post_auto.ply'),
     '2dgs': ('/home/magnus/projects/2D-GS-Viser-Viewer/output/batch_2dgs', '_2dgs', 'fuse_post_auto.ply'),
     'radiosity_gs': ('/home/magnus/phd/pbdr/RadiosityGS/output/batch_radiosity_gs', '_pbdr', 'fuse_post.ply'),
@@ -97,7 +98,7 @@ def input_paths(model, method, iteration, mesh_name):
         checkpoint = model / 'checkpoints' / (f'ckpt_{iteration:06d}.pth' if iteration is not None else 'ckpt_missing.pth')
     else:
         checkpoint = model / 'point_cloud' / f'iteration_{iteration}' / 'point_cloud.ply'
-    if method in ('neus', 'gaussian_wrapping'):
+    if method in ('neus', 'gaussian_wrapping', 'gof'):
         mesh = model / 'meshes' / f'iteration_{iteration}' / mesh_name
     else:
         mesh = model / 'train' / f'ours_{iteration}' / mesh_name
@@ -211,7 +212,7 @@ def main(method, argv=None):
                             f'Run NeuS extract_mesh_all.py --scenes {name} --output-root {output} first.')
                     raise FileNotFoundError(f'Missing reconstruction: {mesh}')
                 extraction_record = mesh.parent / 'batch_mesh.json'
-                if method in ('neus', 'gaussian_wrapping') and extraction_record.exists():
+                if method in ('neus', 'gaussian_wrapping', 'gof') and extraction_record.exists():
                     extraction = json.loads(extraction_record.read_text())
                     if extraction.get('status') != 'complete':
                         raise ValueError(f'Extraction is not marked complete: {extraction_record}')
