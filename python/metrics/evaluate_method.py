@@ -9,6 +9,7 @@ import math
 
 DEFAULTS = {
     'ours': (str(Path(__file__).resolve().parents[1] / 'OptimizationOutput' / 'paper'), '', 'fuse_post.ply'),
+    'gof': ('/home/magnus/phd/pbdr/GOF/output/batch_gof', '_2dgs', 'mesh.ply'),
     'pgsr': ('/home/magnus/phd/pbdr/PGSR/output/batch_pgsr', '_2dgs', 'fuse_post_auto.ply'),
     '2dgs': ('/home/magnus/projects/2D-GS-Viser-Viewer/output/batch_2dgs', '_2dgs', 'fuse_post_auto.ply'),
     'radiosity_gs': ('/home/magnus/phd/pbdr/RadiosityGS/output/batch_radiosity_gs', '_pbdr', 'fuse_post.ply'),
@@ -43,16 +44,6 @@ def training_time(model, iteration):
             return {}
     def valid(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
-    if (model / 'metrics.csv').is_file():
-        with (model / 'metrics.csv').open(newline='') as stream:
-            for row in csv.DictReader(stream):
-                try:
-                    if int(row['iteration']) == iteration:
-                        seconds = float(row['total_time_sec'])
-                        if valid(seconds):
-                            return seconds, 'checkpoint'
-                except (KeyError, ValueError, TypeError):
-                    continue
     stats = read(model / 'training_stats.json').get('iterations', {}).get(str(iteration), {})
     seconds = stats.get('runtime_seconds')
     if valid(seconds):
@@ -95,10 +86,7 @@ def format_training_time(seconds):
     return f'{hours:02d}:{minutes:02d}:{seconds:02d}'
 
 
-def checkpoints(model, method=None, mesh_name='fuse_post.ply'):
-    if method == 'ours':
-        return sorted(int(p.name[5:]) for p in (model / 'mesh_checkpoints').glob('iter_*')
-                      if p.name[5:].isdigit() and (p / mesh_name).is_file())
+def checkpoints(model, method=None):
     if method == 'neus':
         return sorted(int(p.stem[5:]) for p in (model / 'checkpoints').glob('ckpt_*.pth')
                       if p.stem[5:].isdigit() and p.is_file())
@@ -107,10 +95,6 @@ def checkpoints(model, method=None, mesh_name='fuse_post.ply'):
 
 
 def input_paths(model, method, iteration, mesh_name):
-    if method == 'ours':
-        tag = f'{iteration:05d}' if iteration is not None else 'missing'
-        return (model / 'points' / f'iter_{tag}_points.ply',
-                model / 'mesh_checkpoints' / f'iter_{tag}' / mesh_name)
     if method == 'neus':
         checkpoint = model / 'checkpoints' / (f'ckpt_{iteration:06d}.pth' if iteration is not None else 'ckpt_missing.pth')
     else:
@@ -165,9 +149,9 @@ def write_csv(path, rows):
 def main(method, argv=None):
     default_root, suffix, mesh_name = DEFAULTS[method]
     p=argparse.ArgumentParser(description=f'Evaluate all {method} batch meshes and saved surface-point counts.')
-    p.add_argument('--output-root',type=Path,default=Path(default_root),help='Training output root; ours defaults to python/OptimizationOutput/paper')
-    p.add_argument('--ground-truth-root',type=Path,default=None,help='GT directory; ours uses each run_config.json ground_truth by default')
-    p.add_argument('--scenes','--scene','--datasets',nargs='+',default=None)
+    p.add_argument('--output-root',type=Path,default=Path(default_root),help='Training output root containing <scene>_2dgs or <scene>_pbdr')
+    p.add_argument('--ground-truth-root',type=Path,default=Path('/home/magnus/phd/models'))
+    p.add_argument('--scenes','--scene','--datasets',nargs='+',default=list(SCENES))
     p.add_argument('--iterations',type=int,nargs='+',help='Default: 7000 30000 for 2DGS; latest saved checkpoint otherwise')
     p.add_argument('--mesh-name',default=mesh_name,help='Exact filename in the method\'s extracted-mesh directory (no fallback)')
     p.add_argument('--samples',type=int,default=5_000_000)
@@ -179,23 +163,15 @@ def main(method, argv=None):
         p.error('samples and iterations must be positive')
     if Path(a.mesh_name).name != a.mesh_name:
         p.error('mesh-name must be a filename')
-    output=a.output_root.expanduser().resolve()
-    if method == 'ours' and not output.is_dir():
-        p.error(f'Output root does not exist: {output}')
-    scenes = a.scenes if a.scenes is not None else (
-        [d.name for d in sorted(output.iterdir()) if d.is_dir()] if method == 'ours' else list(SCENES))
-    if not scenes:
-        p.error(f'No scene folders found under {output}')
     names=[]
-    for name in scenes:
-        if method != 'ours':
-            name=name.removesuffix('_pbdr').removesuffix('_2dgs')
-            name='workbench' if name=='workshop' else name
+    for name in a.scenes:
+        name=name.removesuffix('_pbdr').removesuffix('_2dgs')
+        name='workbench' if name=='workshop' else name
         if '/' in name or '\\' in name or name in ('.','..',''):
             p.error('Invalid scene name')
         if name not in names:names.append(name)
     output=a.output_root.expanduser().resolve()
-    gt_root=(a.ground_truth_root or Path('/home/magnus/phd/models')).expanduser().resolve()
+    gt_root=a.ground_truth_root.expanduser().resolve()
     rows=[]
     if not a.list_only:
         if __package__:
@@ -205,17 +181,9 @@ def main(method, argv=None):
         import numpy as np
     for name in names:
         model=output/(name+suffix)
-        available=checkpoints(model, method, a.mesh_name)
+        available=checkpoints(model, method)
         iterations=a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None])
         gt_path=gt_root/(name+'.ply')
-        if method == 'ours' and a.ground_truth_root is None:
-            config_path = model / 'run_config.json'
-            config = json.loads(config_path.read_text()) if config_path.is_file() else {}
-            configured_gt = config.get('optimization_config', {}).get('ground_truth')
-            if configured_gt:
-                gt_path = Path(configured_gt).expanduser()
-                if not gt_path.is_absolute():
-                    gt_path = (Path(__file__).resolve().parents[1] / gt_path).resolve()
         gt=None
         for iteration in dict.fromkeys(iterations):
             checkpoint, mesh = input_paths(model, method, iteration, a.mesh_name)

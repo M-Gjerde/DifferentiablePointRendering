@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 16
+    adjoint_passes: int = 12
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -56,7 +56,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 20_000
+    iterations: int = 30_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -64,14 +64,14 @@ class OptimizationConfig:
     use_log_scale: bool = True
     # Opt-in shifted-log parameterization rho=log(s+s0), in scene units.
     # Zero preserves ordinary rho=log(s).
-    shifted_log_scale_offset: float = 0.5
+    shifted_log_scale_offset: float = 0.3
 
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0005
+    learning_rate_scale: float = 0.004
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -86,7 +86,7 @@ class OptimizationConfig:
     position_lr_scale_init: float = 30.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 17_000
+    lr_decay_max_steps: int = int(iterations * 0.9)
 
     # Objective: photometric loss
     ssim_weight: float = 0.0
@@ -112,7 +112,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 1000
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -132,8 +132,8 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 5.0e-4
-    densification_grad_abs_min_final: float = 5.0e-4
+    densification_grad_abs_min: float = 3.0e-3
+    densification_grad_abs_min_final: float = 3.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -153,7 +153,7 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.7
+    densification_split_scale_factor: float = 1.2
     densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
@@ -170,7 +170,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 2048
+    mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
     mesh_albedo_texture_size: int = 1024
     mesh_uv_partitions: int = 0
