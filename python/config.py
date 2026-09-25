@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import math
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -64,14 +65,14 @@ class OptimizationConfig:
     use_log_scale: bool = True
     # Opt-in shifted-log parameterization rho=log(s+s0), in scene units.
     # Zero preserves ordinary rho=log(s).
-    shifted_log_scale_offset: float = 0.3
+    shifted_log_scale_offset: float = 0.1
 
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0015
+    learning_rate_scale: float = 0.003
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -83,7 +84,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 40.0
+    position_lr_scale_init: float = 50.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = int(iterations * 0.9)
@@ -112,7 +113,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 1000
+    densification_interval: int = 500
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
@@ -153,7 +154,7 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.2
+    densification_split_scale_factor: float = 1.5
     densification_split_offset_scale: float = 0.5
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
@@ -292,15 +293,46 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
     if config.checkpoint is None:
         return
 
+    if config.checkpoint == Path("__output__"):
+        if "output_dir" not in cli_overrides:
+            raise ValueError("--checkpoint without a path requires -o/--output-dir")
+        config.checkpoint = config.output_dir
     checkpoint_dir = config.checkpoint.expanduser().resolve()
     if not checkpoint_dir.is_dir():
         raise NotADirectoryError(f"--checkpoint is not an existing run directory: {checkpoint_dir}")
 
-    checkpoint_points_path = checkpoint_dir / "points_final.ply"
-    if not checkpoint_points_path.is_file():
-        raise FileNotFoundError(f"Could not find points_final.ply in checkpoint directory: {checkpoint_points_path}")
-
     run_config = _load_checkpoint_run_config(checkpoint_dir)
+    snapshots = []
+    for path in (checkpoint_dir / "points").glob("iter_*_points.ply"):
+        match = re.fullmatch(r"iter_(\d+)_points\.ply", path.name)
+        if match and path.is_file() and path.stat().st_size > 0:
+            snapshots.append((int(match.group(1)), path))
+    final_points = checkpoint_dir / "points_final.ply"
+    if final_points.is_file():
+        snapshots.append((_checkpoint_resume_iteration_offset(checkpoint_dir, run_config), final_points))
+    if not snapshots:
+        raise FileNotFoundError(f"No saved point-cloud checkpoints found in {checkpoint_dir}")
+    saved_iteration, checkpoint_points_path = max(snapshots, key=lambda item: item[0])
+
+    # Restore saved training settings; paths and bookkeeping are handled below.
+    excluded = {
+        "checkpoint", "output_dir", "pointcloud_ply", "iterations",
+        "resume_iteration_offset", "output_dir_is_explicit",
+        "scene_xml_is_explicit", "pointcloud_ply_is_explicit",
+        "assets_root", "scene_xml", "dataset_path", "target_color_space",
+    }
+    for field_name in OptimizationConfig.__dataclass_fields__:
+        if field_name in excluded or field_name in cli_overrides:
+            continue
+        value = _checkpoint_config_value(run_config, field_name)
+        if value is not None:
+            if field_name == "ground_truth":
+                value = Path(value)
+            # Saved per-parameter rates already include the old multiplier.
+            if field_name.startswith("learning_rate_"):
+                old_multiplier = float(_checkpoint_config_value(run_config, "learning_rate") or 1.0)
+                value = float(value) / old_multiplier
+            setattr(config, field_name, value)
 
     inherited_fields = (
         ("assets_root", Path, False),
@@ -328,10 +360,34 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
     config.pointcloud_ply = str(checkpoint_points_path)
     config.pointcloud_ply_is_explicit = True
     if "resume_iteration_offset" not in cli_overrides:
-        config.resume_iteration_offset = _checkpoint_resume_iteration_offset(
-            checkpoint_dir=checkpoint_dir,
-            run_config=run_config,
+        config.resume_iteration_offset = saved_iteration
+    target_iteration = int(config.iterations)
+    if config.resume_iteration_offset < 0 or target_iteration <= config.resume_iteration_offset:
+        raise ValueError(
+            f"Target --iterations ({target_iteration}) must exceed checkpoint iteration "
+            f"({config.resume_iteration_offset}), which must be non-negative."
         )
+    config.iterations = target_iteration - config.resume_iteration_offset
+
+    # prepare_run clears its destination: never let it delete the source run.
+    destination = config.output_dir.expanduser().resolve()
+    if "output_dir" not in cli_overrides or destination == checkpoint_dir:
+        destination = checkpoint_dir.with_name(
+            f"{checkpoint_dir.name}_resume_{config.resume_iteration_offset:05d}"
+        )
+        base_destination = destination
+        suffix = 1
+        while destination.exists():
+            destination = base_destination.with_name(f"{base_destination.name}_{suffix}")
+            suffix += 1
+        config.output_dir = destination
+        config.output_dir_is_explicit = True
+    elif destination in checkpoint_dir.parents or checkpoint_dir in destination.parents:
+        raise ValueError("Checkpoint output must be separate from the source run directory")
+
+    print(f"[checkpoint] Target iteration   : {target_iteration}")
+    print(f"[checkpoint] Output directory   : {config.output_dir}")
+    print("[checkpoint] Restoring PLY parameters; optimizer moments and RNG state restart.")
 
     print(f"[checkpoint] Run directory       : {checkpoint_dir}")
     print(f"[checkpoint] Scene XML           : {config.scene_xml}")
@@ -379,10 +435,12 @@ def parse_args() -> OptimizationConfig:
     inputs.add_argument(
         "--checkpoint",
         type=Path,
+        nargs="?",
+        const=Path("__output__"),
         help=(
-            "Prior optimization run directory. Reuses scene/dataset/assets from "
-            "<checkpoint>/run_config.json and uses <checkpoint>/points_final.ply "
-            "as this run's initial point cloud."
+            "Resume the latest saved point cloud from a run directory (defaults to -o). "
+            "Restores saved settings and continues to --iterations total (default 30000). "
+            "Optimizer moments restart; output defaults to a new sibling directory."
         ),
     )
     inputs.add_argument(
@@ -390,14 +448,13 @@ def parse_args() -> OptimizationConfig:
         type=int,
         help=(
             "Global iteration offset for resumed schedules. Defaults to the "
-            "checkpoint metrics.csv max iteration, falling back to the "
-            "checkpoint run_config iterations."
+            "selected snapshot iteration; final PLYs use metrics.csv or run_config."
         ),
     )
     inputs.add_argument("--device", type=str)
 
     optimizer = parser.add_argument_group("optimizer and learning-rate schedule")
-    optimizer.add_argument("--iterations", type=int)
+    optimizer.add_argument("--iterations", type=int, help="Total target iteration, including checkpoint iterations (default: 30000).")
     optimizer.add_argument(
         "--optimizer",
         dest="optimizer_type",

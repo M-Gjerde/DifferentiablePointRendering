@@ -8,6 +8,7 @@ import statistics
 import math
 
 DEFAULTS = {
+    'geosvr': ('/home/magnus/phd/pbdr/GeoSVR/output/batch_geosvr', '_2dgs', 'mesh.ply'),
     'ours': (str(Path(__file__).resolve().parents[1] / 'OptimizationOutput' / 'paper'), '', 'fuse_post.ply'),
     'gof': ('/home/magnus/phd/pbdr/GOF/output/batch_gof', '_2dgs', 'mesh.ply'),
     'pgsr': ('/home/magnus/phd/pbdr/PGSR/output/batch_pgsr', '_2dgs', 'fuse_post_auto.ply'),
@@ -87,6 +88,8 @@ def format_training_time(seconds):
 
 
 def checkpoints(model, method=None):
+    if method == 'geosvr':
+        return sorted(int(p.name[4:10]) for p in (model/'checkpoints').glob('iter??????_model.pt') if p.name[4:10].isdigit())
     if method == 'neus':
         return sorted(int(p.stem[5:]) for p in (model / 'checkpoints').glob('ckpt_*.pth')
                       if p.stem[5:].isdigit() and p.is_file())
@@ -95,6 +98,9 @@ def checkpoints(model, method=None):
 
 
 def input_paths(model, method, iteration, mesh_name):
+    if method == 'geosvr':
+        checkpoint = model/'checkpoints'/(f'iter{iteration:06d}_model.pt' if iteration is not None else 'missing.pt')
+        return checkpoint, model/'meshes'/f'iteration_{iteration}'/mesh_name
     if method == 'ours':
         return model / 'points_final.ply', model / 'mesh' / mesh_name
     if method == 'neus':
@@ -204,10 +210,10 @@ def main(method, argv=None):
                 if iteration is None and method != 'ours':
                     raise FileNotFoundError(f'No saved checkpoints under {model}')
                 if not checkpoint.is_file():raise FileNotFoundError(f'Missing checkpoint: {checkpoint}')
-                if method != 'neus':
+                if method not in ('neus', 'geosvr'):
                     row['point_count']=point_count(checkpoint)
                 else:
-                    row['point_count_note']='Not applicable: implicit SDF network, not optimized surface points'
+                    row['point_count_note']='Not applicable: voxel representation' if method == 'geosvr' else 'Not applicable: implicit SDF network, not optimized surface points'
                 if not mesh.is_file():
                     if method == 'neus':
                         preview = model / 'meshes' / f'{iteration:08d}.ply'
@@ -218,7 +224,7 @@ def main(method, argv=None):
                             f'Run NeuS extract_mesh_all.py --scenes {name} --output-root {output} first.')
                     raise FileNotFoundError(f'Missing reconstruction: {mesh}')
                 extraction_record = mesh.parent / 'batch_mesh.json'
-                if method in ('neus', 'gaussian_wrapping') and extraction_record.exists():
+                if method in ('neus', 'gaussian_wrapping', 'geosvr', 'gof') and extraction_record.exists():
                     extraction = json.loads(extraction_record.read_text())
                     if extraction.get('status') != 'complete':
                         raise ValueError(f'Extraction is not marked complete: {extraction_record}')
@@ -233,7 +239,7 @@ def main(method, argv=None):
                 values=compute_paper_ready_point_to_triangle_distance(recon_points,recon,gt_points,gt_mesh,scale=1.0)
                 row.update(cd=values['cd'],accuracy=values['accuracy'],completion=values['completion'],
                            cd_bbox_percent=100*values['cd']/diagonal,gt_bbox_diagonal=diagonal,status='complete')
-                count_label = f"{row['point_count']:,}" if row['point_count'] is not None else 'N/A (implicit SDF)'
+                count_label = f"{row['point_count']:,}" if row['point_count'] is not None else ('N/A (voxels)' if method == 'geosvr' else 'N/A (implicit SDF)')
                 print(f"{name} [{iteration}]: CD={row['cd']:.6g}, Accuracy={row['accuracy']:.6g}, Completion={row['completion']:.6g}, Points={count_label}, {time_label}={row['training_time']}",flush=True)
             except Exception as error:
                 row['error']=f'{type(error).__name__}: {error}'
@@ -249,7 +255,9 @@ def main(method, argv=None):
     write_csv(result/'per_scene.csv',rows)
     write_csv(result/'scene_averages.csv',summary['per_scene'])
     write_csv(result/'iteration_averages.csv',summary['per_iteration'])
-    if method == 'neus':
+    if method == 'geosvr':
+        print(f"Average points per scene: N/A (voxel representation).\nResults: {result}")
+    elif method == 'neus':
         print(f"Average points per scene: N/A (implicit SDF).\nResults: {result}")
     else:
         print(f"Average points per measured scene: {summary['average_points_per_scene']} ({summary['point_count_scene_count']} scenes).\nResults: {result}")
