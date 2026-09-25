@@ -71,7 +71,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.001
+    learning_rate_scale: float = 0.0015
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -83,7 +83,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 30.0
+    position_lr_scale_init: float = 40.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = int(iterations * 0.9)
