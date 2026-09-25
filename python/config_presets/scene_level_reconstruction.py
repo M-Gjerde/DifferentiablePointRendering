@@ -89,7 +89,7 @@ class OptimizationConfig:
     curvature_scale_weight: float = 0.0e-0
 
     # Rendering and camera sampling
-    share_local_layer_direct_lighting: bool = True
+    share_local_layer_direct_lighting: bool = False
     one_camera_per_iteration: bool = True
     camera_sampling_mode: str = "round_robin"  # "round_robin" or "random"
     camera_sampling_seed: int = 0

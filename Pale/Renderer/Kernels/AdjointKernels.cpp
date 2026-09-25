@@ -697,10 +697,9 @@ namespace Pale {
         if (suppressPhotometric) record.accumulatePhotometric = 0u;
     }
 
-    // Shared slab/light work items can produce more than the fixed scratch
-    // record budget when a full slab and several shadow occluders are active.
-    // Accumulate those records directly into the same gradient destinations
-    // used by the ordinary reduction kernel; all writes remain device atomics.
+    // Slab/light producers and the scratch-record reduction share this
+    // accumulator, including validation and per-camera densification statistics.
+    // All writes remain device atomics.
     template<typename GradientsType>
     SYCL_EXTERNAL inline bool accumulateSurfelGradientRecordDirect(
         const GradientsType &gradients,
@@ -794,6 +793,88 @@ namespace Pale {
         return true;
     }
 
+    // Shared by first-bounce emission and the camera-event kernel. Lighting is
+    // supplied by the caller so target and visibility derivatives can reuse it.
+    template<typename SceneType>
+    SYCL_EXTERNAL inline SurfelGradientRecord makeMeasurementTargetGradientRecord(
+        const SceneType &scene,
+        const SensorGPU &sensor,
+        const MeasurementGradientEvent &eventRecord,
+        uint32_t parameterIndex,
+        float invSpp,
+        const float *alphaEff,
+        const float3 *slabIncidentIrradiance,
+        const float3 *slabDirectRadiance) {
+        const uint32_t slabCount = eventRecord.surfelSlabCount;
+        const PointCloudSurfaceRecord &xSurface = eventRecord.xSurface[parameterIndex];
+        const uint32_t primitiveIndex = xSurface.primitiveIndex;
+        const float3 pathWeightAtTarget = eventRecord.xPathThroughput * eventRecord.transmission;
+        const Point &surfelX = scene.points[primitiveIndex];
+        const ReconstructedSurfelState xState = reconstructSurfelState(surfelX, xSurface);
+        float3 dSlabRadianceDAlphaK{0.0f};
+        for (uint32_t contributionIndex = 0u; contributionIndex < slabCount; ++contributionIndex) {
+            const float dWeightDAlphaK = computeNormalizedSlabWeightDerivativeWrtAlpha(
+                alphaEff,
+                slabCount,
+                contributionIndex,
+                parameterIndex);
+            dSlabRadianceDAlphaK += slabDirectRadiance[contributionIndex] * dWeightDAlphaK;
+        }
+
+        const float dLossDAlphaK = dot(pathWeightAtTarget, dSlabRadianceDAlphaK) * invSpp;
+        const float3 dAlphaEffDPosition =
+                computeAlphaEffectiveGradientWrtTranslation(surfelX, xSurface, xState, sensor.camera);
+        const float3 gradPosition = dLossDAlphaK * dAlphaEffDPosition;
+        const float2 dAlphaEffDScale = computeAlphaEffectiveGradientWrtScale(surfelX, xSurface);
+        const float gradScaleU = dLossDAlphaK * dAlphaEffDScale.x();
+        const float gradScaleV = dLossDAlphaK * dAlphaEffDScale.y();
+        const float3 dAlphaEffDWorldRotation = computeAlphaEffectiveGradientWrtWorldRotation(
+            surfelX,
+            xSurface,
+            xState,
+            sensor.camera.pos);
+        const float3 gradWorldRotation = dLossDAlphaK * dAlphaEffDWorldRotation;
+        const float3 gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
+            surfelX.tanU,
+            surfelX.tanV,
+            gradWorldRotation);
+        const float gradEta = dLossDAlphaK * xSurface.alphaGeom;
+        const float u = xSurface.uv.x();
+        const float v = xSurface.uv.y();
+        const float oneMinusR2 = 1.0f - u * u - v * v;
+        float gradBeta = 0.0f;
+        if (oneMinusR2 > 1.0e-8f) {
+            const float betaScale = 4.0f * sycl::exp(surfelX.beta);
+            const float dAlphaGeomDBeta =
+                betaScale * sycl::log(oneMinusR2) * xSurface.alphaGeom;
+            gradBeta = dLossDAlphaK * surfelX.opacity * dAlphaGeomDBeta;
+        }
+
+        const float3 incidentIrradiance = slabIncidentIrradiance[parameterIndex];
+        const float albedoScale =
+                surfelX.alpha_r * M_1_PIf * eventRecord.layerWeights[parameterIndex] * invSpp;
+        SurfelGradientRecord gradientRecord = makeZeroSurfelGradientRecord(primitiveIndex);
+        gradientRecord.gradPositionX = gradPosition.x();
+        gradientRecord.gradPositionY = gradPosition.y();
+        gradientRecord.gradPositionZ = gradPosition.z();
+        gradientRecord.cloneSignalX = gradPosition.x();
+        gradientRecord.cloneSignalY = gradPosition.y();
+        gradientRecord.cloneSignalZ = gradPosition.z();
+        gradientRecord.hasCloneSignal = 1u;
+        gradientRecord.gradScaleU = gradScaleU;
+        gradientRecord.gradScaleV = gradScaleV;
+        gradientRecord.gradRotationX = gradRotation.x();
+        gradientRecord.gradRotationY = gradRotation.y();
+        gradientRecord.gradRotationZ = gradRotation.z();
+        gradientRecord.gradEta = gradEta;
+        gradientRecord.gradBeta = gradBeta;
+        gradientRecord.gradAlbedoR = pathWeightAtTarget.x() * incidentIrradiance.x() * albedoScale;
+        gradientRecord.gradAlbedoG = pathWeightAtTarget.y() * incidentIrradiance.y() * albedoScale;
+        gradientRecord.gradAlbedoB = pathWeightAtTarget.z() * incidentIrradiance.z() * albedoScale;
+        setRelativeDensificationSignal(gradientRecord, sensor, xSurface.pathId);
+        return gradientRecord;
+    }
+
     template<typename SceneType, typename SettingsType>
     SYCL_EXTERNAL inline void appendFusedFirstBounceMeasurementGradientRecords(
         const SceneType &scene,
@@ -819,7 +900,6 @@ namespace Pale {
         }
 
         const float invSpp = 1.0f / static_cast<float>(settings.adjointSamplesPerPixel);
-        const float3 pathWeightAtTarget = eventRecord.xPathThroughput * eventRecord.transmission;
         float alphaEff[kMaxLocalSurfelHits];
         float3 slabIncidentIrradiance[kMaxLocalSurfelHits];
         float3 slabDirectRadiance[kMaxLocalSurfelHits];
@@ -840,69 +920,9 @@ namespace Pale {
                 continue;
             }
 
-            const Point &surfelX = scene.points[primitiveIndex];
-            const ReconstructedSurfelState xState = reconstructSurfelState(surfelX, xSurface);
-            float3 dSlabRadianceDAlphaK{0.0f};
-            for (uint32_t contributionIndex = 0u; contributionIndex < slabCount; ++contributionIndex) {
-                const float dWeightDAlphaK = computeNormalizedSlabWeightDerivativeWrtAlpha(
-                    alphaEff,
-                    slabCount,
-                    contributionIndex,
-                    parameterIndex);
-                dSlabRadianceDAlphaK += slabDirectRadiance[contributionIndex] * dWeightDAlphaK;
-            }
-
-            const float dLossDAlphaK = dot(pathWeightAtTarget, dSlabRadianceDAlphaK) * invSpp;
-            const float3 dAlphaEffDPosition =
-                    computeAlphaEffectiveGradientWrtTranslation(surfelX, xSurface, xState, sensor.camera);
-            const float3 gradPosition = dLossDAlphaK * dAlphaEffDPosition;
-            const float2 dAlphaEffDScale = computeAlphaEffectiveGradientWrtScale(surfelX, xSurface);
-            const float gradScaleU = dLossDAlphaK * dAlphaEffDScale.x();
-            const float gradScaleV = dLossDAlphaK * dAlphaEffDScale.y();
-            const float3 dAlphaEffDWorldRotation = computeAlphaEffectiveGradientWrtWorldRotation(
-                surfelX,
-                xSurface,
-                xState,
-                sensor.camera.pos);
-            const float3 gradWorldRotation = dLossDAlphaK * dAlphaEffDWorldRotation;
-            const float3 gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
-                surfelX.tanU,
-                surfelX.tanV,
-                gradWorldRotation);
-            const float gradEta = dLossDAlphaK * xSurface.alphaGeom;
-            const float u = xSurface.uv.x();
-            const float v = xSurface.uv.y();
-            const float oneMinusR2 = 1.0f - u * u - v * v;
-            float gradBeta = 0.0f;
-            if (oneMinusR2 > 1.0e-8f) {
-                const float betaScale = 4.0f * sycl::exp(surfelX.beta);
-                const float dAlphaGeomDBeta =
-                    betaScale * sycl::log(oneMinusR2) * xSurface.alphaGeom;
-                gradBeta = dLossDAlphaK * surfelX.opacity * dAlphaGeomDBeta;
-            }
-
-            const float3 incidentIrradiance = slabIncidentIrradiance[parameterIndex];
-            const float albedoScale =
-                    surfelX.alpha_r * M_1_PIf * eventRecord.layerWeights[parameterIndex] * invSpp;
-            SurfelGradientRecord gradientRecord = makeZeroSurfelGradientRecord(primitiveIndex);
-            gradientRecord.gradPositionX = gradPosition.x();
-            gradientRecord.gradPositionY = gradPosition.y();
-            gradientRecord.gradPositionZ = gradPosition.z();
-            gradientRecord.cloneSignalX = gradPosition.x();
-            gradientRecord.cloneSignalY = gradPosition.y();
-            gradientRecord.cloneSignalZ = gradPosition.z();
-            gradientRecord.hasCloneSignal = 1u;
-            gradientRecord.gradScaleU = gradScaleU;
-            gradientRecord.gradScaleV = gradScaleV;
-            gradientRecord.gradRotationX = gradRotation.x();
-            gradientRecord.gradRotationY = gradRotation.y();
-            gradientRecord.gradRotationZ = gradRotation.z();
-            gradientRecord.gradEta = gradEta;
-            gradientRecord.gradBeta = gradBeta;
-            gradientRecord.gradAlbedoR = pathWeightAtTarget.x() * incidentIrradiance.x() * albedoScale;
-            gradientRecord.gradAlbedoG = pathWeightAtTarget.y() * incidentIrradiance.y() * albedoScale;
-            gradientRecord.gradAlbedoB = pathWeightAtTarget.z() * incidentIrradiance.z() * albedoScale;
-            setRelativeDensificationSignal(gradientRecord, sensor, xSurface.pathId);
+            const SurfelGradientRecord gradientRecord = makeMeasurementTargetGradientRecord(
+                scene, sensor, eventRecord, parameterIndex, invSpp,
+                alphaEff, slabIncidentIrradiance, slabDirectRadiance);
             appendGradientRecordBounded(
                 gradientRecordCounter,
                 gradientRecords,
@@ -1268,186 +1288,15 @@ namespace Pale {
             debugImage = pkg.debugImages[cameraIndex];
         }
         MeasurementGradientEvent *measurementEvents = pkg.intermediates.measurementEvents;
-        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
-        uint32_t *gradientRecordCounter = pkg.intermediates.countGradientRecords;
-        const uint32_t gradientRecordCapacity = pkg.intermediates.maxGradientRecordCount;
+        const auto gradients = pkg.gradients;
+        const uint32_t cameraSlot = sensor.cameraSlotIndex;
+        const uint32_t cameraSlotCount = static_cast<uint32_t>(gradients.cameraSlotCount);
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
         const uint32_t pointCount = pkg.gradients.numPoints;
-        if (!(settings.rendererDebugShareLocalLayerDirectLighting &&
-              settings.enableAdjointDirectLight &&
-              settings.numAdjointPathShadowRays > 0u)) {
-            ScopedTimer timer("measurementGradientEventTargetRecords", spdlog::level::debug);
-            const auto targetWorkItemCount =
-                    static_cast<std::size_t>(measurementEventCount) * kMaxLocalSurfelHits;
-            sycl::event targetKernelEvent = queue.submit([&](sycl::handler &cgh) {
-                sycl::local_accessor<float, 1> alphaEffLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                sycl::local_accessor<float, 1> incidentRLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                sycl::local_accessor<float, 1> incidentGLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                sycl::local_accessor<float, 1> incidentBLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                sycl::local_accessor<float, 1> directRLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                sycl::local_accessor<float, 1> directGLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                sycl::local_accessor<float, 1> directBLocal(sycl::range<1>(kMaxLocalSurfelHits), cgh);
-                cgh.parallel_for(
-                    sycl::nd_range<1>(sycl::range<1>(targetWorkItemCount), sycl::range<1>(kMaxLocalSurfelHits)),
-                    [=](sycl::nd_item<1> item) {
-                        const uint32_t parameterIndex = static_cast<uint32_t>(item.get_local_id(0));
-                        const uint32_t eventIndex = static_cast<uint32_t>(item.get_group(0));
-                        const MeasurementGradientEvent eventRecord = measurementEvents[eventIndex];
-                        const uint32_t slabCount = eventRecord.surfelSlabCount;
-                        const bool validEvent = slabCount > 0u && slabCount <= kMaxLocalSurfelHits;
-
-                        alphaEffLocal[parameterIndex] = 0.0f;
-                        incidentRLocal[parameterIndex] = 0.0f;
-                        incidentGLocal[parameterIndex] = 0.0f;
-                        incidentBLocal[parameterIndex] = 0.0f;
-                        directRLocal[parameterIndex] = 0.0f;
-                        directGLocal[parameterIndex] = 0.0f;
-                        directBLocal[parameterIndex] = 0.0f;
-                        item.barrier(sycl::access::fence_space::local_space);
-                        if (validEvent && settings.rendererDebugShareLocalLayerDirectLighting &&
-                            parameterIndex == 0u) {
-                            float alphaEff[kMaxLocalSurfelHits];
-                            float3 incidentIrradiance[kMaxLocalSurfelHits];
-                            float3 directRadiance[kMaxLocalSurfelHits];
-                            computeMeasurementSlabDirectLighting(
-                                scene,
-                                settings,
-                                eventRecord,
-                                pointCount,
-                                alphaEff,
-                                incidentIrradiance,
-                                directRadiance);
-                            for (uint32_t i = 0u; i < kMaxLocalSurfelHits; ++i) {
-                                alphaEffLocal[i] = alphaEff[i];
-                                incidentRLocal[i] = incidentIrradiance[i].x();
-                                incidentGLocal[i] = incidentIrradiance[i].y();
-                                incidentBLocal[i] = incidentIrradiance[i].z();
-                                directRLocal[i] = directRadiance[i].x();
-                                directGLocal[i] = directRadiance[i].y();
-                                directBLocal[i] = directRadiance[i].z();
-                            }
-                        } else if (validEvent &&
-                                   !settings.rendererDebugShareLocalLayerDirectLighting &&
-                                   parameterIndex < slabCount) {
-                            const PointCloudSurfaceRecord &surface = eventRecord.xSurface[parameterIndex];
-                            const uint32_t primitiveIndex = surface.primitiveIndex;
-                            if (primitiveIndex != kInvalidIndex && primitiveIndex < pointCount) {
-                                const Point &surfel = scene.points[primitiveIndex];
-                                const ReconstructedSurfelState state = reconstructSurfelState(surfel, surface);
-                                alphaEffLocal[parameterIndex] =
-                                        sycl::clamp(surfel.opacity * surface.alphaGeom, 0.0f, 1.0f);
-                                const float3 incidentIrradiance = computeIncidentRadianceFromPointLights(
-                                    scene,
-                                    settings,
-                                    state.position,
-                                    state.orientedNormal,
-                                    eventRecord.directLightEps[parameterIndex]);
-                                const float3 slabDirectRadiance =
-                                        incidentIrradiance * (surfel.alpha_r * surfel.albedo * M_1_PIf);
-                                incidentRLocal[parameterIndex] = incidentIrradiance.x();
-                                incidentGLocal[parameterIndex] = incidentIrradiance.y();
-                                incidentBLocal[parameterIndex] = incidentIrradiance.z();
-                                directRLocal[parameterIndex] = slabDirectRadiance.x();
-                                directGLocal[parameterIndex] = slabDirectRadiance.y();
-                                directBLocal[parameterIndex] = slabDirectRadiance.z();
-                            }
-                        }
-
-                        item.barrier(sycl::access::fence_space::local_space);
-                        if (!validEvent || parameterIndex >= slabCount) return;
-
-                        const PointCloudSurfaceRecord &xSurface = eventRecord.xSurface[parameterIndex];
-                        const uint32_t primitiveIndex = xSurface.primitiveIndex;
-                        if (primitiveIndex == kInvalidIndex || primitiveIndex >= pointCount) return;
-
-                        float alphaEff[kMaxLocalSurfelHits];
-                        for (uint32_t alphaIndex = 0u; alphaIndex < kMaxLocalSurfelHits; ++alphaIndex) {
-                            alphaEff[alphaIndex] = alphaEffLocal[alphaIndex];
-                        }
-
-                        const Point &surfelX = scene.points[primitiveIndex];
-                        const ReconstructedSurfelState xState = reconstructSurfelState(surfelX, xSurface);
-                        float3 dSlabRadianceDAlphaK{0.0f};
-                        for (uint32_t contributionIndex = 0u; contributionIndex < slabCount; ++contributionIndex) {
-                            const float dWeightDAlphaK = computeNormalizedSlabWeightDerivativeWrtAlpha(
-                                alphaEff,
-                                slabCount,
-                                contributionIndex,
-                                parameterIndex);
-                            dSlabRadianceDAlphaK += float3{
-                                directRLocal[contributionIndex],
-                                directGLocal[contributionIndex],
-                                directBLocal[contributionIndex]} * dWeightDAlphaK;
-                        }
-                        const float3 pathWeightAtTarget = eventRecord.xPathThroughput * eventRecord.transmission;
-                        const float dLossDAlphaK = dot(pathWeightAtTarget, dSlabRadianceDAlphaK) * invSpp;
-                        const float3 dAlphaEffDPosition =
-                                computeAlphaEffectiveGradientWrtTranslation(
-                                    surfelX,
-                                    xSurface,
-                                    xState,
-                                    sensor.camera);
-                        const float3 gradPosition = dLossDAlphaK * dAlphaEffDPosition;
-                        const float2 dAlphaEffDScale = computeAlphaEffectiveGradientWrtScale(surfelX, xSurface);
-                        const float gradScaleU = dLossDAlphaK * dAlphaEffDScale.x();
-                        const float gradScaleV = dLossDAlphaK * dAlphaEffDScale.y();
-                        const float3 dAlphaEffDWorldRotation = computeAlphaEffectiveGradientWrtWorldRotation(
-                            surfelX,
-                            xSurface,
-                            xState,
-                            sensor.camera.pos);
-                        const float3 gradWorldRotation = dLossDAlphaK * dAlphaEffDWorldRotation;
-                        const float3 gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
-                            surfelX.tanU,
-                            surfelX.tanV,
-                            gradWorldRotation);
-                        const float gradEta = dLossDAlphaK * xSurface.alphaGeom;
-                        const float u = xSurface.uv.x();
-                        const float v = xSurface.uv.y();
-                        const float oneMinusR2 = 1.0f - u * u - v * v;
-                        float gradBeta = 0.0f;
-                        if (oneMinusR2 > 1.0e-8f) {
-                            const float betaScale = 4.0f * sycl::exp(surfelX.beta);
-                            const float dAlphaGeomDBeta = betaScale * sycl::log(oneMinusR2) * xSurface.alphaGeom;
-                            gradBeta = dLossDAlphaK * surfelX.opacity * dAlphaGeomDBeta;
-                        }
-                        const float albedoScale =
-                                surfelX.alpha_r * M_1_PIf * eventRecord.layerWeights[parameterIndex] * invSpp;
-                        SurfelGradientRecord gradientRecord = makeZeroSurfelGradientRecord(primitiveIndex);
-                        gradientRecord.gradPositionX = gradPosition.x();
-                        gradientRecord.gradPositionY = gradPosition.y();
-                        gradientRecord.gradPositionZ = gradPosition.z();
-                        gradientRecord.cloneSignalX = gradPosition.x();
-                        gradientRecord.cloneSignalY = gradPosition.y();
-                        gradientRecord.cloneSignalZ = gradPosition.z();
-                        gradientRecord.hasCloneSignal = 1u;
-                        gradientRecord.gradScaleU = gradScaleU;
-                        gradientRecord.gradScaleV = gradScaleV;
-                        gradientRecord.gradRotationX = gradRotation.x();
-                        gradientRecord.gradRotationY = gradRotation.y();
-                        gradientRecord.gradRotationZ = gradRotation.z();
-                        gradientRecord.gradEta = gradEta;
-                        gradientRecord.gradBeta = gradBeta;
-                        gradientRecord.gradAlbedoR =
-                                pathWeightAtTarget.x() * incidentRLocal[parameterIndex] * albedoScale;
-                        gradientRecord.gradAlbedoG =
-                                pathWeightAtTarget.y() * incidentGLocal[parameterIndex] * albedoScale;
-                        gradientRecord.gradAlbedoB =
-                                pathWeightAtTarget.z() * incidentBLocal[parameterIndex] * albedoScale;
-                        setRelativeDensificationSignal(gradientRecord, sensor, xSurface.pathId);
-                        if (appendGradientRecordBounded(gradientRecordCounter, gradientRecords, gradientRecordCapacity,
-                                                        gradientRecord)) {
-                            accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
-                                                              settings.surfelIndexForDebugImages, xSurface.pathId,
-                                                              gradientRecord);
-                        }
-                    });
-            });
-            targetKernelEvent.wait();
-        }
-
-        ScopedTimer visibilityTimer("measurementGradientEventVisibilityRecords", spdlog::level::debug);
-        sycl::event kernelEvent3 = queue.parallel_for(sycl::range<1>(measurementEventCount), [=](sycl::id<1> globalId) {
+        // One work item evaluates each slab's lighting once, then emits both
+        // target and camera-visibility gradients. Each member keeps its own
+        // shadow connection when lighting is not shared.
+        sycl::event kernelEvent = queue.parallel_for(sycl::range<1>(measurementEventCount), [=](sycl::id<1> globalId) {
             const uint32_t eventIndex = static_cast<uint32_t>(globalId[0]);
             const MeasurementGradientEvent eventRecord = measurementEvents[eventIndex];
             const uint32_t slabCount = eventRecord.surfelSlabCount;
@@ -1464,6 +1313,25 @@ namespace Pale {
                 alphaEff,
                 slabIncidentIrradiance,
                 slabDirectRadiance);
+            // Shared XY events already own the target's point-light terms.
+            if (!(settings.rendererDebugShareLocalLayerDirectLighting &&
+                  settings.enableAdjointDirectLight &&
+                  settings.numAdjointPathShadowRays > 0u)) {
+                for (uint32_t parameterIndex = 0u; parameterIndex < slabCount; ++parameterIndex) {
+                    const PointCloudSurfaceRecord &surface = eventRecord.xSurface[parameterIndex];
+                    if (surface.primitiveIndex == kInvalidIndex || surface.primitiveIndex >= pointCount) continue;
+                    const SurfelGradientRecord gradientRecord = makeMeasurementTargetGradientRecord(
+                        scene, sensor, eventRecord, parameterIndex, invSpp,
+                        alphaEff, slabIncidentIrradiance, slabDirectRadiance);
+                    if (accumulateSurfelGradientRecordDirect(gradients, gradientRecord, cameraSlot, cameraSlotCount)) {
+                        accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
+                                                          settings.surfelIndexForDebugImages, surface.pathId,
+                                                          gradientRecord);
+                    }
+                }
+            }
+            // Emit target gradients before visibility's early exits: even a
+            // black slab can have a nonzero derivative with respect to albedo.
             float3 targetSlabRadiance{0.0f}, targetAnchorPosition{0.0f};
             float targetDistance = 1.0e30f;
             uint32_t anchorSurfaceIndex = 0u;
@@ -1661,8 +1529,7 @@ namespace Pale {
                 gradientRecord.gradBeta = scale * occluder.gradBeta;
                 setRelativeDensificationSignal(
                     gradientRecord, sensor, eventRecord.xSurface[anchorSurfaceIndex].pathId, suppressPhotometric);
-                if (appendGradientRecordBounded(gradientRecordCounter, gradientRecords, gradientRecordCapacity,
-                                                gradientRecord)) {
+                if (accumulateSurfelGradientRecordDirect(gradients, gradientRecord, cameraSlot, cameraSlotCount)) {
                     accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                       settings.surfelIndexForDebugImages,
                                                       eventRecord.xSurface[anchorSurfaceIndex].pathId, gradientRecord);
@@ -1670,7 +1537,7 @@ namespace Pale {
                 suffixTransmittance *= occluder.oneMinusAlpha;
             }
         });
-        kernelEvent3.wait();
+        kernelEvent.wait();
     }
 
     // The shared lighting vertex is detached, so these records need only the
@@ -2146,9 +2013,9 @@ namespace Pale {
             debugImage = pkg.debugImages[cameraIndex];
         }
         MeasurementGradientEventXY *measurementEvents = pkg.intermediates.measurementTwoPointEvents;
-        SurfelGradientRecord *gradientRecords = pkg.intermediates.gradientRecords;
-        uint32_t *gradientRecordCounter = pkg.intermediates.countGradientRecords;
-        const uint32_t gradientRecordCapacity = pkg.intermediates.maxGradientRecordCount;
+        const auto gradients = pkg.gradients;
+        const uint32_t cameraSlot = sensor.cameraSlotIndex;
+        const uint32_t cameraSlotCount = static_cast<uint32_t>(gradients.cameraSlotCount);
         const float invSpp = 1.0f / settings.adjointSamplesPerPixel;
         const uint32_t pointCount = pkg.gradients.numPoints;
         const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
@@ -2157,15 +2024,15 @@ namespace Pale {
         if (eventCount == 0u || maxLocalSurfelHits == 0u) {
             return;
         }
-        const auto xyWorkItemCount = static_cast<std::size_t>(eventCount) * maxLocalSurfelHits;
-        sycl::event kernelEvent4 = queue.parallel_for(sycl::range<1>(xyWorkItemCount), [=](sycl::id<1> globalId) {
-            const uint32_t flatIndex = static_cast<uint32_t>(globalId[0]);
-            const uint32_t eventIndex = flatIndex / maxLocalSurfelHits;
-            const uint32_t localIndex = flatIndex - eventIndex * maxLocalSurfelHits;
+        // Own an event per work item and visit only its actual members. Most
+        // slabs are sparse; reserving a work item (and traversal private state)
+        // for every possible member leaves most lanes inactive. Each member
+        // still reconstructs and differentiates its own light connection.
+        sycl::event kernelEvent4 = queue.parallel_for(sycl::range<1>(eventCount), [=](sycl::id<1> globalId) {
+            const uint32_t eventIndex = static_cast<uint32_t>(globalId[0]);
             const MeasurementGradientEventXY eventRecord = measurementEvents[eventIndex];
             const uint32_t slabCount = eventRecord.surfelSlabCount;
-            if (slabCount == 0u || slabCount > kMaxLocalSurfelHits || localIndex >= slabCount) return;
-            if ((eventRecord.surfaceLightGeometryMask & (1u << localIndex)) == 0u) return;
+            if (slabCount == 0u || slabCount > kMaxLocalSurfelHits) return;
             uint32_t directPointInstanceIndex = kInvalidIndex;
             const bool canUsePointHitBatches =
                     pointHitBatchSize > 1u &&
@@ -2173,26 +2040,28 @@ namespace Pale {
             const float3 lightPositionW = eventRecord.pointLightPositionW;
             const float3 pointLightIntensity = eventRecord.pointLightRadiantIntensity;
             const float3 pathWeight = eventRecord.xPathThroughput;
+            for (uint32_t localIndex = 0u; localIndex < sycl::min(slabCount, maxLocalSurfelHits); ++localIndex) {
+                if ((eventRecord.surfaceLightGeometryMask & (1u << localIndex)) == 0u) continue;
                 const PointCloudSurfaceRecord &xSurface = eventRecord.xSurface[localIndex];
                 const uint32_t xPrimitiveIndex = xSurface.primitiveIndex;
-                if (xPrimitiveIndex == kInvalidIndex || xPrimitiveIndex >= pointCount) return;
+                if (xPrimitiveIndex == kInvalidIndex || xPrimitiveIndex >= pointCount) continue;
                 const float layerWeight = eventRecord.layerWeights[localIndex];
-                if (layerWeight <= 0.0f) return;
+                if (layerWeight <= 0.0f) continue;
                 const Point &surfelX = scene.points[xPrimitiveIndex];
                 const ReconstructedSurfelState xState = reconstructSurfelState(surfelX, xSurface);
                 PointLightGeometry lightGeometry{};
                 if (!computePointLightGeometry(xState.position, xState.orientedNormal, lightPositionW, lightGeometry))
-                    return;
+                    continue;
                 const float3 brdfX = surfelX.alpha_r * surfelX.albedo * M_1_PIf;
                 const float3 transportWithoutTauAndGeometric = pointLightIntensity * layerWeight * brdfX;
                 const float scalarWeightWithoutTauAndGeometric = dot(pathWeight, transportWithoutTauAndGeometric);
                 const bool suppressPhotometric = sycl::fabs(scalarWeightWithoutTauAndGeometric) <= 1.0e-12f;
                 if (suppressPhotometric &&
                     !(sensor.relativeDensification && sensor.densificationFullPosition &&
-                      scalarWeightWithoutTauAndGeometric != 0.0f)) return;
+                      scalarWeightWithoutTauAndGeometric != 0.0f)) continue;
                 const float3 segmentVector = lightPositionW - xState.position;
                 const float targetDistanceSquared = dot(segmentVector, segmentVector);
-                if (targetDistanceSquared <= 1.0e-12f) return;
+                if (targetDistanceSquared <= 1.0e-12f) continue;
                 const float targetDistance = sycl::sqrt(targetDistanceSquared);
                 const float3 rayDirection = segmentVector / targetDistance;
                 const float eps = eventRecord.directLightEps[localIndex];
@@ -2406,7 +2275,7 @@ namespace Pale {
                     }
                 }
 
-                if (blockedByOpaqueGeometry) return;
+                if (blockedByOpaqueGeometry) continue;
 
                 float suffixTransmittance = unrecordedSuffixTransmittance;
                 float3 gradTauWrtSegmentStart{0.0f};
@@ -2433,8 +2302,8 @@ namespace Pale {
                     gradientRecord.gradEta = visibilityScale * occluder.gradEta;
                     gradientRecord.gradBeta = visibilityScale * occluder.gradBeta;
                     setRelativeDensificationSignal(gradientRecord, sensor, xSurface.pathId, suppressPhotometric);
-                    if (appendGradientRecordBounded(gradientRecordCounter, gradientRecords, gradientRecordCapacity,
-                                                    gradientRecord)) {
+                    if (accumulateSurfelGradientRecordDirect(
+                            gradients, gradientRecord, cameraSlot, cameraSlotCount)) {
                         accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                           settings.surfelIndexForDebugImages, xSurface.pathId,
                                                           gradientRecord);
@@ -2467,18 +2336,15 @@ namespace Pale {
                 targetRecord.gradRotationY = gradRotation.y();
                 targetRecord.gradRotationZ = gradRotation.z();
                 setRelativeDensificationSignal(targetRecord, sensor, xSurface.pathId, suppressPhotometric);
-                if (appendGradientRecordBounded(gradientRecordCounter, gradientRecords, gradientRecordCapacity,
-                                                targetRecord)) {
+                if (accumulateSurfelGradientRecordDirect(
+                        gradients, targetRecord, cameraSlot, cameraSlotCount)) {
                     accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                       settings.surfelIndexForDebugImages, xSurface.pathId,
                                                       targetRecord);
                 }
+            }
         });
         kernelEvent4.wait();
-    }
-
-    static void resetGradientRecordCounter(RenderPackage &pkg) {
-        pkg.queue.memset(pkg.intermediates.countGradientRecords, 0, sizeof(uint32_t));
     }
 
     static uint32_t readBoundedGradientRecordCount(RenderPackage &pkg, const char *producerName) {
@@ -3507,75 +3373,20 @@ namespace Pale {
             Log::PA_ERROR("Overflow: materialStartEdgeEventCount={} max={}", materialStartEdgeEventCount,
                           pkg.intermediates.maxMaterialStartEdgeEventCount);
         }
-        const uint32_t cameraSlotIndex = pkg.sensors[cameraIndex].cameraSlotIndex;
-        const uint32_t cameraSlotCount = static_cast<uint32_t>(pkg.gradients.cameraSlotCount);
-        // -------------------------------------------------------------------------
-        // Camera -> slab events.
-        // Scratch starts at zero and is reduced immediately afterwards.
-        // -------------------------------------------------------------------------
-        const uint32_t measurementBatchCapacity =
-            pkg.intermediates.maxGradientRecordCount / kMeasurementGradientRecordsPerEvent;
-        if (safeMeasurementEventCount > 0u && measurementBatchCapacity == 0u) {
-            throw std::runtime_error("Gradient scratch cannot hold one camera measurement event");
-        }
-        for (uint32_t offset = 0u; offset < safeMeasurementEventCount;) {
-            const uint32_t batchCount = std::min(measurementBatchCapacity, safeMeasurementEventCount - offset);
-            RenderPackage batch = pkg;
-            batch.intermediates.measurementEvents += offset;
-            {
-                ScopedTimer timer("resetMeasurementGradientRecordCounter", spdlog::level::debug);
-                resetGradientRecordCounter(batch);
-            }
-            {
-                ScopedTimer timer("measurementGradientEvent", spdlog::level::debug);
-                measurementGradientEvent(batch, cameraIndex, batchCount);
-            }
-            uint32_t gradientRecordCount = 0u;
-            {
-                ScopedTimer timer("readMeasurementGradientRecordCount", spdlog::level::debug);
-                gradientRecordCount = readBoundedGradientRecordCount(batch, "measurementGradientEvent");
-            }
-            if (gradientRecordCount > 0u) {
-                ScopedTimer timer("reduceMeasurementGradientRecords", spdlog::level::debug);
-                reduceSurfelGradientRecords(batch, gradientRecordCount, cameraSlotIndex, cameraSlotCount);
-            }
-            offset += batchCount;
+        // Camera -> slab events share lighting across target and visibility
+        // derivatives and accumulate through the same atomics as XY events.
+        if (safeMeasurementEventCount > 0u) {
+            ScopedTimer timer("measurementGradientEvent", spdlog::level::debug);
+            measurementGradientEvent(pkg, cameraIndex, safeMeasurementEventCount);
         }
         // -------------------------------------------------------------------------
-        // Surface -> point-light events.
-        // Reuse exactly the same scratch memory.
+        // Surface -> point-light events accumulate directly for both lighting
+        // modes. Keep each member's lighting/shadow derivative, without sizing
+        // batches for the worst-case number of scratch records per member.
         // -------------------------------------------------------------------------
-        // Shared lighting accumulates directly. Individual-member lighting can
-        // emit one target plus up to kMaxShadowOccluderRecords per slab member.
-        const uint32_t xyBatchCapacity = pkg.settings.rendererDebugShareLocalLayerDirectLighting
-            ? safeMeasurementTwoPointEventCount
-            : pkg.intermediates.maxGradientRecordCount /
-                (kMaxLocalSurfelHits * kMeasurementXYGradientRecordsPerEvent);
-        if (safeMeasurementTwoPointEventCount > 0u && xyBatchCapacity == 0u) {
-            throw std::runtime_error("Gradient scratch cannot hold one slab/light event");
-        }
-        for (uint32_t offset = 0u; offset < safeMeasurementTwoPointEventCount;) {
-            const uint32_t batchCount = std::min(xyBatchCapacity, safeMeasurementTwoPointEventCount - offset);
-            RenderPackage batch = pkg;
-            batch.intermediates.measurementTwoPointEvents += offset;
-            {
-                ScopedTimer timer("resetMeasurementXYGradientRecordCounter", spdlog::level::debug);
-                resetGradientRecordCounter(batch);
-            }
-            {
-                ScopedTimer timer("measurementGradientEventXY", spdlog::level::debug);
-                measurementGradientEventXY(batch, batchCount, cameraIndex);
-            }
-            uint32_t gradientRecordCount = 0u;
-            {
-                ScopedTimer timer("readMeasurementXYGradientRecordCount", spdlog::level::debug);
-                gradientRecordCount = readBoundedGradientRecordCount(batch, "measurementGradientEventXY");
-            }
-            if (gradientRecordCount > 0u) {
-                ScopedTimer timer("reduceMeasurementXYGradientRecords", spdlog::level::debug);
-                reduceSurfelGradientRecords(batch, gradientRecordCount, cameraSlotIndex, cameraSlotCount);
-            }
-            offset += batchCount;
+        if (safeMeasurementTwoPointEventCount > 0u) {
+            ScopedTimer timer("measurementGradientEventXY", spdlog::level::debug);
+            measurementGradientEventXY(pkg, safeMeasurementTwoPointEventCount, cameraIndex);
         }
         // Same pattern later:
         //

@@ -136,6 +136,35 @@ membership, and traversal capacities are unchanged. Performance comparisons
 should use the same frozen checkpoint and camera, warm JIT caches, and avoid
 concurrent builds or test runs on the host.
 
+## Direct-light gradient accumulation
+
+Individual surfel lighting is the default in the renderer, viewer, and Python
+presets. Slab-to-light XY gradients accumulate through the existing atomic
+gradient accumulator in both lighting modes. The individual mode retains each
+member's own lighting and shadow derivatives; it no longer batches XY work by
+worst-case scratch-record capacity or reads a record count back after each batch.
+
+Camera-to-slab events compute target and camera-visibility gradients in one
+kernel, reusing the same per-member lighting evaluation. These events also use
+the existing atomic accumulator, including per-camera densification statistics.
+The timer `measurementGradientEvent` covers both calculations; separate target,
+visibility, and scratch-reduction timers are no longer emitted for these events.
+Adjoint rays and intersections remain independent of forward rendering.
+
+Run from the repository root to check finite differences, full slabs, camera-event
+equivalence, many-light and sample-count invariance, defaults, and relative
+densification:
+
+```bash
+PYTHONPATH=/path/to/build:python python -m unittest discover -s test \
+  -p 'test_direct_light_gradients.py' -v
+```
+
+The camera-visible shadow-occluder cases use a nonzero null-path
+proposal so rays can reach the receiver behind the occluder.
+`test/benchmark_direct_light.py --help` describes the frozen-checkpoint comparison
+of warmed timings, images, gradients, and per-camera statistics between builds.
+
 ## Relative densification
 
 Training defaults to `densification_relative_error=True`. The auxiliary source

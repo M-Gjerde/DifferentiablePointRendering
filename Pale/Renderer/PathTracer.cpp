@@ -199,8 +199,8 @@ namespace Pale {
         Log::PA_TRACE("Allocated pendingStageXY: {}", Utils::formatBytes(sizePendingCameraSegmentBytes));
         m_intermediates.maxMeasurementEventCount = m_rayQueueCapacity;;
 
-        // Contributions are reduced in bounded batches; additional lights do
-        // not require duplicating the gradient scratch buffer.
+        // First-bounce target records use this scratch buffer. Camera and
+        // point-light event kernels accumulate their gradients directly.
         const uint64_t requiredGradientRecords = std::max<uint64_t>(
             static_cast<uint64_t>(m_rayQueueCapacity) * 10u,
             kMaxLocalSurfelHits * (1u + kMaxSplatEventsPerRay * kMaxLocalSurfelHits));

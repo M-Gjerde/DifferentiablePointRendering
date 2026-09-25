@@ -102,7 +102,7 @@ class OptimizationConfig:
     curvature_scale_weight: float = 0.0e-6
 
     # Rendering model
-    share_local_layer_direct_lighting: bool = True
+    share_local_layer_direct_lighting: bool = False
 
     # Camera sampling
     one_camera_per_iteration: bool = True

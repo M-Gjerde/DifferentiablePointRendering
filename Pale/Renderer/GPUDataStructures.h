@@ -879,7 +879,7 @@ namespace Pale {
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
         uint32_t rendererDebugPointHitBatchSize = 6;
         bool rendererDebugPointHitBatchLookahead = true;
-        bool rendererDebugShareLocalLayerDirectLighting = true;
+        bool rendererDebugShareLocalLayerDirectLighting = false;
     };
 
     inline uint32_t clampRendererDebugLimit(uint32_t requested, uint32_t hardMaximum) {
