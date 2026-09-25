@@ -95,6 +95,8 @@ def checkpoints(model, method=None):
 
 
 def input_paths(model, method, iteration, mesh_name):
+    if method == 'ours':
+        return model / 'points_final.ply', model / 'mesh' / mesh_name
     if method == 'neus':
         checkpoint = model / 'checkpoints' / (f'ckpt_{iteration:06d}.pth' if iteration is not None else 'ckpt_missing.pth')
     else:
@@ -149,7 +151,7 @@ def write_csv(path, rows):
 def main(method, argv=None):
     default_root, suffix, mesh_name = DEFAULTS[method]
     p=argparse.ArgumentParser(description=f'Evaluate all {method} batch meshes and saved surface-point counts.')
-    p.add_argument('--output-root',type=Path,default=Path(default_root),help='Training output root containing <scene>_2dgs or <scene>_pbdr')
+    p.add_argument('--output-root',type=Path,default=Path(default_root),help='Training output root containing scene directories (with method-specific suffixes)')
     p.add_argument('--ground-truth-root',type=Path,default=Path('/home/magnus/phd/models'))
     p.add_argument('--scenes','--scene','--datasets',nargs='+',default=list(SCENES))
     p.add_argument('--iterations',type=int,nargs='+',help='Default: 7000 30000 for 2DGS; latest saved checkpoint otherwise')
@@ -159,6 +161,8 @@ def main(method, argv=None):
     p.add_argument('--results-dir',type=Path,default=Path(__file__).resolve().parent/'evaluation_results'/method)
     p.add_argument('--list-only',action='store_true',help='List selected input paths without computing or writing results')
     a=p.parse_args(argv)
+    if method == 'ours' and a.iterations is not None:
+        p.error('ours evaluates points_final.ply and mesh/<mesh-name>; --iterations does not apply')
     if a.samples<=0 or (a.iterations is not None and any(i<=0 for i in a.iterations)):
         p.error('samples and iterations must be positive')
     if Path(a.mesh_name).name != a.mesh_name:
@@ -181,8 +185,9 @@ def main(method, argv=None):
         import numpy as np
     for name in names:
         model=output/(name+suffix)
-        available=checkpoints(model, method)
-        iterations=a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None])
+        available=checkpoints(model, method) if method != 'ours' else []
+        iterations=([None] if method == 'ours' else
+                    a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None]))
         gt_path=gt_root/(name+'.ply')
         gt=None
         for iteration in dict.fromkeys(iterations):
@@ -196,7 +201,7 @@ def main(method, argv=None):
             row.update(training_seconds=seconds, training_time=format_training_time(seconds), training_time_scope=scope)
             time_label = 'Training(total)' if scope == 'total' else 'Training'
             try:
-                if iteration is None:
+                if iteration is None and method != 'ours':
                     raise FileNotFoundError(f'No saved checkpoints under {model}')
                 if not checkpoint.is_file():raise FileNotFoundError(f'Missing checkpoint: {checkpoint}')
                 if method != 'neus':

@@ -17,7 +17,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 12
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -71,7 +71,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.004
+    learning_rate_scale: float = 0.001
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -154,7 +154,7 @@ class OptimizationConfig:
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
     densification_split_scale_factor: float = 1.2
-    densification_split_offset_scale: float = 0.1
+    densification_split_offset_scale: float = 0.5
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
