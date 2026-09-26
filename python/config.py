@@ -113,7 +113,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 750
+    densification_interval: int = 1000
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
