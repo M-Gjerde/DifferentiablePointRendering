@@ -72,7 +72,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.000055
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.002
+    learning_rate_scale: float = 0.005
     learning_rate_albedo: float = 0.0005
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -84,7 +84,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 50.0
+    position_lr_scale_init: float = 60.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = int(iterations * 0.9)
@@ -95,10 +95,10 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.00025
+    depth_distort_weight: float = 0.0005
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.002
+    normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
@@ -154,8 +154,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.5
-    densification_split_offset_scale: float = 0.5
+    densification_split_scale_factor: float = 1.2
+    densification_split_offset_scale: float = 0.3
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
@@ -169,7 +169,7 @@ class OptimizationConfig:
     rebuild_bvh_interval: int = densification_interval
 
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 1_000
+    mesh_extraction_interval: int = 2_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
