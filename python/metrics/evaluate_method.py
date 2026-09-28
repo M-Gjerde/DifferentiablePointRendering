@@ -8,6 +8,7 @@ import statistics
 import math
 
 DEFAULTS = {
+    'workshop': ('/home/magnus/phd/pbdr/workshop-without-slab/output/batch_workshop_without_slab', '_pbdr', 'fuse_post.ply'),
     'geosvr': ('/home/magnus/phd/pbdr/GeoSVR/output/batch_geosvr', '_2dgs', 'mesh.ply'),
     'ours': (str(Path(__file__).resolve().parents[1] / 'OptimizationOutput' / 'paper'), '', 'fuse_post.ply'),
     'gof': ('/home/magnus/phd/pbdr/GOF/output/batch_gof', '_2dgs', 'mesh.ply'),
@@ -34,6 +35,39 @@ def point_count(path):
                     raise ValueError(f'Missing/invalid vertex count: {path}')
                 return count
         raise ValueError(f'Incomplete PLY: {path}')
+
+
+def workshop_point_count(path):
+    """Count optimized surfels in native ASCII saves, excluding emissive lights."""
+    with path.open(encoding='ascii') as stream:
+        if stream.readline().strip() != 'ply' or stream.readline().strip() != 'format ascii 1.0':
+            raise ValueError(f'Expected native ASCII PLY: {path}')
+        count, properties, vertex = None, [], False
+        for line in stream:
+            fields = line.split()
+            if fields[:1] == ['element']:
+                vertex = fields[1] == 'vertex'
+                if vertex:
+                    count = int(fields[2])
+            elif vertex and fields[:1] == ['property']:
+                properties.append(fields[-1])
+            elif fields == ['end_header']:
+                break
+        else:
+            raise ValueError(f'Incomplete PLY header: {path}')
+        if count is None or count < 0 or 'power' not in properties:
+            raise ValueError(f'Missing vertex count or native power field: {path}')
+        power_index = properties.index('power')
+        lights = 0
+        for _ in range(count):
+            values = stream.readline().split()
+            if len(values) != len(properties):
+                raise ValueError(f'Incomplete vertex data: {path}')
+            power = float(values[power_index])
+            if not math.isfinite(power) or power < 0:
+                raise ValueError(f'Invalid light power: {path}')
+            lights += power > 0
+        return count - lights
 
 
 def training_time(model, iteration):
@@ -97,7 +131,15 @@ def checkpoints(model, method=None):
                   if p.name.split('_')[-1].isdigit() and (p/'point_cloud.ply').is_file())
 
 
-def input_paths(model, method, iteration, mesh_name):
+def input_paths(model, method, iteration, mesh_name, mesh_subdir=None):
+    if method == 'workshop':
+        checkpoint = (model / 'points_final.ply' if iteration is None else
+                      model / 'points' / f'iter_{iteration:05d}_points.ply')
+        directory = (model / 'mesh' if iteration is None else
+                     model / 'meshes' / f'iteration_{iteration}')
+        if mesh_subdir is not None:
+            directory = model / mesh_subdir
+        return checkpoint, directory / mesh_name
     if method == 'geosvr':
         checkpoint = model/'checkpoints'/(f'iter{iteration:06d}_model.pt' if iteration is not None else 'missing.pt')
         return checkpoint, model/'meshes'/f'iteration_{iteration}'/mesh_name
@@ -160,7 +202,9 @@ def main(method, argv=None):
     p.add_argument('--output-root',type=Path,default=Path(default_root),help='Training output root containing scene directories (with method-specific suffixes)')
     p.add_argument('--ground-truth-root',type=Path,default=Path('/home/magnus/phd/models'))
     p.add_argument('--scenes','--scene','--datasets',nargs='+',default=list(SCENES))
-    p.add_argument('--iterations',type=int,nargs='+',help='Default: 7000 30000 for 2DGS; latest saved checkpoint otherwise')
+    p.add_argument('--iterations',type=int,nargs='+',help='Default: final PLY for workshop; 7000 30000 for 2DGS; latest saved checkpoint otherwise')
+    if method == 'workshop':
+        p.add_argument('--mesh-subdir',type=Path,help='Explicit mesh directory relative to each run (default: mesh, or meshes/iteration_<N> with --iterations); use . for a mesh at the run root')
     p.add_argument('--mesh-name',default=mesh_name,help='Exact filename in the method\'s extracted-mesh directory (no fallback)')
     p.add_argument('--samples',type=int,default=5_000_000)
     p.add_argument('--seed',type=int,default=0)
@@ -173,6 +217,9 @@ def main(method, argv=None):
         p.error('samples and iterations must be positive')
     if Path(a.mesh_name).name != a.mesh_name:
         p.error('mesh-name must be a filename')
+    mesh_subdir = getattr(a, 'mesh_subdir', None)
+    if mesh_subdir is not None and (mesh_subdir.is_absolute() or '..' in mesh_subdir.parts):
+        p.error('mesh-subdir must be relative to the run directory without ..')
     names=[]
     for name in a.scenes:
         name=name.removesuffix('_pbdr').removesuffix('_2dgs')
@@ -191,13 +238,17 @@ def main(method, argv=None):
         import numpy as np
     for name in names:
         model=output/(name+suffix)
-        available=checkpoints(model, method) if method != 'ours' else []
-        iterations=([None] if method == 'ours' else
-                    a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None]))
+        available=checkpoints(model, method) if method not in ('ours', 'workshop') else []
+        if method == 'ours':
+            iterations = [None]
+        elif method == 'workshop':
+            iterations = a.iterations or [None]
+        else:
+            iterations = a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None])
         gt_path=gt_root/(name+'.ply')
         gt=None
         for iteration in dict.fromkeys(iterations):
-            checkpoint, mesh = input_paths(model, method, iteration, a.mesh_name)
+            checkpoint, mesh = input_paths(model, method, iteration, a.mesh_name, mesh_subdir)
             row=dict(method=method,scene=name,iteration=iteration,status='failed',point_count=None,
                      checkpoint=str(checkpoint),reconstruction=str(mesh),ground_truth=str(gt_path))
             if a.list_only:
@@ -207,10 +258,15 @@ def main(method, argv=None):
             row.update(training_seconds=seconds, training_time=format_training_time(seconds), training_time_scope=scope)
             time_label = 'Training(total)' if scope == 'total' else 'Training'
             try:
-                if iteration is None and method != 'ours':
+                if iteration is None and method not in ('ours', 'workshop'):
                     raise FileNotFoundError(f'No saved checkpoints under {model}')
                 if not checkpoint.is_file():raise FileNotFoundError(f'Missing checkpoint: {checkpoint}')
-                if method not in ('neus', 'geosvr'):
+                if method == 'workshop':
+                    config = json.loads((model / 'run_config.json').read_text())
+                    if config.get('renderer_settings', {}).get('use_slab_rendering') is not False:
+                        raise ValueError(f'Not an explicitly ordered beta-surfel run: {model}')
+                    row['point_count'] = workshop_point_count(checkpoint)
+                elif method not in ('neus', 'geosvr'):
                     row['point_count']=point_count(checkpoint)
                 else:
                     row['point_count_note']='Not applicable: voxel representation' if method == 'geosvr' else 'Not applicable: implicit SDF network, not optimized surface points'
