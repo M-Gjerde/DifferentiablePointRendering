@@ -73,7 +73,11 @@ Controls:
 - Debug-view shortcuts (`1`–`0`, `+`/`-`) and point-cloud shortcuts (`R`, `F`, `L`, `N`, `M`, arrows) remain available while walking
 - Walk movement uses the latest input state after each render; released keys are not replayed across later frames. Short exit and viewer-shortcut taps still register.
 - `Render`: force a render
+- `Save screenshot (PNG)`: save the currently displayed render with transparent background
 - `Auto render`: render after camera/control changes
+- `Add surfel`: create a camera-facing surfel at the current viewport focus and select it for editing
+- `Save as startup default`: save the currently edited surfels beside the original PLY and load them automatically on later runs
+- `Reset to original`: reload the original startup PLY and clear the saved startup override
 - `R`: load the latest optimization run PLY
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
@@ -84,6 +88,19 @@ Controls:
 Snapshot navigation refreshes only the active run's `points` folder, including
 new snapshots written during training. It stays in that run until you use `R`
 or **Load latest run PLY** to search for the latest run again.
+
+### Transparent screenshots
+
+Click **Save screenshot (PNG)** beside the render controls. Images are saved to
+`output/screenshots/viewport_<timestamp>_<sequence>.png` under the repository
+root; the full saved path appears below the button. Each capture gets a new name.
+
+The PNG uses the last displayed render's native resolution, RGB/exposure, and
+rendered surface alpha, including partial opacity at footprint edges. It excludes
+the gray viewport background, grid, gizmos, and UI. **Force opacity = 1** affects
+the viewport display only and is ignored for screenshots. Diagnostic views save
+their selected colors with the rendered surface alpha. If auto-render is off,
+click **Render** first to capture camera or scene edits that have not yet rendered.
 
 ### Slab distance modes
 

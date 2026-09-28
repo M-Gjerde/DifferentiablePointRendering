@@ -41,6 +41,7 @@
 #include "Core/ScopedTimer.h"
 #include "SurfelDensity.h"
 #include "ResponsiveWork.h"
+#include "ViewportScreenshot.h"
 #include "spdlog/spdlog.h"
 
 import Pale.Assets;
@@ -54,6 +55,7 @@ import Pale.Render.Sensors;
 import Pale.Scene;
 import Pale.Scene.Components;
 import Pale.SceneSerializer;
+import Pale.Utils.ImageIO;
 
 #ifndef PALE_DEFAULT_ASSET_DIR
 #define PALE_DEFAULT_ASSET_DIR "../Assets"
@@ -1124,12 +1126,102 @@ namespace {
         return registry.import(path, assetType);
     }
 
+    [[nodiscard]] glm::quat normalizeQuaternionOrIdentity(glm::quat quaternion);
+
     [[nodiscard]] std::size_t countSurfels(const Pale::PointAsset& pointAsset) {
         std::size_t surfelCount = 0;
         for (const Pale::PointGeometry& pointGeometry : pointAsset.points) {
             surfelCount += pointGeometry.positions.size();
         }
         return surfelCount;
+    }
+
+    [[nodiscard]] std::filesystem::path savedViewerDefaultPath(
+        const std::filesystem::path& originalPath) {
+        return originalPath.parent_path() /
+               (originalPath.stem().string() + ".viewer_default" + originalPath.extension().string());
+    }
+
+    [[nodiscard]] bool writePointCloudPly(
+        const Pale::PointAsset& pointAsset,
+        const std::filesystem::path& destination,
+        std::string& reason) {
+        const std::size_t pointCount = countSurfels(pointAsset);
+        if (pointCount == 0u) {
+            reason = "the point cloud is empty";
+            return false;
+        }
+
+        for (const Pale::PointGeometry& geometry : pointAsset.points) {
+            const std::size_t count = geometry.positions.size();
+            if (geometry.quat.size() != count || geometry.scales.size() != count ||
+                geometry.albedos.size() != count || geometry.opacities.size() != count ||
+                geometry.betas.size() != count || geometry.shapes.size() != count ||
+                geometry.powers.size() != count) {
+                reason = "a point block has inconsistent attribute counts";
+                return false;
+            }
+        }
+
+        std::filesystem::path temporary = destination;
+        temporary += ".tmp";
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) {
+            reason = "could not open " + temporary.string();
+            return false;
+        }
+
+        output << "ply\n"
+               << "format ascii 1.0\n"
+               << "comment Saved by Pale Realtime Viewer\n"
+               << "element vertex " << pointCount << "\n"
+               << "property float x\nproperty float y\nproperty float z\n"
+               << "property float rot_w\nproperty float rot_x\nproperty float rot_y\nproperty float rot_z\n"
+               << "property float su\nproperty float sv\n"
+               << "property float albedo_r\nproperty float albedo_g\nproperty float albedo_b\n"
+               << "property float opacity\nproperty float beta\nproperty float shape\nproperty float power\n"
+               << "end_header\n"
+               << std::setprecision(9);
+
+        for (const Pale::PointGeometry& geometry : pointAsset.points) {
+            for (std::size_t index = 0u; index < geometry.positions.size(); ++index) {
+                const glm::vec3& position = geometry.positions[index];
+                const glm::quat rotation = normalizeQuaternionOrIdentity(geometry.quat[index]);
+                const glm::vec2& scale = geometry.scales[index];
+                const glm::vec3& albedo = geometry.albedos[index];
+                output << position.x << ' ' << position.y << ' ' << position.z << ' '
+                       << rotation.w << ' ' << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
+                       << scale.x << ' ' << scale.y << ' '
+                       << albedo.r << ' ' << albedo.g << ' ' << albedo.b << ' '
+                       << geometry.opacities[index] << ' ' << geometry.betas[index] << ' '
+                       << geometry.shapes[index] << ' ' << geometry.powers[index] << '\n';
+            }
+        }
+        output.close();
+        if (!output) {
+            reason = "writing " + temporary.string() + " failed";
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            return false;
+        }
+
+        std::error_code error;
+        std::filesystem::rename(temporary, destination, error);
+        if (error) {
+            error.clear();
+            std::filesystem::copy_file(
+                temporary,
+                destination,
+                std::filesystem::copy_options::overwrite_existing,
+                error);
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+        }
+        if (error) {
+            reason = "could not replace " + destination.string() + ": " + error.message();
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]] std::size_t countMeshTriangles(const Pale::Mesh& mesh) {
@@ -3134,14 +3226,32 @@ int main(int argc, char** argv) {
             repositoryRoot / "python" / "OptimizationOutput";
         std::filesystem::current_path(assetsDirectory);
 
+        const std::filesystem::path originalInitialPointCloudPath =
+            std::filesystem::absolute(args.pointCloudPath).lexically_normal();
+        const std::filesystem::path savedInitialPointCloudPath =
+            savedViewerDefaultPath(originalInitialPointCloudPath);
+
         Pale::Log::init(spdlog::level::level_enum::info);
         glfwSetErrorCallback(glfwErrorCallback);
 
         Pale::AssetManager assetManager{256};
         registerAssetLoaders(assetManager);
 
+        std::filesystem::path startupPointCloudPath = originalInitialPointCloudPath;
+        PlyFileSnapshot savedDefaultSnapshot{};
+        std::string savedDefaultFailure;
+        if (validatePlyReadyForLoad(
+                savedInitialPointCloudPath,
+                savedDefaultSnapshot,
+                savedDefaultFailure)) {
+            startupPointCloudPath = savedInitialPointCloudPath;
+            Pale::Log::PA_INFO(
+                "Using saved viewer default point cloud: {}",
+                startupPointCloudPath.string());
+        }
+
         std::shared_ptr<Pale::Scene> scene =
-            loadSceneWithPointCloud(assetManager, args.scenePath, args.pointCloudPath);
+            loadSceneWithPointCloud(assetManager, args.scenePath, startupPointCloudPath);
 
         Pale::DeviceSelector deviceSelector;
         sycl::queue queue = deviceSelector.getQueue();
@@ -3160,7 +3270,7 @@ int main(int argc, char** argv) {
         OrbitCamera orbit = makeInitialOrbitCamera(buildProducts, bounds);
         OrbitCamera initialOrbit = orbit;
         std::filesystem::path currentScenePath = args.scenePath;
-        std::filesystem::path currentPointCloudPath = args.pointCloudPath;
+        std::filesystem::path currentPointCloudPath = startupPointCloudPath;
         std::array<char, 1024> pointCloudPathBuffer{};
         copyPathToBuffer(currentPointCloudPath, pointCloudPathBuffer);
         std::string pointCloudStatus =
@@ -3275,6 +3385,9 @@ int main(int argc, char** argv) {
         double lastSsimDebugMapMs = 0.0;
         std::vector<uint8_t> renderPixels;
         std::vector<uint8_t> pixels;
+        std::vector<uint8_t> screenshotPixels;
+        std::string screenshotStatus;
+        uint64_t screenshotSequence = 0;
         DebugDisplayBuffers debugDisplayBuffers;
         SsimTargetCache ssimTargetCache;
         OrbitCamera displayedOrbit = orbit;
@@ -4635,10 +4748,14 @@ int main(int argc, char** argv) {
                     case ViewImageMode::Rendered:
                         break;
                 }
+                screenshotPixels = viewer::transparentScreenshotPixels(
+                    pixels, renderPixels, displayedRenderWidth, displayedRenderHeight);
                 texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
                 return;
             }
 
+            screenshotPixels = viewer::transparentScreenshotPixels(
+                renderPixels, renderPixels, displayedRenderWidth, displayedRenderHeight);
             if (displayedCameraSource == CameraSource::Viewport) {
                 composeViewportPixels(
                     renderPixels,
@@ -6231,11 +6348,86 @@ int main(int argc, char** argv) {
                 const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
                     pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
 
+                if (ImGui::Button("Save as startup default")) {
+                    std::string saveFailure;
+                    if (pointCloudAsset &&
+                        writePointCloudPly(
+                            *pointCloudAsset,
+                            savedInitialPointCloudPath,
+                            saveFailure)) {
+                        surfelEditorStatus =
+                            "Saved startup default to " + savedInitialPointCloudPath.string();
+                    } else {
+                        surfelEditorStatus = "Could not save startup default: " +
+                                             (saveFailure.empty() ? "no point cloud is loaded" : saveFailure);
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset to original")) {
+                    if (replacePointCloud(originalInitialPointCloudPath)) {
+                        std::error_code removeError;
+                        std::filesystem::remove(savedInitialPointCloudPath, removeError);
+                        surfelEditorStatus = removeError
+                            ? "Reloaded the original PLY, but could not clear the saved default: " +
+                                  removeError.message()
+                            : "Reloaded the original PLY and cleared the saved startup default";
+                        selectedSurfelEditorIndex = -1;
+                    } else {
+                        surfelEditorStatus = "Could not reload the original PLY: " + pointCloudStatus;
+                    }
+                }
+                ImGui::TextDisabled(
+                    "Save is loaded automatically next run; reset clears it and reloads %s",
+                    originalInitialPointCloudPath.filename().string().c_str());
+
                 if (!pointCloudAsset || countSurfels(*pointCloudAsset) == 0u) {
                     ImGui::TextWrapped("No editable surfels are loaded");
                     selectedSurfelEditorIndex = -1;
                 } else {
-                    const std::size_t surfelCount = countSurfels(*pointCloudAsset);
+                    std::size_t surfelCount = countSurfels(*pointCloudAsset);
+                    if (ImGui::Button("Add surfel")) {
+                        Pale::PointGeometry& pointGeometry = pointCloudAsset->points.back();
+                        const std::size_t previousBlockCount = pointGeometry.positions.size();
+                        const float defaultScale = std::clamp(bounds.radius * 0.12f, 0.05f, 1.0f);
+                        const glm::quat cameraFacingRotation =
+                            extractRotationQuaternion(glm::inverse(orbit.viewMatrix()));
+
+                        pointGeometry.positions.push_back(orbit.target);
+                        pointGeometry.quat.push_back(cameraFacingRotation);
+                        pointGeometry.scales.emplace_back(defaultScale, defaultScale);
+                        pointGeometry.albedos.emplace_back(0.8f, 0.8f, 0.8f);
+                        pointGeometry.opacities.push_back(0.9f);
+                        pointGeometry.betas.push_back(-1.0f);
+                        pointGeometry.shapes.push_back(0.0f);
+                        pointGeometry.powers.push_back(0.0f);
+
+                        const auto appendOptionalMetadata =
+                            [previousBlockCount]<typename T>(std::vector<T>& values, T defaultValue) {
+                                if (!values.empty()) {
+                                    values.resize(previousBlockCount, defaultValue);
+                                    values.push_back(defaultValue);
+                                }
+                            };
+                        appendOptionalMetadata(pointGeometry.densificationOrigins, std::uint8_t{0u});
+                        appendOptionalMetadata(pointGeometry.primitiveAges, std::uint32_t{0u});
+                        appendOptionalMetadata(pointGeometry.densificationPositionSignals, 0.0f);
+                        appendOptionalMetadata(
+                            pointGeometry.densificationPositionSampleCounts,
+                            std::uint32_t{0u});
+                        appendOptionalMetadata(pointGeometry.densificationPositionThresholds, 0.0f);
+                        appendOptionalMetadata(pointGeometry.densificationPositionRadianceRms, 0.0f);
+                        appendOptionalMetadata(pointGeometry.densificationPositionBaseThresholds, 0.0f);
+
+                        selectedSurfelEditorIndex = static_cast<int>(surfelCount);
+                        ++surfelCount;
+                        surfelEditorStatus =
+                            "Added surfel " + std::to_string(selectedSurfelEditorIndex) +
+                            " at the viewport focus; save it to keep it for the next run";
+                        rebuildSceneGpu();
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("New surfels face the current viewport");
+
                     selectedSurfelEditorIndex = std::clamp(
                         selectedSurfelEditorIndex,
                         -1,
@@ -6388,6 +6580,35 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
             if (ImGui::Button("Reset view")) {
                 resetOrbitView();
+            }
+            ImGui::BeginDisabled(screenshotPixels.empty());
+            if (ImGui::Button("Save screenshot (PNG)")) {
+                try {
+                    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count();
+                    const auto directory = repositoryRoot / "output" / "screenshots";
+                    std::filesystem::path path;
+                    do {
+                        path = directory / ("viewport_" + std::to_string(milliseconds) + "_" +
+                                            std::to_string(screenshotSequence++) + ".png");
+                    } while (std::filesystem::exists(path));
+                    if (!Pale::Utils::savePNG(path, screenshotPixels,
+                                              displayedRenderWidth, displayedRenderHeight)) {
+                        throw std::runtime_error("PNG writer could not save " + path.string());
+                    }
+                    screenshotStatus = "Saved " + path.string();
+                    Pale::Log::PA_INFO("{}", screenshotStatus);
+                } catch (const std::exception& error) {
+                    screenshotStatus = "Screenshot failed: " + std::string(error.what());
+                }
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Save the displayed render at its native resolution with surface opacity.\n"
+                                  "Transparent background; no grid, controls, or gizmos.");
+            }
+            if (!screenshotStatus.empty()) {
+                ImGui::TextWrapped("%s", screenshotStatus.c_str());
             }
             ImGui::TextDisabled("Space: reset orbit | Backslash: walk navigation");
             if (walkNavigationActive) {
