@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate paper runs using points_final.ply and mesh/fuse_post.ply."""
+"""Evaluate DPR_ordered benchmark runs by default; override with --output-root."""
 if __package__:
     from .evaluate_method import main
 else:
