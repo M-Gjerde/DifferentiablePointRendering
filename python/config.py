@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 16
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -84,7 +84,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 10.0
+    position_lr_scale_init: float = 30.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 17_000
@@ -95,14 +95,15 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.00075
+    depth_distort_weight: float = 0.00025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
+    normal_consistency_weight: float = 0.002
     intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
     # Rendering model
+    adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
     share_local_layer_direct_lighting: bool = False
 
     # Camera sampling
@@ -133,8 +134,8 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 7.0e-4
-    densification_grad_abs_min_final: float = 7.0e-4
+    densification_grad_abs_min: float = 5.0e-4
+    densification_grad_abs_min_final: float = 5.0e-4
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -558,6 +559,7 @@ def parse_args() -> OptimizationConfig:
     )
 
     rendering = parser.add_argument_group("rendering")
+    rendering.add_argument("--adjoint-spp", type=int, help="Override adjoint samples per pixel.")
     _add_boolean_argument(
         rendering,
         "--share-local-layer-direct-lighting",
@@ -770,6 +772,8 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
+    if config.adjoint_spp is not None and config.adjoint_spp < 1:
+        parser.error("--adjoint-spp must be positive")
     if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
 

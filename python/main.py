@@ -10,6 +10,8 @@ from training import run_optimization
 def main() -> None:
     config = parse_args()
     renderer_settings = RendererSettingsConfig()
+    if config.adjoint_spp is not None:
+        renderer_settings.adjoint_passes = config.adjoint_spp
     prepare_run(config, renderer_settings)
 
     renderer = pale.Renderer(
