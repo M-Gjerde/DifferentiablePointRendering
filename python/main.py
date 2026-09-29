@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import pale
-from config import RendererSettingsConfig, parse_args
+from config import OptimizationConfig, RendererSettingsConfig, parse_args
 from render_hooks import get_training_camera_names
 from run_setup import prepare_run, print_run_configuration, start_companions, stop_companions
 from training import run_optimization
 
 
-def main() -> None:
-    config = parse_args()
-    renderer_settings = RendererSettingsConfig()
+def main(config: OptimizationConfig | None = None,
+         renderer_settings: RendererSettingsConfig | None = None) -> None:
+    """Train with CLI defaults or supplied, already-resolved configuration objects."""
+    if config is None:
+        config = parse_args()
+    if renderer_settings is None:
+        renderer_settings = RendererSettingsConfig()
     if config.adjoint_spp is not None:
         renderer_settings.adjoint_passes = config.adjoint_spp
     prepare_run(config, renderer_settings)
