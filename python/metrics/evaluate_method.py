@@ -10,7 +10,7 @@ import math
 DEFAULTS = {
     'workshop': ('/home/magnus/phd/pbdr/workshop-without-slab/output/batch_workshop_without_slab', '_pbdr', 'fuse_post.ply'),
     'geosvr': ('/home/magnus/phd/pbdr/GeoSVR/output/batch_geosvr', '_2dgs', 'mesh.ply'),
-    'ours': (str(Path(__file__).resolve().parents[1] / 'OptimizationOutput' / 'paper'), '', 'fuse_post.ply'),
+    'ours': (str(Path.home() / 'phd/pbdr/DPR_ordered/output/benchmark/ordered'), '', 'fuse_post.ply'),
     'gof': ('/home/magnus/phd/pbdr/GOF/output/batch_gof', '_2dgs', 'mesh.ply'),
     'pgsr': ('/home/magnus/phd/pbdr/PGSR/output/batch_pgsr', '_2dgs', 'fuse_post_auto.ply'),
     '2dgs': ('/home/magnus/projects/2D-GS-Viser-Viewer/output/batch_2dgs', '_2dgs', 'fuse_post_auto.ply'),
