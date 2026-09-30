@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 16
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -42,6 +42,8 @@ class RendererSettingsConfig:
                 config.inactive_transport_prune_cycles > 0
             ),
         })
+        if config.local_layer_depth_epsilon is not None:
+            settings["local_layer_depth_epsilon"] = config.local_layer_depth_epsilon
         return settings
 
 @dataclass
@@ -99,11 +101,12 @@ class OptimizationConfig:
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.002
-    intra_slab_depth_weight: float = 0.0e-5
+    intra_slab_depth_weight: float = 1.0e-5
     curvature_scale_weight: float = 0.0e-6
 
     # Rendering model
     adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
+    local_layer_depth_epsilon: float | None = None  # None preserves the native h default.
     share_local_layer_direct_lighting: bool = False
 
     # Camera sampling
@@ -560,6 +563,8 @@ def parse_args() -> OptimizationConfig:
 
     rendering = parser.add_argument_group("rendering")
     rendering.add_argument("--adjoint-spp", type=int, help="Override adjoint samples per pixel.")
+    rendering.add_argument("--local-layer-depth-epsilon", type=float,
+                           help="Override slab depth h in scene units; must exceed 1e-6.")
     _add_boolean_argument(
         rendering,
         "--share-local-layer-direct-lighting",
@@ -774,6 +779,10 @@ def parse_args() -> OptimizationConfig:
     configure_checkpoint(config, cli_overrides)
     if config.adjoint_spp is not None and config.adjoint_spp < 1:
         parser.error("--adjoint-spp must be positive")
+    if config.local_layer_depth_epsilon is not None and (
+        not math.isfinite(config.local_layer_depth_epsilon) or config.local_layer_depth_epsilon <= 1e-6
+    ):
+        parser.error("--local-layer-depth-epsilon must be finite and greater than 1e-6")
     if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
 
