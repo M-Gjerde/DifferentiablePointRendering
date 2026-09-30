@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
 CONFIG_PATH = PROJECT_ROOT / "config.py"
-DEFAULT_DATASETS = ("teapot", "dragon", "plant", "horse")
+DEFAULT_DATASETS = ("teapot", "dragon", "plant", "horse", "workbench")
 RUNTIME_DEFINITION = (
     "Complete main.py subprocess wall-clock seconds, including interpreter startup, "
     "renderer setup, optimization, configured evaluation, and final saving."
@@ -281,6 +282,19 @@ def main(argv=None) -> int:
         images = dataset_path / "images"
         if not images.is_dir() or not any(p.is_file() and p.stat().st_size > 0 for p in images.iterdir()):
             missing_inputs.append(str(images))
+        scene_xml = dataset_path / "scene.xml"
+        if scene_xml.is_file() and scene_xml.stat().st_size:
+            try:
+                cameras = ET.parse(scene_xml).getroot().findall(".//sensor")
+                image_names = {p.stem for p in images.iterdir()
+                               if p.is_file() and p.stat().st_size > 0
+                               and p.suffix.lower() in {".exr", ".hdr", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}} if images.is_dir() else set()
+                for camera in cameras:
+                    name = camera.get("id")
+                    if name and name not in image_names:
+                        missing_inputs.append(str(images / f"{name}.*"))
+            except ET.ParseError:
+                missing_inputs.append(f"{scene_xml} (incomplete or invalid XML)")
         run_dir = output_root / scene_name
         ensure_scene_output_is_safe(run_dir, args.overwrite)
         scenes[scene_name] = {
