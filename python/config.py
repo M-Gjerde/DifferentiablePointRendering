@@ -53,7 +53,7 @@ class OptimizationConfig:
     scene_xml: str = "cbox_custom.xml"
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
-    target_color_space: str = "auto"
+    target_color_space: str = "linear"
     output_dir: Path = Path("OptimizationOutput")
     checkpoint: Path | None = None
 
