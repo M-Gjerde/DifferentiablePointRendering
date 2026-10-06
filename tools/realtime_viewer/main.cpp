@@ -2570,6 +2570,7 @@ namespace {
         settings.renderDebugGradientImages = false;
         settings.depthDistortionWorldSpace = true;
         settings.enableAdjointDirectLight = true;
+        settings.rendererDebugShareLocalLayerDirectLighting = true;
         settings.pointGeometrySupportRadius = 0.00f;
         settings.pointGeometryReconstructionLength = 0.0f;
         settings.pointGeometryRayOffsetMultiplier = 1.0f;

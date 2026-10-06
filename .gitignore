@@ -17,3 +17,6 @@ cmake-build-*/
 # Generated experiment output
 /python/OptimizationOutput/
 /python/finite_difference/Output/
+
+# Large local paper provenance archives (keep in backed-up storage)
+/paper_submission/provenance/*/
