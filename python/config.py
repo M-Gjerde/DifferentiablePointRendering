@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 6
+    adjoint_passes: int = 3
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -74,7 +74,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.00055
     learning_rate_rotation: float = 0.01
-    learning_rate_scale: float = 0.004
+    learning_rate_scale: float = 0.002
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -97,10 +97,10 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.01
+    depth_distort_weight: float = 0.005
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 5.0e-4
+    normal_consistency_weight: float = 7.5e-4
 
     intra_slab_depth_weight: float = 0.0e-5
     curvature_scale_weight: float = 0.0e-6
