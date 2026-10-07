@@ -1303,10 +1303,7 @@ namespace Pale {
         const float3 &rayDirectionW,
         float depthEpsilon,
         LocalLayerDepthMode depthMode) {
-        if (depthMode == LocalLayerDepthMode::SymmetricRayDepth) return depthEpsilon;
-        // Bound the normal-distance search at grazing incidence.
-        const float viewCosine = sycl::fabs(dot(referenceNormalW, rayDirectionW));
-        return depthEpsilon / sycl::fmax(viewCosine, 0.05f);
+        return localLayerRayHalfWidth(dot(referenceNormalW, rayDirectionW), depthEpsilon, depthMode);
     }
 
     SYCL_EXTERNAL static PointCloudLocalLayer buildPointCloudLocalLayerFromHits(
@@ -1336,12 +1333,8 @@ namespace Pale {
         layer.referenceNormalW = normalize(cross(referenceSurfel.tanU, referenceSurfel.tanV));
         if (dot(layer.referenceNormalW, -rayWorld.direction) < 0.0f) layer.referenceNormalW = -layer.referenceNormalW;
 
-        const bool symmetricRayDepth = depthMode == LocalLayerDepthMode::SymmetricRayDepth;
         const float raySearchDepth = pointCloudLocalLayerRayHalfWidth(
             layer.referenceNormalW, rayWorld.direction, localLayerDepthEpsilon, depthMode);
-        const float localTMin = symmetricRayDepth
-            ? firstHit.tWorld - raySearchDepth : firstHit.tWorld;
-        const float localTMax = firstHit.tWorld + raySearchDepth;
 
         // Symmetric mode uses [t_anchor-h, t_anchor+h] on the active ray.
         // Normal-distance mode also tests the physical anchor-normal separation.
@@ -1351,23 +1344,23 @@ namespace Pale {
             const LocalSurfelLayerHit &candidate = candidateHits[candidateIndex];
 
             if (candidate.primitiveIndex == kInvalidIndex) continue;
-            if (candidate.tWorld + RayEpsilon < localTMin) continue;
-            if (candidate.tWorld > localTMax) continue;
+            if (!localLayerDepthRangeContains(firstHit.tWorld, candidate.tWorld, raySearchDepth,
+                                               depthMode, RayEpsilon)) continue;
 
             const Point &candidateSurfel = scene.points[candidate.primitiveIndex];
 
             float3 candidateNormalW = normalize(cross(candidateSurfel.tanU, candidateSurfel.tanV));
-            if (dot(candidateNormalW, -rayWorld.direction) < 0.0f) candidateNormalW = -candidateNormalW;
-
             // Keep the normal-consistency criterion. This prevents nearby but
             // differently oriented surfaces from becoming one unresolved slab.
-            const float normalAgreement = dot(layer.referenceNormalW, candidateNormalW);
-            if (normalAgreement < localLayerNormalCosineThreshold) continue;
+            const float normalAgreement = localLayerFacingNormalAgreement(
+                dot(layer.referenceNormalW, candidateNormalW),
+                dot(layer.referenceNormalW, rayWorld.direction), dot(candidateNormalW, rayWorld.direction));
 
             const float3 anchorToCandidate = candidate.hitPositionW - firstHit.hitPositionW;
 
             const float normalDistance = sycl::fabs(dot(anchorToCandidate, layer.referenceNormalW));
-            if (!symmetricRayDepth && normalDistance > localLayerDepthEpsilon) continue;
+            if (!localLayerSurfaceMatches(normalAgreement, normalDistance,
+                                          localLayerNormalCosineThreshold, localLayerDepthEpsilon, depthMode)) continue;
 
             layer.hits[layer.hitCount] = candidate;
             ++layer.hitCount;

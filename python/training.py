@@ -1249,6 +1249,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_grad_abs_min=active_densification_grad_abs_min,
                             densify_curvature_stats_accum=densify_curvature_stats_accum,
                             force_densification=True,
+                            renderer=renderer, overlap_camera_names=all_camera_ids,
                         )
 
                     if should_check_prune:
@@ -2005,6 +2006,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_grad_abs_min=active_densification_grad_abs_min,
                         densify_curvature_stats_accum=densify_curvature_stats_accum,
                         force_densification=True,
+                        renderer=renderer, overlap_camera_names=all_camera_ids,
                     )
 
                 scale_prune_indices, opacity_prune_indices, indices_to_remove_list = helpers.maybe_make_prune_indices(

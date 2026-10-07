@@ -4,6 +4,7 @@
 
 #include "entt/entity/entity.hpp"
 #include "Renderer/GPUDataTypes.h"
+#include "Renderer/LocalLayerMembership.h"
 
 
 namespace Pale {
@@ -345,7 +346,7 @@ namespace Pale {
     constexpr uint32_t kInvalidMaterialIndex = 0xFFFFFFFFu;
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
     constexpr float LocalLayerDepthEpsilon = 5.00e-3f;
-    constexpr float LocalLayerNormalCosineThreshold = -1.0f; // 45 degrees mismatch to stop blending slabs
+    constexpr float LocalLayerNormalCosineThreshold = -1.0f; // -1 disables normal rejection.
     constexpr float IntraSlabConsensusDenominatorEpsilon = 1.0e-6f;
     constexpr float CurvatureScaleRegularizerGamma = 0.5f;
     constexpr float CurvatureRegularizerDistanceEpsilon = 1.0e-6f;
@@ -803,11 +804,6 @@ namespace Pale {
         float qReflect = 0.5f;
         float qTransmit = 0.0f;
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
-    };
-
-    enum class LocalLayerDepthMode : uint32_t {
-        NormalDistance = 0u,
-        SymmetricRayDepth = 1u
     };
 
     struct alignas(16) PathTracerSettings {

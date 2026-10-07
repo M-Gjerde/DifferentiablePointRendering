@@ -40,6 +40,8 @@
 #include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
 #include "SurfelDensity.h"
+#include "SurfaceOverlap.h"
+#include "Renderer/SurfaceOverlapScene.h"
 #include "ResponsiveWork.h"
 #include "ViewportScreenshot.h"
 #include "spdlog/spdlog.h"
@@ -135,6 +137,7 @@ namespace {
         CurvaturePrimitiveScore,
         PositionPrimitiveScore,
         SurfelDensity,
+        SurfaceOverlap,
         DensificationOrigin,
         PrimitiveAge,
         DepthPositionGradient,
@@ -147,7 +150,7 @@ namespace {
         RgbObjectiveGradient,
     };
 
-    constexpr std::array<ViewImageMode, 23> kViewImageModeCycleOrder = {
+    constexpr std::array<ViewImageMode, 24> kViewImageModeCycleOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -157,6 +160,7 @@ namespace {
         ViewImageMode::IntraSlabDepth,
         ViewImageMode::SurfaceCurvature,
         ViewImageMode::CurvatureScale,
+        ViewImageMode::SurfaceOverlap,
         ViewImageMode::CurvaturePrimitiveScore,
         ViewImageMode::PositionPrimitiveScore,
         ViewImageMode::IntraSlabRayDepth,
@@ -173,7 +177,7 @@ namespace {
         ViewImageMode::RgbObjectiveGradient,
     };
 
-    constexpr std::array<const char*, 23> kViewImageModeLabels = {
+    constexpr std::array<const char*, 24> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -183,7 +187,8 @@ namespace {
         "7 Intra-slab depth (plane distance)",
         "8 Surface curvature (magnitude)",
         "9 Curvature loss",
-        "0 Curvature primitive score",
+        "0 Surface overlap (world space)",
+        "Curvature primitive score",
         "Position primitive score (saved)",
         "Intra-slab depth (mean ray depth)",
         "Surfel density (projected centers)",
@@ -257,6 +262,8 @@ namespace {
         bool positionPrimitiveScoreValid = false;
         bool surfelDensityValid = false;
         viewer::SurfelDensity surfelDensity{64};
+        bool surfaceOverlapValid = false;
+        std::vector<float> surfaceOverlap;
         bool positionPrimitiveRadianceBiasAvailable = false;
         bool positionPrimitiveIndicesValid = false;
         bool densificationOriginValid = false;
@@ -280,6 +287,7 @@ namespace {
         std::vector<float> positionPrimitiveScore;
         std::vector<float> positionObservedPrimitiveScores;
         std::vector<uint32_t> positionPrimitiveIndices;
+        std::vector<uint32_t> positionInstanceIndices;
         std::vector<std::uint8_t> densificationOrigin;
         std::vector<std::uint32_t> primitiveAge;
         std::vector<uint32_t> visiblePrimitiveIndices;
@@ -321,6 +329,8 @@ namespace {
             curvaturePrimitiveScoreValid = false;
             positionPrimitiveScoreValid = false;
             surfelDensityValid = false;
+            surfaceOverlapValid = false;
+            surfaceOverlap.clear();
             positionPrimitiveRadianceBiasAvailable = false;
             positionPrimitiveIndicesValid = false;
             densificationOriginValid = false;
@@ -344,6 +354,7 @@ namespace {
             positionPrimitiveScore.clear();
             positionObservedPrimitiveScores.clear();
             positionPrimitiveIndices.clear();
+            positionInstanceIndices.clear();
             densificationOrigin.clear();
             primitiveAge.clear();
             visiblePrimitiveIndices.clear();
@@ -2588,6 +2599,7 @@ namespace {
         settings.computeSurfaceDiagnostics =
             mode != ViewImageMode::Rendered &&
             mode != ViewImageMode::SurfelDensity &&
+            mode != ViewImageMode::SurfaceOverlap &&
             mode != ViewImageMode::PositionPrimitiveScore &&
             !isSsimDebugView(mode);
         settings.computeDepthNormalDiagnostics =
@@ -3339,6 +3351,16 @@ int main(int argc, char** argv) {
         int densityGridSize = 64;
         float densityColorMaximum = 100.0f;
         bool densityLogScale = true;
+        viewer::SurfaceOverlapSettings surfaceOverlapSettings;
+        std::vector<viewer::SurfaceOverlapView> surfaceOverlapViews;
+        bool surfaceOverlapScoresValid = false;
+        std::vector<viewer::SurfaceOverlapScore> surfaceOverlapScores;
+        std::vector<std::size_t> surfaceOverlapInstanceOffsets;
+        int surfaceOverlapMetric = 0;
+        float surfaceOverlapColorMaximum = 8.0f;
+        double surfaceOverlapComputeMs = 0.0;
+        float surfaceOverlapPeak = 0.0f;
+        std::size_t surfaceOverlapEligibleCount = 0u;
         // Training debug defaults mirror python/config.py (OptimizationConfig).
     float curvatureViolationDisplayThreshold = 2.0f;
         constexpr float kPositionDefaultThreshold = 5.0e-3f;
@@ -3460,6 +3482,8 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_Init(glslVersion);
 
         auto rebuildSceneGpu = [&]() {
+            surfaceOverlapScoresValid = false;
+            debugDisplayBuffers.surfaceOverlapValid = false;
             buildProducts = Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
             Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, queue);
             if (curvatureDensificationStats.numPoints != buildProducts.points.size()) {
@@ -3972,7 +3996,10 @@ int main(int argc, char** argv) {
                 previewScene.profileCounters = nullptr;
                 auto& hostIndices = debugDisplayBuffers.positionPrimitiveIndices;
                 hostIndices.resize(pixelCount);
-                uint32_t* output = sycl::malloc_device<uint32_t>(pixelCount, queue);
+                auto& hostInstances = debugDisplayBuffers.positionInstanceIndices;
+                hostInstances.resize(pixelCount);
+                std::vector<sycl::uint2> hits(pixelCount);
+                sycl::uint2* output = sycl::malloc_device<sycl::uint2>(pixelCount, queue);
                 if (!output) {
                     throw std::runtime_error("Failed to allocate position preview primitive indices");
                 }
@@ -3986,9 +4013,14 @@ int main(int argc, char** argv) {
                         Pale::intersectScene(ray, &hit, previewScene, Pale::SurfelIntersectMode::FirstHit);
                         output[id[0]] = hit.hit &&
                             previewScene.instances[hit.instanceIndex].geometryType == Pale::GeometryType::PointCloud
-                            ? hit.primitiveIndex : UINT32_MAX;
+                            ? sycl::uint2{hit.primitiveIndex, hit.instanceIndex}
+                            : sycl::uint2{UINT32_MAX, UINT32_MAX};
                     }).wait_and_throw();
-                    queue.memcpy(hostIndices.data(), output, pixelCount * sizeof(uint32_t)).wait_and_throw();
+                    queue.memcpy(hits.data(), output, pixelCount * sizeof(sycl::uint2)).wait_and_throw();
+                    for (std::size_t i = 0; i < pixelCount; ++i) {
+                        hostIndices[i] = hits[i].x();
+                        hostInstances[i] = hits[i].y();
+                    }
                 } catch (...) {
                     // Complete any submitted work before releasing its storage.
                     queue.wait();
@@ -4126,6 +4158,56 @@ int main(int argc, char** argv) {
             };
 
             switch (mode) {
+                case ViewImageMode::SurfaceOverlap: {
+                    const auto inherited = Pale::surfaceOverlapSettings(settings);
+                    std::vector<viewer::SurfaceOverlapView> views;
+                    const auto addView = [&](const Pale::CameraGPU& camera) {
+                        views.push_back(Pale::surfaceOverlapView(camera));
+                    };
+                    for (const auto& camera : buildProducts.cameraGPUs) addView(camera);
+                    if (views.empty()) addView(sensor.camera);
+                    if (inherited != surfaceOverlapSettings || views != surfaceOverlapViews) {
+                        surfaceOverlapSettings = inherited;
+                        surfaceOverlapViews = std::move(views);
+                        surfaceOverlapScoresValid = false;
+                        debugDisplayBuffers.surfaceOverlapValid = false;
+                    }
+                    if (!surfaceOverlapScoresValid) {
+                        const auto start = std::chrono::steady_clock::now();
+                        const auto footprints = Pale::surfaceOverlapFootprints(buildProducts, surfaceOverlapInstanceOffsets);
+                        surfaceOverlapScores = viewer::SurfaceOverlap(footprints, surfaceOverlapSettings).evaluate(surfaceOverlapViews);
+                        surfaceOverlapPeak = 0.0f;
+                        surfaceOverlapEligibleCount = 0u;
+                        for (const auto& score : surfaceOverlapScores) {
+                            if (!std::isfinite(score.meanMembers)) continue;
+                            ++surfaceOverlapEligibleCount;
+                            surfaceOverlapPeak = std::max(surfaceOverlapPeak, score.meanMembers);
+                        }
+                        surfaceOverlapComputeMs = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start).count();
+                        surfaceOverlapScoresValid = true;
+                    }
+                    if (!debugDisplayBuffers.surfaceOverlapValid) {
+                        ensurePositionPrimitiveIndices();
+                        auto& map = debugDisplayBuffers.surfaceOverlap;
+                        map.assign(pixelCount, std::numeric_limits<float>::quiet_NaN());
+                        for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+                            const auto instanceIndex = debugDisplayBuffers.positionInstanceIndices[pixel];
+                            if (instanceIndex >= buildProducts.instances.size()) continue;
+                            const auto& instance = buildProducts.instances[instanceIndex];
+                            if (instance.geometryType != Pale::GeometryType::PointCloud) continue;
+                            const auto& range = buildProducts.pointCloudRanges.at(instance.geometryIndex);
+                            const auto primitive = debugDisplayBuffers.positionPrimitiveIndices[pixel];
+                            if (primitive < range.firstPoint || primitive - range.firstPoint >= range.pointCount) continue;
+                            const auto index = surfaceOverlapInstanceOffsets[instanceIndex] + primitive - range.firstPoint;
+                            const auto& score = surfaceOverlapScores.at(index);
+                            map[pixel] = surfaceOverlapMetric == 0 ? score.crowdedPercent
+                                : (surfaceOverlapMetric == 1 ? score.meanMembers : score.centerMembers);
+                        }
+                        debugDisplayBuffers.surfaceOverlapValid = true;
+                    }
+                    return true;
+                }
                 case ViewImageMode::SurfelDensity:
                     if (!debugDisplayBuffers.surfelDensityValid) {
                         auto& density = debugDisplayBuffers.surfelDensity;
@@ -4536,6 +4618,12 @@ int main(int argc, char** argv) {
                 }
 
                 switch (viewImageMode) {
+                    case ViewImageMode::SurfaceOverlap:
+                        colorizeScalarBufferFixedRange(
+                            debugDisplayBuffers.surfaceOverlap, displayedRenderWidth, displayedRenderHeight,
+                            0.0f, surfaceOverlapMetric == 0 ? 100.0f : surfaceOverlapColorMaximum,
+                            scalarColorMap, pixels);
+                        break;
                     case ViewImageMode::SurfelDensity: {
                         const auto& density = debugDisplayBuffers.surfelDensity;
                         const std::size_t grid = static_cast<std::size_t>(density.gridSize);
@@ -5533,7 +5621,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::EndCombo();
             }
-            ImGui::TextDisabled("1-9 direct   +/- cycle display modes");
+            ImGui::TextDisabled("1-9, 0 direct   +/- cycle display modes");
             if (viewImageMode == ViewImageMode::IntraSlabDepth ||
                 viewImageMode == ViewImageMode::IntraSlabRayDepth) {
                 ImGui::TextWrapped("Both slab losses use the same logarithmic color scale and unit weight.");
@@ -5556,6 +5644,7 @@ int main(int argc, char** argv) {
                 viewImageMode == ViewImageMode::CurvaturePrimitiveScore ||
                 viewImageMode == ViewImageMode::PositionPrimitiveScore ||
                 viewImageMode == ViewImageMode::SurfelDensity ||
+                viewImageMode == ViewImageMode::SurfaceOverlap ||
                 viewImageMode == ViewImageMode::DepthPositionGradient ||
                 viewImageMode == ViewImageMode::NormalPositionGradient ||
                 viewImageMode == ViewImageMode::IntraSlabPositionGradient ||
@@ -5582,6 +5671,42 @@ int main(int argc, char** argv) {
                 } else if (debugDisplayBuffers.surfaceCurvatureValid) {
                     ImGui::Text("Maximum curvature: %.6g", debugDisplayBuffers.surfaceCurvatureMaximum);
                 }
+            }
+            if (viewImageMode == ViewImageMode::SurfaceOverlap) {
+                const char* metrics[] = {"Slab overflow footprint (%)", "Mean slab members", "Center slab members"};
+                bool refreshMap = ImGui::Combo("Overlap metric", &surfaceOverlapMetric, metrics, IM_ARRAYSIZE(metrics));
+                const float depthTolerance = Pale::rendererDebugLocalLayerDepthEpsilon(settings);
+                const float normalCosine = Pale::rendererDebugLocalLayerNormalCosineThreshold(settings);
+                const auto memberLimit = Pale::rendererDebugMaxLocalSurfelHits(settings);
+                ImGui::Text("Inherited slab distance: %s = %.6g",
+                    settings.rendererDebugLocalLayerDepthMode == Pale::LocalLayerDepthMode::SymmetricRayDepth
+                        ? "ray half-width" : "normal tolerance", depthTolerance);
+                ImGui::Text("Inherited normal cosine: %.3f (%.1f degrees)",
+                    normalCosine, glm::degrees(std::acos(normalCosine)));
+                ImGui::Text("Overflow: more than %u total members (including anchor)", memberLimit);
+                ImGui::TextDisabled("Change membership under Surfel traversal. Alpha filtering is disabled.");
+                if (surfaceOverlapMetric != 0) {
+                    refreshMap |= ImGui::SliderFloat("Overlap color maximum (members)",
+                        &surfaceOverlapColorMaximum, 1.0f, 128.0f, "%.1f");
+                    surfaceOverlapColorMaximum = std::max(surfaceOverlapColorMaximum, 1.0f);
+                }
+                if (refreshMap) {
+                    debugDisplayBuffers.surfaceOverlapValid = false;
+                    updateDisplayTexture();
+                }
+                ImGui::Text("Observed surfels: %zu   peak mean slab members: %.2f",
+                    surfaceOverlapEligibleCount, surfaceOverlapPeak);
+                ImGui::Text("64 samples/surfel x %zu cameras; last calculation: %.1f ms",
+                    surfaceOverlapViews.size(), surfaceOverlapComputeMs);
+                ImGui::TextWrapped("Counts full-footprint intersections in a slab anchored at each sample, using the renderer's "
+                    "depth mode and ray-facing normal test. Counts include the anchor, exclude lights, and continue beyond the member limit.");
+                ImGui::TextWrapped("Overflow is the percentage of in-frame sample/camera pairs exceeding the slab capacity. "
+                    "Color range: 0%% to 100%%. Member counts are averaged over those pairs.");
+                ImGui::TextWrapped(buildProducts.cameraGPUs.empty()
+                    ? "No saved scene cameras: using the displayed camera; scores change when it moves."
+                    : "Uses saved scene cameras; orbiting the viewer only changes which surfel scores are displayed.");
+                ImGui::TextWrapped("Potential membership only: hidden surfaces are included; occlusion, transmission and ray-event limits "
+                    "are not applied. Black means no observed surfel. This diagnostic does not change training or split selection.");
             }
             if (viewImageMode == ViewImageMode::SurfelDensity) {
                 if (ImGui::SliderInt("Density grid (cells per axis)", &densityGridSize, 8, 256)) {

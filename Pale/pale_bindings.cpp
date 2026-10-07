@@ -4,6 +4,8 @@
 #include <pybind11/stl.h>
 
 #include "Renderer/RenderPackage.h"
+#include "Renderer/SurfaceOverlapScene.h"
+#include <chrono>
 #include "Renderer/Kernels/KernelHelpers.h"
 #include "Renderer/Kernels/BvhRefitKernels.h"
 #include "Core/ScopedTimer.h"
@@ -3605,6 +3607,57 @@ public:
         deviceTrainingState.shiftedLogScaleOffset = shiftedLogScaleOffset;
     }
 
+    py::dict get_surface_overlap_stats(const std::vector<std::string>& cameraNames)
+    {
+        syncPointParametersFromGpuIfDirty();
+        // The optimizer addresses the single dynamic cloud by canonical row.
+        // Never return instance-flattened scores for a scene with ambiguous rows.
+        auto asset = assetManager->get<Pale::PointAsset>(pointCloudAssetHandle);
+        if (!asset || asset->points.size() != 1u ||
+            asset->points.front().positions.size() != buildProducts.points.size())
+            throw std::runtime_error("surface overlap requires one dynamic point geometry");
+        std::size_t cloudInstances = 0;
+        for (const auto& instance : buildProducts.instances) {
+            if (instance.geometryType != Pale::GeometryType::PointCloud) continue;
+            ++cloudInstances;
+            const auto& range = buildProducts.pointCloudRanges.at(instance.geometryIndex);
+            if (range.firstPoint != 0u || range.pointCount != buildProducts.points.size())
+                throw std::runtime_error("surface overlap point rows do not match optimizer rows");
+        }
+        if (cloudInstances != 1u)
+            throw std::runtime_error("surface overlap requires one dynamic point cloud instance");
+        std::unordered_set<std::string> remaining(cameraNames.begin(), cameraNames.end());
+        std::vector<Pale::SurfaceOverlapView> views;
+        for (const auto& camera : buildProducts.cameras()) {
+            if (cameraNames.empty() || remaining.erase(std::string(camera.name)) != 0u)
+                views.push_back(Pale::surfaceOverlapView(camera));
+        }
+        if (!remaining.empty()) throw std::invalid_argument("surface overlap: unknown camera name");
+        if (views.empty()) throw std::invalid_argument("surface overlap requires at least one camera");
+
+        const auto start = std::chrono::steady_clock::now();
+        std::vector<std::size_t> offsets;
+        const auto footprints = Pale::surfaceOverlapFootprints(buildProducts, offsets);
+        const auto scores = Pale::SurfaceOverlap(footprints, Pale::surfaceOverlapSettings(m_settings)).evaluate(views);
+        const auto count = static_cast<py::ssize_t>(scores.size());
+        py::array_t<float> mean(count), center(count), crowded(count);
+        py::array_t<std::uint64_t> observations(count);
+        for (py::ssize_t i = 0; i < count; ++i) {
+            mean.mutable_data()[i] = scores[i].meanMembers;
+            center.mutable_data()[i] = scores[i].centerMembers;
+            crowded.mutable_data()[i] = scores[i].crowdedPercent;
+            observations.mutable_data()[i] = scores[i].observations;
+        }
+        py::dict result;
+        result["mean_members"] = std::move(mean);
+        result["center_members"] = std::move(center);
+        result["crowded_percent"] = std::move(crowded);
+        result["observations"] = std::move(observations);
+        result["elapsed_ms"] = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count();
+        return result;
+    }
+
     py::dict get_point_parameters()
     {
         syncPointParametersFromGpuIfDirty();
@@ -6875,6 +6928,9 @@ PYBIND11_MODULE(pale, m)
              py::arg("visibleNormalGrad32f"),
              py::arg("normalFromDepthGrad32f"))
         .def("get_point_parameters", &PythonRenderer::get_point_parameters)
+        .def("get_surface_overlap_stats", &PythonRenderer::get_surface_overlap_stats,
+             py::arg("camera_names") = std::vector<std::string>{},
+             "Current full-footprint slab membership in canonical point order; empty camera list uses all scene cameras.")
         .def("get_curvature_densification_stats",
              &PythonRenderer::get_curvature_densification_stats)
         .def("get_primal_activity_stats",

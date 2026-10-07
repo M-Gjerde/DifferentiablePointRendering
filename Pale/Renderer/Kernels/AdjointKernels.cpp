@@ -2769,9 +2769,15 @@ namespace Pale {
                     // z_median = max {z_i | T_i > 0.5}
                     //
                     // The median selection is discrete. Only the selected hit
-                    // receives the median-depth adjoint below.
+                    // receives the median-depth adjoint below. If the hit
+                    // budget ends before 50% opacity, this selects the last
+                    // valid hit, matching the forward depth fallback.
                     // ---------------------------------------------------------
-                    if (transmittance > 0.5f) { medianHitIndex = hitCount; }
+                    // Other regularizers may retain zero-opacity records;
+                    // those cannot become the forward depth fallback.
+                    if (alphaEffective > kAlphaEpsilon && accumulatedWeight < 0.5f) {
+                        medianHitIndex = hitCount;
+                    }
                     accumulatedWeight += compositeWeight;
                     accumulatedWeightedDepth += compositeWeight * depth;
                     ++hitCount;

@@ -297,10 +297,12 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             accumulatedRegularizerWeight += compositeWeight;
             accumulatedWeightedDepth += compositeWeight * depth;
 
-            if (!medianFound && accumulatedCompositeWeight + compositeWeight >= 0.5f) {
-                medianFound = true;
+            if (!medianFound) {
+                // Retain the last valid hit as a fallback if the hit budget
+                // ends before the opacity median is reached.
                 medianDepth = depth;
                 medianWorldPosition = regularizerHit.hitPositionW;
+                medianFound = accumulatedCompositeWeight + compositeWeight >= 0.5f;
             }
             accumulatedCompositeWeight += compositeWeight;
 
@@ -771,16 +773,19 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         } else {
             sensor.meanDepthBuffer[pixelIndex] = 0.0f;
         }
-        // Old median semantics:
-        // no 50% accumulated opacity -> no surface depth.
-        if (medianFound) {
+        // A truncated stream still supplies a surface depth for diagnostics
+        // and normal consistency. Truly empty or uncapped transparent rays
+        // retain the no-depth result. Keep an already reached median intact.
+        const bool surfaceDepthValid = medianFound ||
+                (regularizerHitIndex >= maxSplatEventsPerRay && medianDepth > 0.0f);
+        if (surfaceDepthValid) {
             sensor.medianDepthBuffer[pixelIndex] = medianDepth;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f};
         } else {
             sensor.medianDepthBuffer[pixelIndex] = 0.0f;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
         }
-        if (medianFound) {
+        if (surfaceDepthValid) {
             sensor.visibleNormalBuffer[pixelIndex] = float4{accumulatedWeightedNormal.x(), accumulatedWeightedNormal.y(), accumulatedWeightedNormal.z(), 1.0f};
         } else {
             sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
@@ -1150,12 +1155,14 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         float accumulatedMeanDepth = 0.0f;
         const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
         const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
+        uint32_t processedPointHitCount = 0u;
         uint32_t directPointInstanceIndex = kInvalidIndex;
         const bool canUsePointHitBatches =
             pointHitBatchSize > 1u &&
             tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
 
         auto accumulatePointHit = [&](const LocalSurfelLayerHit &pointHit) {
+            ++processedPointHitCount;
             const Point &surfel = scene.points[pointHit.primitiveIndex];
             float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
             const bool hitBackside = dot(normalW, -primaryRay.direction) < 0.0f;
@@ -1190,11 +1197,11 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
             const float zi = dot(pointHit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
             accumulatedMeanDepthWeight += wi;
             accumulatedMeanDepth += wi * zi;
-            if (!medianFound && accumulatedCompositeWeight >= 0.5f) {
-                medianFound = true;
+            if (!medianFound && wi > 0.0f && zi > 0.0f) {
                 medianDepth = zi;
                 medianWorldPosition = pointHit.hitPositionW;
                 medianNormalW = normalW;
+                medianFound = accumulatedCompositeWeight >= 0.5f;
             }
             if (depthDistortionDepthAccepted(zi, settings.depthDistortionWorldSpace)) {
                 const float ndcDepth = depthDistortionCoordinate(zi, settings.depthDistortionWorldSpace);
@@ -1315,7 +1322,9 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         } else {
             sensor.meanDepthBuffer[pixelIndex] = 0.0f;
         }
-        if (medianFound) {
+        const bool surfaceDepthValid = medianFound ||
+                (processedPointHitCount >= maxSplatEventsPerRay && medianDepth > 0.0f);
+        if (surfaceDepthValid) {
             sensor.medianDepthBuffer[pixelIndex] = medianDepth;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f};
             sensor.visibleNormalBuffer[pixelIndex] = float4{medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), 1.0f};
@@ -1448,11 +1457,13 @@ void launchPointSampledPathTracingCameraKernel(
                 float3 medianNormalW(0.0f, 0.0f, 0.0f);
                 float accumulatedMeanDepthWeight = 0.0f;
                 float accumulatedMeanDepth = 0.0f;
+                uint32_t processedHitCount = 0u;
                 for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
                     PointSampledSceneHit hit{};
                     if (!intersectScenePointSampledGeometry(primaryRay, scene, settings, hit)) {
                         break;
                     }
+                    ++processedHitCount;
                     float alphaEff = sycl::clamp(hit.opacity, 0.0f, 1.0f);
                     if (hit.geometryType == GeometryType::Mesh) {
                         alphaEff = 1.0f;
@@ -1483,11 +1494,11 @@ void launchPointSampledPathTracingCameraKernel(
                     const float depth = dot(hit.hitPositionW - sensor.camera.pos, sensor.camera.forward);
                     accumulatedMeanDepthWeight += compositeWeight;
                     accumulatedMeanDepth += compositeWeight * depth;
-                    if (!medianFound && (accumulatedCompositeWeight + compositeWeight) >= 0.5f) {
-                        medianFound = true;
+                    if (!medianFound && compositeWeight > 0.0f && depth > 0.0f) {
                         medianDepth = depth;
                         medianWorldPosition = hit.hitPositionW;
                         medianNormalW = normalW;
+                        medianFound = accumulatedCompositeWeight + compositeWeight >= 0.5f;
                     }
                     accumulatedCompositeWeight += compositeWeight;
                     const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
@@ -1519,7 +1530,9 @@ void launchPointSampledPathTracingCameraKernel(
                 else {
                     sensor.meanDepthBuffer[pixelIndex] = 0.0f;
                 }
-                if (medianFound) {
+                const bool surfaceDepthValid = medianFound ||
+                        (processedHitCount >= kMaxSplatEventsPerRay && medianDepth > 0.0f);
+                if (surfaceDepthValid) {
                     sensor.medianDepthBuffer[pixelIndex] = medianDepth;
                     sensor.medianWorldPositionBuffer[pixelIndex] = float4{
                         medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f

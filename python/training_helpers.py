@@ -2181,6 +2181,8 @@ def maybe_make_densification_result(
         densification_grad_abs_min: float,
         densify_curvature_stats_accum: dict[str, np.ndarray] | None = None,
         force_densification: bool = False,
+        renderer: pale.Renderer | None = None,
+        overlap_camera_names: list[str] | None = None,
 ) -> dict[str, np.ndarray] | None:
     if densification_interval <= 0:
         return None
@@ -2196,6 +2198,10 @@ def maybe_make_densification_result(
             )
     ):
         return None
+
+    max_mean_members = float(config.densification_max_mean_slab_members)
+    if not np.isfinite(max_mean_members) or max_mean_members < 0:
+        raise ValueError("densification_max_mean_slab_members must be finite and non-negative")
 
     # Do not append children of low-opacity parents being pruned in this iteration.
     opacity_prune_interval = int(config.prune_interval)
@@ -2385,6 +2391,29 @@ def maybe_make_densification_result(
         curvature_candidate_count = int(np.count_nonzero(curvature_candidate_mask_np))
         candidate_count = int(np.count_nonzero(combined_candidate_mask_np))
 
+        overlap_blocked_count = 0
+        overlap_unknown_count = 0
+        overlap_compute_ms = 0.0
+        selection_mask = trainable_surfel_mask
+        if candidate_count > 0 and max_mean_members > 0:
+            if renderer is None:
+                raise ValueError("Overlap-gated densification requires the synchronized renderer")
+            overlap = renderer.get_surface_overlap_stats(overlap_camera_names or [])
+            mean_members = np.asarray(overlap["mean_members"], dtype=np.float32)
+            if mean_members.shape != (int(positions.shape[0]),):
+                raise ValueError("Overlap scores must match canonical optimizer point rows")
+            # No usable camera sample means unknown coverage, not an empty slab.
+            # Leave these parents eligible instead of freezing unseen geometry.
+            observed = np.isfinite(mean_members)
+            blocked = observed & (mean_members >= max_mean_members)
+            overlap_blocked_count = int(np.count_nonzero(combined_candidate_mask_np & blocked))
+            overlap_unknown_count = int(np.count_nonzero(combined_candidate_mask_np & ~observed))
+            # Apply before top-k selection, to position and curvature candidates
+            # alike, including the optional legacy exact-clone branch.
+            selection_mask = trainable_surfel_mask & torch.as_tensor(
+                ~blocked, device=trainable_surfel_mask.device, dtype=torch.bool)
+            overlap_compute_ms = float(overlap["elapsed_ms"])
+
         if candidate_count == 0:
             if not np.any(valid_denom_np) and not np.any(valid_curvature_observation_np):
                 densify_reason = "no_density_samples"
@@ -2406,7 +2435,7 @@ def maybe_make_densification_result(
                 powers=powers,
                 grad_position_np=avg_density_grad_vector_np,
                 selection_score_np=position_selection_score_np,
-                trainable_surfel_mask=trainable_surfel_mask,
+                trainable_surfel_mask=selection_mask,
                 grad_threshold=1.0,
                 max_clone_fraction=float(config.densification_max_new_fraction),
                 clone_offset_scale=split_offset_scale,
@@ -2442,9 +2471,23 @@ def maybe_make_densification_result(
                 else:
                     densify_reason = "densification_result_without_new_block"
             else:
-                densify_reason = "selected_candidates_but_densification_rejected_all"
+                densify_reason = ("all_candidates_blocked_by_overlap"
+                                  if overlap_blocked_count == candidate_count
+                                  else "selected_candidates_but_densification_rejected_all")
 
         if densification_verbose:
+            overlap_log = "overlap_gate=disabled, "
+            if max_mean_members > 0:
+                blocked_percent = 100.0 * overlap_blocked_count / candidate_count if candidate_count else 0.0
+                # These are signal candidates before size checks and the new-point
+                # budget; after_overlap is not necessarily the number added.
+                overlap_log = (
+                    f"overlap_limit={max_mean_members:g}, "
+                    f"overlap_blocked={overlap_blocked_count}/{candidate_count} ({blocked_percent:.1f}%), "
+                    f"after_overlap={candidate_count - overlap_blocked_count}, "
+                    f"overlap_unknown_allowed={overlap_unknown_count}, "
+                    f"overlap_ms={overlap_compute_ms:.1f}, "
+                )
             print(
                 f"[Iter {iteration:04d}] Densification check | "
                 f"reason={densify_reason}, "
@@ -2458,6 +2501,7 @@ def maybe_make_densification_result(
                 f"position_candidates={position_candidate_count}, "
                 f"curvature_candidates={curvature_candidate_count}, "
                 f"combined_candidates={candidate_count}, "
+                f"{overlap_log}"
                 f"signal_min={signal_min:.3e}, "
                 f"signal_p50={signal_p50:.3e}, "
                 f"signal_p90={signal_p90:.3e}, "

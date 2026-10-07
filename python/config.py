@@ -18,7 +18,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -74,7 +74,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.00055
     learning_rate_rotation: float = 0.01
-    learning_rate_scale: float = 0.002
+    learning_rate_scale: float = 0.004
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -82,7 +82,7 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = True
+    use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
@@ -97,10 +97,11 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.01
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.002
+    normal_consistency_weight: float = 5.0e-4
+
     intra_slab_depth_weight: float = 0.0e-5
     curvature_scale_weight: float = 0.0e-6
 
@@ -118,7 +119,7 @@ class OptimizationConfig:
 
     # Densification: schedule
     densification_interval: int = 200
-    densify_after: int = 0
+    densify_after: int = 1000
     densification_stats_skip_interval_start: bool = True
 
     # Densification: gradient signal
@@ -134,11 +135,14 @@ class OptimizationConfig:
     # including the surfel-normal direction.
     densification_tangent_only: bool = True
     densification_max_new_fraction: float = 1.0
-    densification_verbose: bool = False
+    # Reject densification when the current full-footprint mean slab membership
+    # (including self) reaches this value. 0 disables the experimental gate.
+    densification_max_mean_slab_members: float = 2.0
+    densification_verbose: bool = True
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 1.0e-3
+    densification_grad_abs_min: float = 3.0e-3
+    densification_grad_abs_min_final: float = 3.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -150,7 +154,7 @@ class OptimizationConfig:
     densification_radiance_bias_max_weight: float = 1.5
 
     # Pruning and topology maintenance
-    min_surfel_area: float = math.pi * 8.0e-5
+    min_surfel_area: float = math.pi * 1.0e-4
     min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
 
     # Densification: curvature trigger and clone/split policy
@@ -158,8 +162,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.
-    densification_split_offset_scale: float = 0.6
+    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
+    densification_split_offset_scale: float = 0.8
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
@@ -633,6 +637,11 @@ def parse_args() -> OptimizationConfig:
         type=int,
     )
 
+    densification_selection.add_argument(
+        "--densification-max-mean-slab-members", type=float,
+        help="Block splits/clones at or above this mean slab membership (including self); 0 disables.",
+    )
+
     densification_radiance = parser.add_argument_group("densification: radiance balancing")
     _add_typed_fields(
         densification_radiance,
@@ -787,6 +796,9 @@ def parse_args() -> OptimizationConfig:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
 
 
+    if (not math.isfinite(config.densification_max_mean_slab_members)
+            or config.densification_max_mean_slab_members < 0):
+        parser.error("--densification-max-mean-slab-members must be finite and non-negative")
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")
     if not math.isfinite(config.densification_radiance_bias_strength) or config.densification_radiance_bias_strength < 0:

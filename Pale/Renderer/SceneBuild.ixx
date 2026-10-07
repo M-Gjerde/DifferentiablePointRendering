@@ -76,8 +76,8 @@ export namespace Pale {
         };
 
         struct BuildOptions {
-            uint32_t bvhMaxLeafTriangles = 2;
-            uint32_t bvhMaxLeafPoints = 2;
+            uint32_t bvhMaxLeafTriangles = 4;
+            uint32_t bvhMaxLeafPoints = 8;
             bool pointBvhUseBinnedSah = true;
             float pointBvhNormalThickness = 0.0001f;
         };

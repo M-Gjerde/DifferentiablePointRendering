@@ -252,6 +252,8 @@ target_include_directories(PaleLibRealtime
 add_sycl_to_target(TARGET PaleLibRealtime)
 
 add_executable(PaleRealtimeViewer main.cpp)
+# The cached world-space overlap diagnostic parallelizes host footprint queries.
+target_link_options(PaleRealtimeViewer PRIVATE -fopenmp=libomp)
 target_compile_options(PaleRealtimeViewer
         PRIVATE
         -fopenmp=libomp

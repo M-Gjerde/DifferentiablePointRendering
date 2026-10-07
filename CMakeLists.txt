@@ -196,6 +196,7 @@ if (BUILD_PYBIND)
     # Module target
     add_library(pale MODULE Pale/pale_bindings.cpp)
     target_link_libraries(pale PRIVATE PaleLib pybind11::module)
+    target_link_options(pale PRIVATE -fopenmp=libomp)
     target_compile_features(pale PRIVATE cxx_std_20)
     target_compile_options(pale
             PRIVATE

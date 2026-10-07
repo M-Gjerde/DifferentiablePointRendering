@@ -127,11 +127,10 @@ the mean ray-depth alternative is a diagnostic preview only.
 
 ### Surface curvature map
 
-The display menu and **+/-** cycle group **Surface curvature (magnitude)**,
-**Curvature loss**, and **Curvature primitive score** consecutively. The first
-ten views use number keys **1–9, then 0** in menu/cycle order: **8** is Surface
-curvature, **9** is Curvature loss, and **0** is Curvature primitive score.
-Position primitive score follows them without a number shortcut.
+The first ten views use number keys **1–9, then 0** in menu/cycle order:
+**8** is Surface curvature, **9** is Curvature loss, and **0** is Surface overlap
+(world space). Curvature primitive score and Position primitive score follow
+them in the display menu and **+/-** cycle without number shortcuts.
 
 Choose **Display → Surface curvature (magnitude)** for an estimate of local
 surface bending. For each fitted member of the visible slab, the map uses
@@ -214,6 +213,56 @@ preview use the selected mode.
 The loss image shows raw per-pixel distortion; the position-gradient image uses
 mean image loss with unit regularizer weight. Colors rescale separately each
 frame, so equal colors across frames do not imply equal loss values.
+
+### Surface overlap and slab capacity
+
+Press **0** for **Surface overlap (world space)**. Membership inherits **Renderer
+debug → Surfel traversal** settings: slab distance mode, depth tolerance, normal
+cosine, and maximum local surfel hits. Symmetric mode tests the ray interval
+before and after each anchor; normal-distance mode uses the forward interval,
+anchor-normal separation, and the renderer's grazing-angle bound. Both normals
+are faced toward the camera before their dot product is compared. Cosine `-1`
+disables normal rejection. There are no separate overlap tolerances or alpha
+cutoff: the diagnostic measures full geometric footprints, excluding lights.
+
+The **Slab overflow footprint (%)** metric samples 64 locations on each surfel
+from saved scene cameras, using only sample/camera pairs inside the image.
+It reports the percentage whose potential membership exceeds the current slab
+capacity. Counts include the anchor surfel: at capacity **8**, **9** members
+overflow. **Mean slab members** and **Center slab members** show uncapped counts
+averaged over sampled views. Their color maximum only controls saturation;
+overflow colors always range from 0% to 100%.
+
+Scores are cached per geometry, camera set, and membership settings. Orbiting
+the viewer keeps the saved-camera scores fixed. Without saved cameras, the
+displayed camera is used and moving it updates the scores. These are potential
+slabs anchored at the sampled surfel, not an actual render traversal: occlusion,
+transmission, candidate-batch limits, and ray-event limits are not applied.
+An unobserved surfel has no score. Changing the view or its color maximum does
+not alter training or split selection.
+
+Training can optionally use the same mean-members calculation with
+`--densification-max-mean-slab-members 3` (or `2` for a stricter experiment).
+Use `0` to disable this gate. A value of 3 includes the parent: roughly two
+other members per sample on average. The score is a mean across footprint
+locations and in-frame scene-camera rays, not a count of distinct neighbors that
+touch any part of the surfel. For example, half the samples at 2 members and half
+at 10 give a mean of 6.
+
+At each scheduled densification event, training recomputes scores from current
+geometry before selecting candidates. Parents at or above the threshold are
+excluded from both position- and curvature-triggered splits, and optional exact
+clones, before the candidate budget is applied. Accepted splits keep their
+existing offset and scale policy. With `--densification-verbose`, each check logs
+the overlap threshold, blocked candidate count and percentage, candidates remaining
+after the overlap gate, unobserved candidates allowed through, and measurement
+time, including when all candidates are blocked. Counts refer to gradient/curvature
+candidates before size checks and the new-point budget; `added` reports the final
+number of new surfels. Geometry-only scores include
+hidden and transparent surfels; zero usable samples are unknown and do not block.
+This experimental gate does not prune existing clusters or impose a strict
+post-split maximum: simultaneous splits can raise occupancy above the threshold,
+and sparse edges can dilute a crowded center's mean.
 
 ## Shared-height surface experiment
 
