@@ -75,8 +75,8 @@ class OptimizationConfig:
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
     learning_rate_position: float = 0.00055
-    learning_rate_rotation: float = 0.01
-    learning_rate_scale: float = 0.004
+    learning_rate_rotation: float = 0.005
+    learning_rate_scale: float = 0.002
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -102,7 +102,7 @@ class OptimizationConfig:
     depth_distort_weight: float = 0.005
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 10.0e-4
+    normal_consistency_weight: float = 1.0e-3
 
     intra_slab_depth_weight: float = 0.0e-5
     curvature_scale_weight: float = 0.0e-6
@@ -120,7 +120,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 300
     densify_after: int = 500
     densification_stats_skip_interval_start: bool = True
 
@@ -139,12 +139,12 @@ class OptimizationConfig:
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership
     # (including self) reaches this value. 0 disables the experimental gate.
-    densification_max_mean_slab_members: float = 3.0
+    densification_max_mean_slab_members: float = 2.0
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 5.0e-3
-    densification_grad_abs_min_final: float = 5.0e-3
+    densification_grad_abs_min: float = 3.0e-3
+    densification_grad_abs_min_final: float = 3.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
