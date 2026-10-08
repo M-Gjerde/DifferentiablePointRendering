@@ -88,7 +88,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 1.0
+    position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.1
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
@@ -139,12 +139,12 @@ class OptimizationConfig:
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership
     # (including self) reaches this value. 0 disables the experimental gate.
-    densification_max_mean_slab_members: float = 3.0
+    densification_max_mean_slab_members: float = 1.5
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 5.0e-3
-    densification_grad_abs_min_final: float = 5.0e-3
+    densification_grad_abs_min: float = 3.0e-3
+    densification_grad_abs_min_final: float = 3.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
@@ -164,8 +164,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.1 # 1.6 matches 3DGS split procedure.
-    densification_split_offset_scale: float = 0.1
+    densification_split_scale_factor: float = 1.3 # 1.6 matches 3DGS split procedure.
+    densification_split_offset_scale: float = 0.3
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
