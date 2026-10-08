@@ -36,6 +36,8 @@ class RendererSettingsConfig:
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
             "curvature_scale_weight": config.curvature_scale_weight,
             "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
+            "surface_overlap_normal_distance": config.surface_overlap_normal_distance,
+            "surface_overlap_depth_tolerance": config.surface_overlap_depth_tolerance,
             "enable_curvature_densification": (
                 config.curvature_violation_threshold > 0.0
                 and config.densification_interval > 0
@@ -74,9 +76,9 @@ class OptimizationConfig:
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.00055
+    learning_rate_position: float = 0.0007
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.002
+    learning_rate_scale: float = 0.003
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -99,10 +101,10 @@ class OptimizationConfig:
     ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.005
+    depth_distort_weight: float = 0.0075
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 1.0e-3
+    normal_consistency_weight: float = 5.0e-4
 
     intra_slab_depth_weight: float = 0.0e-5
     curvature_scale_weight: float = 0.0e-6
@@ -120,7 +122,7 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
 
     # Densification: schedule
-    densification_interval: int = 300
+    densification_interval: int = 200
     densify_after: int = 500
     densification_stats_skip_interval_start: bool = True
 
@@ -132,7 +134,7 @@ class OptimizationConfig:
     # the clone signal. True also includes non-local position derivatives from
     # visibility, shadowing, attenuation, and other transport effects.
     densification_full_position: bool = False
-    densification_downweight_normal_gradients: bool = False
+    densification_downweight_normal_gradients: bool = True
     # When false, position-triggered splits may use the full 3D gradient,
     # including the surfel-normal direction.
     densification_tangent_only: bool = True
@@ -140,6 +142,9 @@ class OptimizationConfig:
     # Reject densification when the current full-footprint mean slab membership
     # (including self) reaches this value. 0 disables the experimental gate.
     densification_max_mean_slab_members: float = 2.0
+    # Crowd control has its own symmetric distance test; rendering slabs are unchanged.
+    surface_overlap_normal_distance: bool = True
+    surface_overlap_depth_tolerance: float = 0.005
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
@@ -165,7 +170,7 @@ class OptimizationConfig:
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
     densification_split_scale_factor: float = 1.1 # 1.6 matches 3DGS split procedure.
-    densification_split_offset_scale: float = 0.1
+    densification_split_offset_scale: float = 0.5
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
@@ -643,6 +648,14 @@ def parse_args() -> OptimizationConfig:
         "--densification-max-mean-slab-members", type=float,
         help="Block splits/clones at or above this mean slab membership (including self); 0 disables.",
     )
+    _add_boolean_argument(
+        densification_selection, "--surface-overlap-normal-distance",
+        help="Crowd control: measure symmetric overlap along the surfel normal (default); --no-surface-overlap-normal-distance measures along the camera ray.",
+    )
+    densification_selection.add_argument(
+        "--surface-overlap-depth-tolerance", type=float,
+        help="Crowd-control distance tolerance in scene units (default: 0.005), independent of rendering slabs.",
+    )
 
     densification_radiance = parser.add_argument_group("densification: radiance balancing")
     _add_typed_fields(
@@ -801,6 +814,9 @@ def parse_args() -> OptimizationConfig:
     if (not math.isfinite(config.densification_max_mean_slab_members)
             or config.densification_max_mean_slab_members < 0):
         parser.error("--densification-max-mean-slab-members must be finite and non-negative")
+    if (not math.isfinite(config.surface_overlap_depth_tolerance)
+            or config.surface_overlap_depth_tolerance <= 1e-6):
+        parser.error("--surface-overlap-depth-tolerance must be finite and greater than 1e-6")
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")
     if not math.isfinite(config.densification_radiance_bias_strength) or config.densification_radiance_bias_strength < 0:

@@ -5688,16 +5688,21 @@ int main(int argc, char** argv) {
             if (viewImageMode == ViewImageMode::SurfaceOverlap) {
                 const char* metrics[] = {"Slab overflow footprint (%)", "Mean slab members", "Center slab members"};
                 bool refreshMap = ImGui::Combo("Overlap metric", &surfaceOverlapMetric, metrics, IM_ARRAYSIZE(metrics));
-                const float depthTolerance = Pale::rendererDebugLocalLayerDepthEpsilon(settings);
+                refreshMap |= ImGui::Checkbox("Normal-distance overlap", &settings.surfaceOverlapNormalDistance);
+                if (ImGui::DragFloat("Overlap distance tolerance", &settings.surfaceOverlapDepthTolerance,
+                        0.0001f, 1.0e-5f, 10.0f, "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
+                    settings.surfaceOverlapDepthTolerance = std::max(settings.surfaceOverlapDepthTolerance, 1.0e-5f);
+                    refreshMap = true;
+                }
+                ImGui::TextWrapped(settings.surfaceOverlapNormalDistance
+                    ? "Symmetric distance along each surfel's normal. Includes neighbors in front and behind; ray intervals widen at grazing angles."
+                    : "Symmetric distance along each camera ray. At grazing angles, the same normal separation can fall outside the interval.");
                 const float normalCosine = Pale::rendererDebugLocalLayerNormalCosineThreshold(settings);
                 const auto memberLimit = Pale::rendererDebugMaxLocalSurfelHits(settings);
-                ImGui::Text("Inherited slab distance: %s = %.6g",
-                    settings.rendererDebugLocalLayerDepthMode == Pale::LocalLayerDepthMode::SymmetricRayDepth
-                        ? "ray half-width" : "normal tolerance", depthTolerance);
                 ImGui::Text("Inherited normal cosine: %.3f (%.1f degrees)",
                     normalCosine, glm::degrees(std::acos(normalCosine)));
                 ImGui::Text("Overflow: more than %u total members (including anchor)", memberLimit);
-                ImGui::TextDisabled("Change membership under Surfel traversal. Alpha filtering is disabled.");
+                ImGui::TextDisabled("Overlap distance is independent of Surfel traversal. Alpha filtering is disabled.");
                 if (surfaceOverlapMetric != 0) {
                     refreshMap |= ImGui::SliderFloat("Overlap color maximum (members)",
                         &surfaceOverlapColorMaximum, 1.0f, 128.0f, "%.1f");
@@ -5712,14 +5717,14 @@ int main(int argc, char** argv) {
                 ImGui::Text("64 samples/surfel x %zu cameras; last calculation: %.1f ms",
                     surfaceOverlapViews.size(), surfaceOverlapComputeMs);
                 ImGui::TextWrapped("Counts full-footprint intersections in a slab anchored at each sample, using the renderer's "
-                    "depth mode and ray-facing normal test. Counts include the anchor, exclude lights, and continue beyond the member limit.");
+                    "ray-facing normal test and the overlap distance above. Counts include the anchor, exclude lights, and continue beyond the member limit.");
                 ImGui::TextWrapped("Overflow is the percentage of in-frame sample/camera pairs exceeding the slab capacity. "
                     "Color range: 0%% to 100%%. Member counts are averaged over those pairs.");
                 ImGui::TextWrapped(buildProducts.cameraGPUs.empty()
                     ? "No saved scene cameras: using the displayed camera; scores change when it moves."
                     : "Uses saved scene cameras; orbiting the viewer only changes which surfel scores are displayed.");
                 ImGui::TextWrapped("Potential membership only: hidden surfaces are included; occlusion, transmission and ray-event limits "
-                    "are not applied. Black means no observed surfel. This diagnostic does not change training or split selection.");
+                    "are not applied. Black means no observed surfel. Training uses the same scoring rule with its own overlap settings; viewer changes are preview-only.");
             }
             if (viewImageMode == ViewImageMode::SurfelDensity) {
                 if (ImGui::SliderInt("Density grid (cells per axis)", &densityGridSize, 8, 256)) {

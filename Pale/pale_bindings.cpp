@@ -367,6 +367,15 @@ public:
                 get_b(settingsDict, "enable_curvature_densification", false);
             primalActivityTrackingEnabled =
                 get_b(settingsDict, "enable_primal_activity_tracking", false);
+            m_settings.surfaceOverlapNormalDistance = get_b(
+                settingsDict, "surface_overlap_normal_distance", m_settings.surfaceOverlapNormalDistance);
+            m_settings.surfaceOverlapDepthTolerance = get_f(
+                settingsDict, "surface_overlap_depth_tolerance", m_settings.surfaceOverlapDepthTolerance);
+            if (!std::isfinite(m_settings.surfaceOverlapDepthTolerance) ||
+                m_settings.surfaceOverlapDepthTolerance <= Pale::RayEpsilon)
+            {
+                throw std::invalid_argument("surface_overlap_depth_tolerance must be finite and greater than 1e-6");
+            }
             // Finite-difference/debug controls. Exposing these through the
             // regular settings dictionary lets tests exercise both the batched
             // and scalar intersection paths with identical scene data.

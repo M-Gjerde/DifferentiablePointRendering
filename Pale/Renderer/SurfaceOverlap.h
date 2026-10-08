@@ -30,7 +30,7 @@ namespace Pale {
     struct SurfaceOverlapSettings {
         float depthTolerance = 0.005f;
         float normalCosine = -1.0f;
-        Pale::LocalLayerDepthMode depthMode = Pale::LocalLayerDepthMode::SymmetricRayDepth;
+        bool normalDistance = true;
         unsigned maxSlabMembers = 8;
         float rayEpsilon = 1.0e-6f;
         static constexpr int sampleCount = 64;
@@ -69,7 +69,9 @@ namespace Pale {
     };
 
     // Uncapped potential slab membership at surfel footprint samples, along
-    // supplied camera rays. Shared renderer predicates define depth and normals.
+    // supplied camera rays. Distance is symmetric around each anchor, measured
+    // along its normal by default, with a ray-distance comparison mode. Only
+    // the facing-normal filter is shared with renderer slab membership.
     // No opacity filter, occlusion termination, hit-batch limit or member cap.
     class SurfaceOverlap {
         struct Footprint {
@@ -130,13 +132,10 @@ namespace Pale {
                 if (std::abs(denominator) <= settings.rayEpsilon) continue;
                 const float offset = glm::dot(neighbor.center - query.position, neighbor.normal) / denominator;
                 const float candidateT = query.anchorT + offset;
-                if (candidateT <= settings.rayEpsilon || !Pale::localLayerDepthRangeContains(
-                    query.anchorT, candidateT, query.rayHalfWidth, settings.depthMode, settings.rayEpsilon)) continue;
+                if (candidateT <= settings.rayEpsilon || std::abs(offset) > query.rayHalfWidth) continue;
                 const float agreement = Pale::localLayerFacingNormalAgreement(
                     glm::dot(anchor.normal, neighbor.normal), query.referenceDotRay, denominator);
-                const float normalDistance = std::abs(offset * query.referenceDotRay);
-                if (!Pale::localLayerSurfaceMatches(agreement, normalDistance,
-                    settings.normalCosine, settings.depthTolerance, settings.depthMode)) continue;
+                if (agreement < settings.normalCosine) continue;
                 const auto delta = query.position + offset * query.direction - neighbor.center;
                 const float u = glm::dot(delta, neighbor.dualU);
                 const float v = glm::dot(delta, neighbor.dualV);
@@ -152,11 +151,12 @@ namespace Pale {
             if (!view.rayTo(position, query.direction, query.anchorT) || query.anchorT <= settings.rayEpsilon) return false;
             query.referenceDotRay = glm::dot(footprints[self].normal, query.direction);
             if (std::abs(query.referenceDotRay) <= settings.rayEpsilon) return false;
-            query.rayHalfWidth = Pale::localLayerRayHalfWidth(
-                query.referenceDotRay, settings.depthTolerance, settings.depthMode);
-            const float minimumOffset = settings.depthMode == Pale::LocalLayerDepthMode::SymmetricRayDepth
-                ? -query.rayHalfWidth : 0.0f;
-            const auto start = position + (minimumOffset - settings.rayEpsilon) * query.direction;
+            // No grazing-angle clamp: |offset * n.d| <= h must remain a
+            // physical normal-distance test even for very oblique camera rays.
+            query.rayHalfWidth = settings.normalDistance
+                ? settings.depthTolerance / std::abs(query.referenceDotRay)
+                : settings.depthTolerance;
+            const auto start = position - query.rayHalfWidth * query.direction;
             const auto end = position + query.rayHalfWidth * query.direction;
             query.lo = glm::min(start, end) - glm::vec3(settings.rayEpsilon);
             query.hi = glm::max(start, end) + glm::vec3(settings.rayEpsilon);
