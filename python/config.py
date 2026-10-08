@@ -88,7 +88,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 2.0
+    position_lr_scale_init: float = 1.0
     position_lr_scale_final: float = 0.1
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
@@ -143,8 +143,8 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
-    densification_grad_abs_min: float = 3.0e-3
-    densification_grad_abs_min_final: float = 3.0e-3
+    densification_grad_abs_min: float = 5.0e-3
+    densification_grad_abs_min_final: float = 5.0e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
 
