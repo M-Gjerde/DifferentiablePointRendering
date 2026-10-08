@@ -100,6 +100,7 @@ inline void launchSharedHeightForward(RenderPackage &pkg, uint32_t cameraIndex) 
         float3 rgb{0.0f};
         float transmission = 1.0f, weightedDepth = 0.0f, weightSum = 0.0f;
         float medianDepth = 0.0f;
+        bool medianFound = false;
         float4 medianPosition{0.0f}, medianNormal{0.0f};
         float tMin = RayEpsilon;
         for (uint32_t event = 0; valid &&
@@ -166,10 +167,11 @@ inline void launchSharedHeightForward(RenderPackage &pkg, uint32_t cameraIndex) 
             rgb += weight * outgoing;
             const float depth = dot(position - sensor.camera.pos, sensor.camera.forward);
             weightedDepth += weight * depth;
-            if (medianDepth == 0.0f && weightSum + weight >= 0.5f) {
+            if (!medianFound && weight > 0.0f && depth > 0.0f) {
                 medianDepth = depth;
                 medianPosition = float4{position, 1.0f};
                 medianNormal = float4{normal, 1.0f};
+                medianFound = weightSum + weight >= settings.medianDepthThreshold;
             }
             weightSum += weight;
             transmission *= 1.0f - alpha;
@@ -177,6 +179,11 @@ inline void launchSharedHeightForward(RenderPackage &pkg, uint32_t cameraIndex) 
         }
         sensor.framebuffer[pixel] = float4{rgb, sycl::clamp(weightSum, 0.0f, 1.0f)};
         sensor.meanDepthBuffer[pixel] = weightSum > 0.0f ? weightedDepth / weightSum : 0.0f;
+        if (!medianFound && !settings.medianDepthRetainLastHit) {
+            medianDepth = 0.0f;
+            medianPosition = float4{0.0f};
+            medianNormal = float4{0.0f};
+        }
         sensor.medianDepthBuffer[pixel] = medianDepth;
         sensor.medianWorldPositionBuffer[pixel] = medianPosition;
         sensor.visibleNormalBuffer[pixel] = medianNormal;

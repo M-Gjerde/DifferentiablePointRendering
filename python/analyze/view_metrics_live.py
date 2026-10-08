@@ -18,6 +18,10 @@ from matplotlib.ticker import StrMethodFormatter
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from terminal_output import print_status
+
 LEGEND_KWARGS = {
     "fontsize": "small",
     "framealpha": 0.85,
@@ -1529,14 +1533,14 @@ def main() -> None:
     last_plot_warning: str | None = None
     geometry_state = GeometryEvaluationState()
 
-    print("Starting live metrics viewer. Press Ctrl+C in the terminal to stop.")
-    print(f"Refresh interval   : {args.refresh_seconds:.3f}s")
-    print(f"Watch latest       : {args.watch_latest}")
-    print(f"Save plot          : {args.save_plot}")
-    print(f"Loss y-scale       : {args.loss_y_scale}")
-    print(f"Point count window : {args.point_count_windowed}")
+    print_status("Starting live metrics viewer. Press Ctrl+C in the terminal to stop.")
+    print_status(f"Refresh interval   : {args.refresh_seconds:.3f}s")
+    print_status(f"Watch latest       : {args.watch_latest}")
+    print_status(f"Save plot          : {args.save_plot}")
+    print_status(f"Loss y-scale       : {args.loss_y_scale}")
+    print_status(f"Point count window : {args.point_count_windowed}")
     if args.ground_truth is not None:
-        print(
+        print_status(
             "Note: view_metrics_live.py no longer computes Chamfer. "
             "Pass --gt to main.py; the viewer will read geometry_metrics.csv.",
             file=sys.stderr,
@@ -1557,10 +1561,10 @@ def main() -> None:
                 previous_dataframe = None
                 last_plot_warning = None
 
-                print()
-                print(f"Watching run       : {run_dir}")
-                print(f"Metrics file       : {metrics_csv_path}")
-                print(f"Geometry trail     : {geometry_metrics_path}")
+                print_status()
+                print_status(f"Watching run       : {run_dir}")
+                print_status(f"Metrics file       : {metrics_csv_path}")
+                print_status(f"Geometry trail     : {geometry_metrics_path}")
 
             file_state = get_file_state(metrics_csv_path)
 
@@ -1605,7 +1609,7 @@ def main() -> None:
                 except ValueError as exception:
                     warning_text = str(exception)
                     if warning_text != last_plot_warning:
-                        print(
+                        print_status(
                             f"Waiting for plottable metrics rows: {warning_text}",
                             file=sys.stderr,
                             flush=True,
@@ -1626,8 +1630,8 @@ def main() -> None:
                 args.run_dir = run_dir
 
     except KeyboardInterrupt:
-        print()
-        print("Stopped live metrics viewer.")
+        print_status()
+        print_status("Stopped live metrics viewer.")
 
 
 if __name__ == "__main__":

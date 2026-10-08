@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterable
 from pathlib import Path
 
+from terminal_output import print_status
 from config import OptimizationConfig, RendererSettingsConfig
 from io_utils import configure_paths_from_dataset_folder, resolve_output_dir, save_run_config
 
@@ -29,7 +30,7 @@ def _recreate_output_dir(output_dir: Path) -> Path:
     if output_dir.exists():
         if not output_dir.is_dir():
             raise NotADirectoryError(f"Output path exists but is not a directory: {output_dir}")
-        print(f"Clearing existing output directory: {output_dir}")
+        print_status(f"Clearing existing output directory: {output_dir}")
         shutil.rmtree(output_dir)
 
     output_dir.mkdir(parents=True)
@@ -43,7 +44,7 @@ def _copy_scene_xml(scene_xml: str | Path, output_dir: Path) -> None:
 
     destination = output_dir / source.name
     shutil.copy2(source, destination)
-    print(f"Copied scene XML       : {destination}")
+    print_status(f"Copied scene XML       : {destination}")
 
 
 def prepare_run(config: OptimizationConfig, renderer_settings: RendererSettingsConfig) -> None:
@@ -138,21 +139,21 @@ def print_run_configuration(
         ("cameras", _format_camera_summary(camera_ids)),
         ("main camera", main_camera),
     )
-    print("Starting optimization with configuration:")
+    print_status("Starting optimization with configuration:")
     for label, value in rows:
-        print(f"  {label:<27}: {value}")
+        print_status(f"  {label:<27}: {value}")
 
 
 def _start_companion(name: str, script: Path, arguments: list[str]) -> subprocess.Popen | None:
     if not script.is_file():
-        print(f"Warning: {script.name} not found at {script}.")
+        print_status(f"Warning: {script.name} not found at {script}.")
         return None
     try:
         process = subprocess.Popen([sys.executable, str(script), *arguments])
     except Exception as exception:
-        print(f"Warning: could not start {name} ({exception}). Continuing without it.")
+        print_status(f"Warning: could not start {name} ({exception}). Continuing without it.")
         return None
-    print(f"Started {name}: {script}")
+    print_status(f"Started {name}: {script}")
     return process
 
 

@@ -2766,16 +2766,16 @@ namespace Pale {
                     if (dot(orientedNormal, -rayDirection) < 0.0f) { orientedNormal = -orientedNormal; }
                     record.orientedNormal = orientedNormal;
                     // ---------------------------------------------------------
-                    // z_median = max {z_i | T_i > 0.5}
+                    // Select the first hit reaching the accumulated-opacity threshold.
                     //
                     // The median selection is discrete. Only the selected hit
-                    // receives the median-depth adjoint below. If the hit
-                    // budget ends before 50% opacity, this selects the last
-                    // valid hit, matching the forward depth fallback.
+                    // receives the median-depth adjoint below. If the threshold
+                    // is not reached, retain the last valid candidate for either
+                    // forward fallback. Invalid forward depths receive no adjoint.
                     // ---------------------------------------------------------
                     // Other regularizers may retain zero-opacity records;
                     // those cannot become the forward depth fallback.
-                    if (alphaEffective > kAlphaEpsilon && accumulatedWeight < 0.5f) {
+                    if (alphaEffective > kAlphaEpsilon && accumulatedWeight < settings.medianDepthThreshold) {
                         medianHitIndex = hitCount;
                     }
                     accumulatedWeight += compositeWeight;

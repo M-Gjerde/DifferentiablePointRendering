@@ -16,6 +16,8 @@ from PIL import Image, ImageCms
 import json
 from dataclasses import asdict, is_dataclass
 
+from terminal_output import print_status
+
 
 SUPPORTED_TARGET_IMAGE_SUFFIXES = (
     ".png",
@@ -96,7 +98,7 @@ def _load_icc_converted_srgb(path: Path) -> np.ndarray | None:
             )
             return _normalize_image_samples(np.asarray(converted))
     except (OSError, ImageCms.PyCMSError) as exception:
-        print(
+        print_status(
             f"Warning: could not apply embedded ICC profile for '{path}': {exception}. "
             "Falling back to untagged sRGB interpretation."
         )
@@ -193,7 +195,7 @@ def load_target_image(
         image = srgb_to_linear(image)
 
     if log_color_interpretation:
-        print(
+        print_status(
             f"    color: {interpretation} interpreted as {interpreted_color_space}; "
             "training copy converted to linear sRGB"
         )
@@ -627,4 +629,4 @@ def save_run_config(
     with open(run_config_path, "w", encoding="utf-8") as json_file:
         json.dump(run_config, json_file, indent=2)
 
-    print(f"Saved run config: {run_config_path}")
+    print_status(f"Saved run config: {run_config_path}")

@@ -8,6 +8,8 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from terminal_output import print_status
+
 
 @dataclass
 class RendererSettingsConfig:
@@ -18,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 6
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -137,7 +139,7 @@ class OptimizationConfig:
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership
     # (including self) reaches this value. 0 disables the experimental gate.
-    densification_max_mean_slab_members: float = 2.0
+    densification_max_mean_slab_members: float = 3.0
     densification_verbose: bool = False
     # Densification: base selection threshold
     # Scheduled absolute threshold with bounded brightness preference below.
@@ -393,15 +395,15 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
     elif destination in checkpoint_dir.parents or checkpoint_dir in destination.parents:
         raise ValueError("Checkpoint output must be separate from the source run directory")
 
-    print(f"[checkpoint] Target iteration   : {target_iteration}")
-    print(f"[checkpoint] Output directory   : {config.output_dir}")
-    print("[checkpoint] Restoring PLY parameters; optimizer moments and RNG state restart.")
+    print_status(f"[checkpoint] Target iteration   : {target_iteration}")
+    print_status(f"[checkpoint] Output directory   : {config.output_dir}")
+    print_status("[checkpoint] Restoring PLY parameters; optimizer moments and RNG state restart.")
 
-    print(f"[checkpoint] Run directory       : {checkpoint_dir}")
-    print(f"[checkpoint] Scene XML           : {config.scene_xml}")
-    print(f"[checkpoint] Dataset path        : {config.dataset_path}")
-    print(f"[checkpoint] Initial point cloud : {checkpoint_points_path}")
-    print(f"[checkpoint] Resume iteration   : {config.resume_iteration_offset}")
+    print_status(f"[checkpoint] Run directory       : {checkpoint_dir}")
+    print_status(f"[checkpoint] Scene XML           : {config.scene_xml}")
+    print_status(f"[checkpoint] Dataset path        : {config.dataset_path}")
+    print_status(f"[checkpoint] Initial point cloud : {checkpoint_points_path}")
+    print_status(f"[checkpoint] Resume iteration   : {config.resume_iteration_offset}")
 
 
 def _add_typed_fields(parser, value_type, *field_names: str) -> None:

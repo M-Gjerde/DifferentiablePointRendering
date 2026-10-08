@@ -25,6 +25,7 @@ import training_helpers as helpers
 from config import OptimizationConfig, RendererSettingsConfig
 from geometry_metrics import GeometryMetricsTrail
 from metrics_schema import METRICS_COLUMNS, MetricsCSVWriter
+from terminal_output import print_status, supports_color
 from training_progress import make_training_progress_postfix
 
 
@@ -74,7 +75,7 @@ def extract_mesh_from_point_cloud(
         )
 
     if result.returncode != 0:
-        print(
+        print_status(
             f"{log_prefix} Mesh extraction failed "
             f"with exit code {result.returncode}; see {extraction_log_path}"
         )
@@ -82,7 +83,7 @@ def extract_mesh_from_point_cloud(
 
     mesh_path = mesh_output_dir / "fuse_post.ply"
     if not mesh_path.is_file():
-        print(f"{log_prefix} Mesh extraction completed but did not create {mesh_path}")
+        print_status(f"{log_prefix} Mesh extraction completed but did not create {mesh_path}")
         return None
     return mesh_path
 
@@ -202,7 +203,7 @@ class MeshCheckpointWorker:
 
         pending_count = sum(not future.done() for future in self._futures)
         if pending_count:
-            print(
+            print_status(
                 f"Waiting for {pending_count} background mesh checkpoint "
                 f"{'task' if pending_count == 1 else 'tasks'}..."
             )
@@ -214,7 +215,7 @@ class MeshCheckpointWorker:
             try:
                 future.result()
             except Exception as exception:
-                print(f"[mesh-checkpoint] Background task failed: {exception}")
+                print_status(f"[mesh-checkpoint] Background task failed: {exception}")
 
 
 @dataclass
@@ -705,7 +706,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     use_intra_slab_depth = intra_slab_depth_weight != 0.0
     use_curvature_scale = curvature_scale_weight != 0.0
 
-    print(
+    print_status(
         "Loss terms: "
         f"rgb=(1-{ssim_weight:.3f})*half_MSE+{ssim_weight:.3f}*DSSIM "
         f"SSIM_window={ssim_window_size} sigma={ssim_sigma:.3f}, "
@@ -734,7 +735,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     renderer.upload_training_targets(target_images)
 
     initial_params = render.fetch_parameters(renderer)
-    print(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
+    print_status(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
 
     device = torch.device(config.device)
 
@@ -744,7 +745,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
     frozen_surfel_count = int((~trainable_surfel_mask).sum().item())
-    print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
+    print_status(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
     helpers.verify_parameters_inplane(
         positions,
@@ -769,7 +770,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         else None
     )
     if geometry_metrics is not None:
-        print(f"Geometry metrics trail: {geometry_metrics.path}")
+        print_status(f"Geometry metrics trail: {geometry_metrics.path}")
     mesh_checkpoint_worker = MeshCheckpointWorker(config, geometry_metrics)
 
     optimizer = optimizers.create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
@@ -777,7 +778,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     resume_iteration_offset = max(0, int(config.resume_iteration_offset))
     final_global_iteration = resume_iteration_offset + int(config.iterations)
     if resume_iteration_offset > 0:
-        print(
+        print_status(
             "[checkpoint] Continuing iteration-dependent schedules from "
             f"iteration {resume_iteration_offset}; this run will end at "
             f"global iteration {final_global_iteration}."
@@ -899,20 +900,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             scale_parameterization = "logarithmic rho=log(s)"
         else:
             scale_parameterization = "linear physical radius"
-        print(f"[scale-optimization] Device scale parameterization: {scale_parameterization}.")
-        print("[device-training-step] Enabled device-resident optimizer path.")
-        print(
+        print_status(f"[scale-optimization] Device scale parameterization: {scale_parameterization}.")
+        print_status("[device-training-step] Enabled device-resident optimizer path.")
+        print_status(
             f"[device-training-step] skip_zero_gradient_surfels={config.skip_zero_gradient_surfels}; "
             "global Adam bias correction retained."
         )
     elif config.use_device_training_step:
-        print(
+        print_status(
             "[device-training-step] Disabled: "
             + "; ".join(device_training_disabled_reasons)
         )
 
     if not use_device_training_step:
-        print(
+        print_status(
             "[scale-optimization] Host optimizer unchanged; "
             "--log-scale/--no-log-scale and --shifted-log-scale-offset control only the device optimizer."
         )
@@ -1010,6 +1011,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             total=final_global_iteration,
             unit="iter",
             dynamic_ncols=True,
+            colour="cyan" if supports_color(sys.stderr) else None,
         )
 
         try:
@@ -1320,7 +1322,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             prune_inactive_transport_points = len(inactive_cycle_prune_set & removed_index_set)
 
                             if config.densification_verbose:
-                                print(
+                                print_status(
                                     f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                     f"scale={len(scale_prune_set)}, "
                                     f"opacity={len(opacity_prune_set)} (opacity < {config.min_surfel_opacity:g}), "
@@ -1793,7 +1795,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 export_gltf=True,
                             )
                         elif hotkey == "g":
-                            print(
+                            print_status(
                                 "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
 
                         progress_bar.set_postfix(
@@ -2069,7 +2071,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         prune_scale_area_points = len(scale_prune_set & removed_index_set)
                         prune_inactive_transport_points = len(inactive_cycle_prune_set & removed_index_set)
                         if config.densification_verbose:
-                            print(
+                            print_status(
                                 f"[Iter {global_iteration:04d}] Pruning {indices_to_remove.size} unique surfels | "
                                 f"scale={len(scale_prune_set)}, "
                                 f"opacity={len(opacity_prune_set)} (opacity < {config.min_surfel_opacity:g}), "
@@ -2511,7 +2513,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             progress_bar.close()
             elapsed = time.perf_counter() - total_start_time
             stopped_global_iteration = resume_iteration_offset + int(iteration)
-            print(
+            print_status(
                 f"\nCtrl+C detected at iteration {stopped_global_iteration:04d}. "
                 f"Total elapsed time: {elapsed:.1f} s. "
                 "Stopping optimization loop and saving current result..."
@@ -2664,7 +2666,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     mesh_checkpoint_worker.wait()
 
-    print(f"Final parameters written to PLY: {ply_path}")
+    print_status(f"Final parameters written to PLY: {ply_path}")
     final_mesh_path = None
     if config.save_final_mesh:
         final_mesh_path = extract_final_mesh(config, ply_path)
@@ -2677,6 +2679,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         completed_global_iteration,
     )
 
-    print("\nOptimization completed.")
-    print(f"Outputs saved in: {config.output_dir.resolve()}")
-    print(f"Total optimization wall time: {time.perf_counter() - total_start_time:.1f} s")
+    print_status("\nOptimization completed.")
+    print_status(f"Outputs saved in: {config.output_dir.resolve()}")
+    print_status(f"Total optimization wall time: {time.perf_counter() - total_start_time:.1f} s")

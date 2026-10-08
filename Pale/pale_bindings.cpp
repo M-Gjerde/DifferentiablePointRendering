@@ -339,6 +339,14 @@ public:
                 get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
             m_settings.normalFromDepthUseMeanDepth =
                 get_b(settingsDict, "normal_from_depth_use_mean_depth", m_settings.normalFromDepthUseMeanDepth);
+            m_settings.medianDepthThreshold =
+                get_f(settingsDict, "median_depth_threshold", m_settings.medianDepthThreshold);
+            if (!std::isfinite(m_settings.medianDepthThreshold) ||
+                m_settings.medianDepthThreshold <= 0.0f || m_settings.medianDepthThreshold >= 1.0f) {
+                throw std::invalid_argument("median_depth_threshold must be finite and strictly between 0 and 1");
+            }
+            m_settings.medianDepthRetainLastHit =
+                get_b(settingsDict, "median_depth_retain_last_hit", m_settings.medianDepthRetainLastHit);
 
             m_settings.intraSlabDepthRegularizerWeight =
                 get_f(settingsDict,

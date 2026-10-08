@@ -836,6 +836,11 @@ namespace Pale {
         // Request the curvature image even without a loss or densification consumer.
         bool computeCurvatureDiagnostics = false;
         bool normalFromDepthUseMeanDepth = false;
+        // Absolute accumulated opacity required to select the surface depth.
+        float medianDepthThreshold = 0.5f;
+        // Also keep the last accepted hit when a transparent ray ends naturally.
+        // The existing hit-budget fallback remains active independently.
+        bool medianDepthRetainLastHit = true;
         AdjointSampleSettings sampling;
         bool enableAdjointDirectLight = false;
         uint32_t numAdjointPathShadowRays = 1;

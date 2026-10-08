@@ -75,6 +75,7 @@ Controls:
 - `Render`: force a render
 - `Save screenshot (PNG)`: save the currently displayed render with transparent background
 - `Auto render`: render after camera/control changes
+- `Median depth settings`: adjust the accumulated-opacity threshold from 0.001 to 0.999 (default 0.5). `Retain last accepted depth` keeps the last surface hit when the threshold is never reached (default on). Empty rays still produce zero depth; the existing traversal-limit fallback is unchanged. Both controls request a fresh render, including depth-derived diagnostics.
 - `Add surfel`: create a camera-facing surfel at the current viewport focus and select it for editing
 - `Save as startup default`: save the currently edited surfels beside the original PLY and load them automatically on later runs
 - `Reset to original`: reload the original startup PLY and clear the saved startup override

@@ -18,6 +18,7 @@ import losses
 import optimizers
 import render_hooks as render
 from config import OptimizationConfig, RendererSettingsConfig
+from terminal_output import print_status
 from metrics_schema import METRICS_COLUMNS
 
 PARAMETER_NAMES = (
@@ -160,7 +161,7 @@ def repair_nonfinite_gradient_array_inplace(
         gradient_array[bad_mask] = 0.0
         repair_text = f"zeroed_values={bad_count}"
 
-    print(
+    print_status(
         f"[Iter {iteration:04d}] Repaired non-finite gradient in {name}: "
         f"bad_count={bad_count}, first_bad_index={first_bad_index}, "
         f"first_bad_value={first_bad_value}, {repair_text}"
@@ -1128,7 +1129,7 @@ def save_gradients_snapshot(
         grad_betas=grad_betas_np,
     )
 
-    print(f"[Iter {iteration:04d}] Hotkey 'g' pressed -> saved gradients to:\n  {csv_path}\n  {npz_path}")
+    print_status(f"[Iter {iteration:04d}] Hotkey 'g' pressed -> saved gradients to:\n  {csv_path}\n  {npz_path}")
 
 
 def save_manual_snapshot(
@@ -1209,7 +1210,7 @@ def save_manual_snapshot(
         densification_position_base_threshold=densification_position_base_threshold,
     )
 
-    print(
+    print_status(
         f"[Iter {iteration:04d}] Hotkey 's' pressed -> saved "
         f"render_final_<camera>.png, depth_distortion_final_<camera>.png, "
         f"median_depth_final_<camera>.png, visible_normal_final_<camera>.png, "
@@ -1348,7 +1349,7 @@ def load_target_images(
     if not images_path.is_dir():
         raise RuntimeError(f"Target dataset is missing images directory: {images_path}")
 
-    print(
+    print_status(
         f"Loading {len(training_camera_ids)} target images from directory: {target_path} "
         f"({target_color_space} -> linear sRGB training)"
     )
@@ -1384,7 +1385,7 @@ def load_target_images(
         if len(image_shapes) == 1
         else f"{len(image_shapes)} distinct shapes"
     )
-    print(f"Loaded {len(target_images)} target images ({shape_summary}).")
+    print_status(f"Loaded {len(target_images)} target images ({shape_summary}).")
 
     return target_images, training_camera_ids, all_camera_ids
 
@@ -1453,7 +1454,7 @@ def compute_initial_losses_and_save_outputs(
         powers,
         shape_default=0.0,
     )
-    print(f"Initial parameters written to PLY: {initial_points_path}")
+    print_status(f"Initial parameters written to PLY: {initial_points_path}")
 
     initial_rgb_loss = 0.0
     initial_depth_distortion_loss_raw = 0.0
@@ -1469,7 +1470,7 @@ def compute_initial_losses_and_save_outputs(
         io_utils.save_render(renders_dir / f"render_initial_{camera_name}.png", img_np)
 
         if camera_name not in target_images:
-            print(f"Warning: no target image found for camera '{camera_name}', skipping target save and loss.")
+            print_status(f"Warning: no target image found for camera '{camera_name}', skipping target save and loss.")
             continue
 
         tgt_np = target_images[camera_name]
@@ -1564,16 +1565,16 @@ def print_loss_summary(
         curvature_scale_loss_weighted: float,
         total_loss: float,
 ) -> None:
-    print(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
-    print(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
-    print(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
-    print(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
-    print(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
-    print(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
-    print(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
-    print(f"{prefix} curvature scale loss (raw)             : {curvature_scale_loss_raw:.6e}")
-    print(f"{prefix} curvature scale loss (weighted)        : {curvature_scale_loss_weighted:.6e}")
-    print(f"{prefix} total loss                             : {total_loss:.6e}")
+    print_status(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
+    print_status(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
+    print_status(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
+    print_status(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
+    print_status(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
+    print_status(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
+    print_status(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
+    print_status(f"{prefix} curvature scale loss (raw)             : {curvature_scale_loss_raw:.6e}")
+    print_status(f"{prefix} curvature scale loss (weighted)        : {curvature_scale_loss_weighted:.6e}")
+    print_status(f"{prefix} total loss                             : {total_loss:.6e}")
 
 
 def compute_surface_regularizer_losses_and_adjoints(
@@ -2488,7 +2489,7 @@ def maybe_make_densification_result(
                     f"overlap_unknown_allowed={overlap_unknown_count}, "
                     f"overlap_ms={overlap_compute_ms:.1f}, "
                 )
-            print(
+            print_status(
                 f"[Iter {iteration:04d}] Densification check | "
                 f"reason={densify_reason}, "
                 f"added={n_new_from_densification}, "
@@ -2525,7 +2526,7 @@ def maybe_make_densification_result(
                 curvature_split_count = int(
                     densification_result.get("curvature_split_count", 0)
                 ) if densification_result is not None else 0
-                print(
+                print_status(
                     f"[Iter {iteration:04d}] Split densification: "
                     f"adding {n_new_from_densification} surfels "
                     f"(clone={clone_count}, split={split_count}, "

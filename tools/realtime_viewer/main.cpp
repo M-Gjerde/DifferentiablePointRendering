@@ -5622,6 +5622,19 @@ int main(int argc, char** argv) {
                 ImGui::EndCombo();
             }
             ImGui::TextDisabled("1-9, 0 direct   +/- cycle display modes");
+            if (ImGui::CollapsingHeader("Median depth settings")) {
+                if (ImGui::SliderFloat("Median depth threshold", &settings.medianDepthThreshold,
+                                       0.001f, 0.999f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+                    settings.medianDepthThreshold = std::clamp(settings.medianDepthThreshold, 0.001f, 0.999f);
+                    renderRequested = true;
+                }
+                ImGui::TextWrapped("Accumulated opacity needed to select depth. Lower values select earlier hits.");
+                if (ImGui::Checkbox("Retain last accepted depth", &settings.medianDepthRetainLastHit)) {
+                    renderRequested = true;
+                }
+                ImGui::TextWrapped("If the threshold is never reached, use the last accepted surface hit. Empty rays still have no depth.");
+                ImGui::TextDisabled("The existing traversal-limit fallback remains active.");
+            }
             if (viewImageMode == ViewImageMode::IntraSlabDepth ||
                 viewImageMode == ViewImageMode::IntraSlabRayDepth) {
                 ImGui::TextWrapped("Both slab losses use the same logarithmic color scale and unit weight.");
