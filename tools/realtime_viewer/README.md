@@ -217,13 +217,18 @@ frame, so equal colors across frames do not imply equal loss values.
 
 ### Surface overlap and slab capacity
 
-Press **0** for **Surface overlap (world space)**. Membership inherits **Renderer
-debug → Surfel traversal** settings: slab distance mode, depth tolerance, normal
-cosine, and maximum local surfel hits. Symmetric mode tests the ray interval
-before and after each anchor; normal-distance mode uses the forward interval,
-anchor-normal separation, and the renderer's grazing-angle bound. Both normals
-are faced toward the camera before their dot product is compared. Cosine `-1`
-disables normal rejection. There are no separate overlap tolerances or alpha
+Press **0** for **Surface overlap (world space)**. **Normal-distance overlap** is
+enabled by default. It counts intersections within **Overlap distance tolerance**
+along the anchor surfel's normal, both in front and behind. The default tolerance
+is `0.005` scene units. Disable the checkbox to compare symmetric camera-ray
+distance instead. All three metrics recompute immediately using the selected mode.
+At grazing angles the normal-distance interval widens along the ray without the
+renderer's grazing-angle clamp; intersections must still fall inside the neighbor's ellipse.
+
+Overlap mode and tolerance are independent of rendering slabs. Membership still
+inherits the normal cosine and maximum local surfel hits from **Renderer debug →
+Surfel traversal**. Both normals are faced toward the camera before their dot
+product is compared. Cosine `-1` disables normal rejection. There is no alpha
 cutoff: the diagnostic measures full geometric footprints, excluding lights.
 
 The **Slab overflow footprint (%)** metric samples 64 locations on each surfel
@@ -242,13 +247,18 @@ transmission, candidate-batch limits, and ray-event limits are not applied.
 An unobserved surfel has no score. Changing the view or its color maximum does
 not alter training or split selection.
 
-Training can optionally use the same mean-members calculation with
-`--densification-max-mean-slab-members 3` (or `2` for a stricter experiment).
-Use `0` to disable this gate. A value of 3 includes the parent: roughly two
+Training uses the same mean-members calculation, with a default gate of `2`.
+Set `--densification-max-mean-slab-members 3` for a looser threshold, or `0`
+to disable this gate. A value of 3 includes the parent: roughly two
 other members per sample on average. The score is a mean across footprint
 locations and in-frame scene-camera rays, not a count of distinct neighbors that
 touch any part of the surfel. For example, half the samples at 2 members and half
 at 10 give a mean of 6.
+
+Training also defaults to symmetric normal-distance overlap. Use
+`--no-surface-overlap-normal-distance` for the camera-ray comparison and
+`--surface-overlap-depth-tolerance 0.005` to set the independent tolerance.
+Viewer controls preview these rules without changing a training run's settings.
 
 At each scheduled densification event, training recomputes scores from current
 geometry before selecting candidates. Parents at or above the threshold are

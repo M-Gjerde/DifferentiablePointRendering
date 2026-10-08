@@ -12,9 +12,9 @@ namespace Pale {
     }
 
     inline SurfaceOverlapSettings surfaceOverlapSettings(const PathTracerSettings& settings) {
-        return {rendererDebugLocalLayerDepthEpsilon(settings),
+        return {settings.surfaceOverlapDepthTolerance,
                 rendererDebugLocalLayerNormalCosineThreshold(settings),
-                settings.rendererDebugLocalLayerDepthMode,
+                settings.surfaceOverlapNormalDistance,
                 rendererDebugMaxLocalSurfelHits(settings), RayEpsilon};
     }
 

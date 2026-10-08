@@ -872,6 +872,10 @@ namespace Pale {
         float sharedHeightSlabDepthShiftB = 0.0f;
         float sharedHeightSlabCoverage = 6.0f;
 
+        // Crowd-control/overlap scoring, independent of rendering slab distance.
+        bool surfaceOverlapNormalDistance = true;
+        float surfaceOverlapDepthTolerance = 5.00e-3f;
+
         // Renderer debug controls. These clamp to the compile-time stack capacities above.
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
         LocalLayerDepthMode rendererDebugLocalLayerDepthMode = LocalLayerDepthMode::SymmetricRayDepth;

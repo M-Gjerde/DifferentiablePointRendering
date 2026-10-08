@@ -405,8 +405,9 @@ def get_camera_names(renderer, args: argparse.Namespace) -> list[str]:
     if args.camera_names is not None:
         return [name.strip() for name in args.camera_names.split(",") if name.strip()]
 
-    from render_hooks import get_training_camera_names
-    camera_names = get_training_camera_names(renderer)
+    # render_hooks imports PyTorch, whose bundled ROCm libraries can conflict
+    # with the system HIP runtime already loaded by this renderer.
+    camera_names = renderer.get_training_camera_names()
     if isinstance(camera_names, dict):
         return list(camera_names.keys())
 
