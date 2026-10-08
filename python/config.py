@@ -78,7 +78,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.0007
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.003
+    learning_rate_scale: float = 0.004
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
