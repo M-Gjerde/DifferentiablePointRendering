@@ -76,7 +76,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.00055
     learning_rate_rotation: float = 0.01
-    learning_rate_scale: float = 0.003
+    learning_rate_scale: float = 0.004
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0002
     learning_rate_beta: float = 0.0005
@@ -164,8 +164,8 @@ class OptimizationConfig:
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
     curvature_violation_threshold: float = -1
-    densification_split_scale_factor: float = 1.3 # 1.6 matches 3DGS split procedure.
-    densification_split_offset_scale: float = 0.2
+    densification_split_scale_factor: float = 1.1 # 1.6 matches 3DGS split procedure.
+    densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_exact_clone_percent_dense: float = 0.0
     densification_scene_extent: float = 0.0
