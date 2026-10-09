@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <numbers>
+#include <type_traits>
 
 #include "entt/entity/entity.hpp"
 #include "Renderer/GPUDataTypes.h"
@@ -58,17 +60,24 @@ namespace Pale {
     CHECK_16(Point);
 
     struct alignas(16) SurfelTraversalData {
-        float3 position{0.0f};
+        // A float3 occupies 16 bytes, so use scalar triples to fit each vector
+        // and its accompanying scalar in one 16-byte block.
+        float positionX{0.0f}, positionY{0.0f}, positionZ{0.0f};
         uint32_t primitiveIndex{UINT32_MAX};
 
-        float3 normal{0.0f, 0.0f, 1.0f};
+        float normalX{0.0f}, normalY{0.0f}, normalZ{1.0f};
         uint32_t flags{0u};
 
-        float3 invScaleTanU{0.0f};
+        float invScaleTanUX{0.0f}, invScaleTanUY{0.0f}, invScaleTanUZ{0.0f};
         float opacity{0.0f};
 
-        float3 invScaleTanV{0.0f};
+        float invScaleTanVX{0.0f}, invScaleTanVY{0.0f}, invScaleTanVZ{0.0f};
         float betaExponent{4.0f};
+
+        float3 position() const { return {positionX, positionY, positionZ}; }
+        float3 normal() const { return {normalX, normalY, normalZ}; }
+        float3 invScaleTanU() const { return {invScaleTanUX, invScaleTanUY, invScaleTanUZ}; }
+        float3 invScaleTanV() const { return {invScaleTanVX, invScaleTanVY, invScaleTanVZ}; }
 
         bool isEmissive() const {
             return (flags & 1u) != 0u;
@@ -76,6 +85,13 @@ namespace Pale {
     };
 
     CHECK_16(SurfelTraversalData);
+    static_assert(sizeof(SurfelTraversalData) == 64);
+    static_assert(std::is_standard_layout_v<SurfelTraversalData>);
+    static_assert(std::is_trivially_copyable_v<SurfelTraversalData>);
+    static_assert(offsetof(SurfelTraversalData, primitiveIndex) == 12);
+    static_assert(offsetof(SurfelTraversalData, flags) == 28);
+    static_assert(offsetof(SurfelTraversalData, opacity) == 44);
+    static_assert(offsetof(SurfelTraversalData, betaExponent) == 60);
 
     struct alignas(16) BVHNode {
         float3 aabbMin; // 16
@@ -348,8 +364,6 @@ namespace Pale {
     constexpr float LocalLayerDepthEpsilon = 5.00e-3f;
     constexpr float LocalLayerNormalCosineThreshold = -1.0f; // -1 disables normal rejection.
     constexpr float IntraSlabConsensusDenominatorEpsilon = 1.0e-6f;
-    constexpr float CurvatureScaleRegularizerGamma = 0.5f;
-    constexpr float CurvatureRegularizerDistanceEpsilon = 1.0e-6f;
 
     /*************************  Ray & Hit *****************************/
     struct alignas(16) Ray {
@@ -382,6 +396,18 @@ namespace Pale {
         float alphaGeom;
         float3 hitPositionW;
         float2 uv{0.0f, 0.0f};
+    };
+
+    struct PointCloudLocalLayer {
+        uint32_t hitCount = 0u;
+        float furthestT = 0.0f;
+        float transmission = 1.0f;
+        float opacity = 0.0f;
+        float3 referenceNormalW{0.0f};
+        LocalSurfelLayerHit hits[kMaxLocalSurfelHits];
+        float alphaEff[kMaxLocalSurfelHits];
+        float weight[kMaxLocalSurfelHits];
+        float directLightEpsilon[kMaxLocalSurfelHits] = {RayEpsilon};
     };
 
     struct SurfelEvent {
@@ -815,6 +841,8 @@ namespace Pale {
         uint32_t numForwardPasses = 6;
         uint32_t maxAdjointBounces = 6;
         uint32_t adjointSamplesPerPixel = 6;
+        // Reuse only the deterministic initial camera slab across adjoint SPP.
+        bool adjointPrimarySlabCache = true;
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
@@ -827,14 +855,11 @@ namespace Pale {
         bool depthDistortionWorldSpace = false;
         float normalConsistencyWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
-        float curvatureScaleRegularizerWeight = 0.0f;
         // Training retains surface outputs by default; RGB-only viewers can skip them.
         bool computeSurfaceDiagnostics = true;
         bool computeDepthNormalDiagnostics = true;
-        // Primitive-ID previews need slab selection, but not curvature fitting.
+        // Request dominant primitive IDs for diagnostic views.
         bool computeVisiblePrimitiveDiagnostics = false;
-        // Request the curvature image even without a loss or densification consumer.
-        bool computeCurvatureDiagnostics = false;
         bool normalFromDepthUseMeanDepth = false;
         // Absolute accumulated opacity required to select the surface depth.
         float medianDepthThreshold = 0.5f;
@@ -1011,6 +1036,8 @@ namespace Pale {
 
         PendingAdjointStageX *pendingStageX = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
+        PointCloudLocalLayer *adjointPrimarySlabCache = nullptr;
+        uint32_t adjointPrimarySlabCacheCapacity = 0u;
 
         MeasurementGradientEvent *measurementEvents;
         MeasurementGradientEventXY *measurementTwoPointEvents = nullptr;

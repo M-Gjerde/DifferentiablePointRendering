@@ -51,10 +51,6 @@ export namespace Pale {
             float *intraSlabDepthAdjointBuffer = allocateAdjoints ? sycl::malloc_device<float>(pixelCount, queue) : nullptr;
             uint32_t *intraSlabDepthActiveSlabCountBuffer =
                     sycl::malloc_device<uint32_t>(pixelCount, queue);
-            float *curvatureScaleBuffer = sycl::malloc_device<float>(pixelCount, queue);
-            float *curvatureScaleAdjointBuffer = allocateAdjoints ? sycl::malloc_device<float>(pixelCount, queue) : nullptr;
-            uint32_t *curvatureScaleActiveSlabCountBuffer =
-                    sycl::malloc_device<uint32_t>(pixelCount, queue);
             float *meanDepthBuffer = reinterpret_cast<float *>(sycl::malloc_device(pixelCount * sizeof(float), queue));
             float *medianDepthAdjointBuffer = allocateAdjoints ? reinterpret_cast<float *>(sycl::malloc_device(
                 pixelCount * sizeof(float), queue)) : nullptr;
@@ -77,10 +73,7 @@ export namespace Pale {
                 (allocateAdjoints && depthDistortionAdjointBuffer == nullptr) ||
                 intraSlabDepthBuffer == nullptr ||
                 (allocateAdjoints && intraSlabDepthAdjointBuffer == nullptr) ||
-                intraSlabDepthActiveSlabCountBuffer == nullptr ||
-                curvatureScaleBuffer == nullptr ||
-                (allocateAdjoints && curvatureScaleAdjointBuffer == nullptr) ||
-                curvatureScaleActiveSlabCountBuffer == nullptr) {
+                intraSlabDepthActiveSlabCountBuffer == nullptr) {
                 // Handle allocation failure: free what succeeded, skip this camera or throw
                 if (deviceHighDynamicRangeFramebuffer) {
                     sycl::free(deviceHighDynamicRangeFramebuffer, queue);
@@ -97,11 +90,6 @@ export namespace Pale {
                 if (intraSlabDepthAdjointBuffer) sycl::free(intraSlabDepthAdjointBuffer, queue);
                 if (intraSlabDepthActiveSlabCountBuffer) {
                     sycl::free(intraSlabDepthActiveSlabCountBuffer, queue);
-                }
-                if (curvatureScaleBuffer) sycl::free(curvatureScaleBuffer, queue);
-                if (curvatureScaleAdjointBuffer) sycl::free(curvatureScaleAdjointBuffer, queue);
-                if (curvatureScaleActiveSlabCountBuffer) {
-                    sycl::free(curvatureScaleActiveSlabCountBuffer, queue);
                 }
                 continue;
             }
@@ -122,9 +110,6 @@ export namespace Pale {
                 queue.memset(intraSlabDepthBuffer, 0, pixelCount * sizeof(float));
                 if (intraSlabDepthAdjointBuffer) queue.memset(intraSlabDepthAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(intraSlabDepthActiveSlabCountBuffer, 0, pixelCount * sizeof(uint32_t));
-                queue.memset(curvatureScaleBuffer, 0, pixelCount * sizeof(float));
-                if (curvatureScaleAdjointBuffer) queue.memset(curvatureScaleAdjointBuffer, 0, pixelCount * sizeof(float));
-                queue.memset(curvatureScaleActiveSlabCountBuffer, 0, pixelCount * sizeof(uint32_t));
                 queue.memset(meanDepthBuffer, 0, pixelCount * sizeof(float));
                 if (medianDepthAdjointBuffer) queue.memset(medianDepthAdjointBuffer, 0, pixelCount * sizeof(float));
                 queue.memset(medianWorldPositionBuffer, 0, pixelCount * 4u * sizeof(float));
@@ -146,9 +131,6 @@ export namespace Pale {
             sensorGpu.intraSlabDepthBuffer = intraSlabDepthBuffer;
             sensorGpu.intraSlabDepthAdjointBuffer = intraSlabDepthAdjointBuffer;
             sensorGpu.intraSlabDepthActiveSlabCountBuffer = intraSlabDepthActiveSlabCountBuffer;
-            sensorGpu.curvatureScaleBuffer = curvatureScaleBuffer;
-            sensorGpu.curvatureScaleAdjointBuffer = curvatureScaleAdjointBuffer;
-            sensorGpu.curvatureScaleActiveSlabCountBuffer = curvatureScaleActiveSlabCountBuffer;
             sensorGpu.medianWorldPositionBuffer = medianWorldPositionBuffer;
             sensorGpu.visibleNormalBuffer = visibleNormalBuffer;
             sensorGpu.normalFromDepthBuffer = normalFromDepthBuffer;
@@ -181,7 +163,6 @@ export namespace Pale {
         };
         ensure(sensor.depthDistortionAdjointBuffer);
         ensure(sensor.intraSlabDepthAdjointBuffer);
-        ensure(sensor.curvatureScaleAdjointBuffer);
         ensure(sensor.medianDepthAdjointBuffer);
         ensure(sensor.visibleNormalAdjointBuffer);
         ensure(sensor.normalFromDepthAdjointBuffer);
@@ -205,10 +186,7 @@ export namespace Pale {
             free(sensor.intraSlabDepthAdjointBuffer);
             free(sensor.intraSlabDepthActiveSlabCountBuffer);
             free(sensor.intraSlabRayDepthBuffer);
-            free(sensor.curvatureScaleBuffer);
-            free(sensor.curvatureScaleAdjointBuffer);
-            free(sensor.curvatureScaleActiveSlabCountBuffer);
-            free(sensor.surfaceCurvatureBuffer);
+            free(sensor.visiblePrimitiveIndexBuffer);
             free(sensor.meanDepthBuffer);
             free(sensor.medianDepthAdjointBuffer);
             free(sensor.medianWorldPositionBuffer);
@@ -311,7 +289,8 @@ export namespace Pale {
     PointGradients makeGradientsForScene(
         sycl::queue queue,
         const SceneBuild::BuildProducts &buildProducts,
-        DebugImages *debugImages) {
+        DebugImages *debugImages,
+        bool includeStatistics = true) {
         PointGradients out{};
 
         const uint32_t numPoints = static_cast<uint32_t>(buildProducts.points.size());
@@ -328,7 +307,6 @@ export namespace Pale {
 
         if (numPoints > 0u) {
             out.gradPosition = sycl::malloc_device<float3>(numPoints, queue);
-            out.cloneSignal = sycl::malloc_device<float3>(numPoints, queue);
             out.gradRotation = sycl::malloc_device<float3>(numPoints, queue);
             out.gradScale = sycl::malloc_device<float2>(numPoints, queue);
             out.gradAlbedo = sycl::malloc_device<float3>(numPoints, queue);
@@ -336,16 +314,22 @@ export namespace Pale {
             out.gradBeta = sycl::malloc_device<float>(numPoints, queue);
             out.gradShape = sycl::malloc_device<float>(numPoints, queue);
 
-            out.cloneSignalMeanNorm = sycl::malloc_device<float>(numPoints, queue);
-            out.cloneSignalStd = sycl::malloc_device<float>(numPoints, queue);
-            out.cloneSignalCoherence = sycl::malloc_device<float>(numPoints, queue);
-            out.cloneSignalDisagreement = sycl::malloc_device<float>(numPoints, queue);
-            out.cloneSignalActiveCameraCount = sycl::malloc_device<uint32_t>(numPoints, queue);
+            // Surface regularizers only accumulate parameter derivatives. Their
+            // public clone-signal arrays are zero, so they need no device-side
+            // statistics or point-by-camera storage.
+            if (includeStatistics) {
+                out.cloneSignal = sycl::malloc_device<float3>(numPoints, queue);
+                out.cloneSignalMeanNorm = sycl::malloc_device<float>(numPoints, queue);
+                out.cloneSignalStd = sycl::malloc_device<float>(numPoints, queue);
+                out.cloneSignalCoherence = sycl::malloc_device<float>(numPoints, queue);
+                out.cloneSignalDisagreement = sycl::malloc_device<float>(numPoints, queue);
+                out.cloneSignalActiveCameraCount = sycl::malloc_device<uint32_t>(numPoints, queue);
+            }
 
             const size_t primitiveCameraCount =
                     static_cast<size_t>(numPoints) * static_cast<size_t>(cameraSlotCount);
 
-            if (cameraSlotCount > 0u) {
+            if (includeStatistics && cameraSlotCount > 0u) {
                 out.gradPositionPerPrimitivePerCamera =
                         sycl::malloc_device<float3>(primitiveCameraCount, queue);
 
@@ -361,21 +345,22 @@ export namespace Pale {
                         sycl::malloc_device<float>(primitiveCameraCount, queue);
             }
 
-            if (!out.gradPosition || !out.cloneSignal || !out.gradRotation || !out.gradScale ||
+            const bool missingStatistics = includeStatistics &&
+                (!out.cloneSignal || !out.cloneSignalMeanNorm || !out.cloneSignalStd ||
+                 !out.cloneSignalCoherence || !out.cloneSignalDisagreement ||
+                 !out.cloneSignalActiveCameraCount ||
+                 (cameraSlotCount > 0u && (!out.gradPositionPerPrimitivePerCamera ||
+                                         !out.gradPositionRecordCountPerPrimitivePerCamera ||
+                                         !out.cloneSignalPerPrimitivePerCamera ||
+                                         !out.cloneSignalRecordCountPerPrimitivePerCamera ||
+                                         !out.cloneRadianceRmsSumPerPrimitivePerCamera)));
+            if (!out.gradPosition || !out.gradRotation || !out.gradScale ||
                 !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
-                !out.cloneSignalMeanNorm || !out.cloneSignalStd ||
-                !out.cloneSignalCoherence || !out.cloneSignalDisagreement ||
-                !out.cloneSignalActiveCameraCount ||
-                (cameraSlotCount > 0u && (!out.gradPositionPerPrimitivePerCamera ||
-                                          !out.gradPositionRecordCountPerPrimitivePerCamera ||
-                                          !out.cloneSignalPerPrimitivePerCamera ||
-                                          !out.cloneSignalRecordCountPerPrimitivePerCamera ||
-                                          !out.cloneRadianceRmsSumPerPrimitivePerCamera))) {
+                missingStatistics) {
                 throw std::runtime_error("makeGradientsForScene: failed to allocate one or more gradient buffers");
             }
 
             queue.fill(out.gradPosition, float3{0.0f, 0.0f, 0.0f}, numPoints);
-            queue.fill(out.cloneSignal, float3{0.0f, 0.0f, 0.0f}, numPoints);
             queue.fill(out.gradRotation, float3{0.0f, 0.0f, 0.0f}, numPoints);
             queue.fill(out.gradScale, float2{0.0f, 0.0f}, numPoints);
             queue.fill(out.gradAlbedo, float3{0.0f, 0.0f, 0.0f}, numPoints);
@@ -383,13 +368,16 @@ export namespace Pale {
             queue.fill(out.gradBeta, 0.0f, numPoints);
             queue.fill(out.gradShape, 0.0f, numPoints);
 
-            queue.fill(out.cloneSignalMeanNorm, 0.0f, numPoints);
-            queue.fill(out.cloneSignalStd, 0.0f, numPoints);
-            queue.fill(out.cloneSignalCoherence, 0.0f, numPoints);
-            queue.fill(out.cloneSignalDisagreement, 0.0f, numPoints);
-            queue.fill(out.cloneSignalActiveCameraCount, 0u, numPoints);
+            if (includeStatistics) {
+                queue.fill(out.cloneSignal, float3{0.0f, 0.0f, 0.0f}, numPoints);
+                queue.fill(out.cloneSignalMeanNorm, 0.0f, numPoints);
+                queue.fill(out.cloneSignalStd, 0.0f, numPoints);
+                queue.fill(out.cloneSignalCoherence, 0.0f, numPoints);
+                queue.fill(out.cloneSignalDisagreement, 0.0f, numPoints);
+                queue.fill(out.cloneSignalActiveCameraCount, 0u, numPoints);
+            }
 
-            if (cameraSlotCount > 0u) {
+            if (includeStatistics && cameraSlotCount > 0u) {
                 queue.fill(out.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
                 queue.fill(out.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
                 queue.fill(out.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
@@ -400,89 +388,15 @@ export namespace Pale {
             Pale::Log::PA_INFO(
                 "makeGradientsForScene: gradient memory: paramPosition={}, perCameraPosition={}, stats={}",
                 Pale::Utils::formatBytes(sizeof(float3) * static_cast<size_t>(numPoints)),
-                Pale::Utils::formatBytes(sizeof(float3) * primitiveCameraCount),
-                Pale::Utils::formatBytes(
+                Pale::Utils::formatBytes(includeStatistics ? sizeof(float3) * primitiveCameraCount : 0u),
+                Pale::Utils::formatBytes(includeStatistics ?
                     sizeof(float) * static_cast<size_t>(numPoints) * 4u +
-                    sizeof(uint32_t) * static_cast<size_t>(numPoints)));
+                    sizeof(uint32_t) * static_cast<size_t>(numPoints) : 0u));
         }
 
         ensureDebugImagesForScene(queue, buildProducts, debugImages);
         queue.wait();
         return out;
-    }
-
-    CurvatureDensificationStats makeCurvatureDensificationStatsForScene(
-        sycl::queue queue,
-        const SceneBuild::BuildProducts &buildProducts) {
-        CurvatureDensificationStats out{};
-        out.numPoints = buildProducts.points.size();
-        if (out.numPoints == 0u) {
-            return out;
-        }
-
-        out.violationSum = sycl::malloc_device<float>(out.numPoints, queue);
-        out.violationCount = sycl::malloc_device<uint32_t>(out.numPoints, queue);
-        out.directionTensorUu = sycl::malloc_device<float>(out.numPoints, queue);
-        out.directionTensorUv = sycl::malloc_device<float>(out.numPoints, queue);
-        out.directionTensorVv = sycl::malloc_device<float>(out.numPoints, queue);
-
-        if (!out.violationSum || !out.violationCount ||
-            !out.directionTensorUu || !out.directionTensorUv || !out.directionTensorVv) {
-            const auto freeDevicePtr = [&queue]<typename T>(T *&devicePtr) {
-                if (devicePtr) {
-                    sycl::free(devicePtr, queue);
-                    devicePtr = nullptr;
-                }
-            };
-            freeDevicePtr(out.violationSum);
-            freeDevicePtr(out.violationCount);
-            freeDevicePtr(out.directionTensorUu);
-            freeDevicePtr(out.directionTensorUv);
-            freeDevicePtr(out.directionTensorVv);
-            out.numPoints = 0u;
-            throw std::runtime_error(
-                "makeCurvatureDensificationStatsForScene: failed to allocate buffers");
-        }
-
-        queue.fill(out.violationSum, 0.0f, out.numPoints);
-        queue.fill(out.violationCount, 0u, out.numPoints);
-        queue.fill(out.directionTensorUu, 0.0f, out.numPoints);
-        queue.fill(out.directionTensorUv, 0.0f, out.numPoints);
-        queue.fill(out.directionTensorVv, 0.0f, out.numPoints);
-        queue.wait();
-        return out;
-    }
-
-    void clearCurvatureDensificationStats(
-        sycl::queue queue,
-        const CurvatureDensificationStats &stats) {
-        if (stats.numPoints == 0u) {
-            return;
-        }
-        queue.fill(stats.violationSum, 0.0f, stats.numPoints);
-        queue.fill(stats.violationCount, 0u, stats.numPoints);
-        queue.fill(stats.directionTensorUu, 0.0f, stats.numPoints);
-        queue.fill(stats.directionTensorUv, 0.0f, stats.numPoints);
-        queue.fill(stats.directionTensorVv, 0.0f, stats.numPoints);
-        queue.wait();
-    }
-
-    void freeCurvatureDensificationStats(
-        sycl::queue queue,
-        CurvatureDensificationStats &stats) {
-        const auto freeDevicePtr = [&queue]<typename T>(T *&devicePtr) {
-            if (devicePtr) {
-                sycl::free(devicePtr, queue);
-                devicePtr = nullptr;
-            }
-        };
-        freeDevicePtr(stats.violationSum);
-        freeDevicePtr(stats.violationCount);
-        freeDevicePtr(stats.directionTensorUu);
-        freeDevicePtr(stats.directionTensorUv);
-        freeDevicePtr(stats.directionTensorVv);
-        stats.numPoints = 0u;
-        queue.wait();
     }
 
     PrimalActivityStats makePrimalActivityStatsForScene(

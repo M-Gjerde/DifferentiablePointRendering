@@ -16,7 +16,8 @@ import Pale.Log;
 
 namespace Pale {
     static void waitForProfiling(sycl::queue& queue) {
-        if (ScopedTimerDetail::isProfilingEnabled()) {
+        if (ScopedTimerDetail::isProfilingEnabled() ||
+            ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug)) {
             queue.wait();
         }
     }
@@ -159,7 +160,7 @@ namespace Pale {
                             launchCameraGatherKernel(pkg, cameraIndex, gatherPass);
                         }
                     }
-                    pkg.queue.wait();
+                    waitForProfiling(pkg.queue);
                 }
             }
         }
@@ -188,11 +189,8 @@ namespace Pale {
         queue.fill(gradients.gradOpacity, 0.0f, pointCount);
         queue.fill(gradients.gradBeta, 0.0f, pointCount);
         queue.fill(gradients.gradShape, 0.0f, pointCount);
-        queue.fill(gradients.cloneSignalMeanNorm, 0.0f, pointCount);
-        queue.fill(gradients.cloneSignalStd, 0.0f, pointCount);
-        queue.fill(gradients.cloneSignalCoherence, 0.0f, pointCount);
-        queue.fill(gradients.cloneSignalDisagreement, 0.0f, pointCount);
-        queue.fill(gradients.cloneSignalActiveCameraCount, 0u, pointCount);
+        // The optional derived-statistics kernel overwrites every output row,
+        // including points with no contributing cameras. No preclear is needed.
         if (cameraSlotCount > 0u) {
             queue.fill(gradients.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
             queue.fill(gradients.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
@@ -203,7 +201,7 @@ namespace Pale {
     }
 
     // ---- Orchestrator -------------------------------------------------------
-    void submitAdjointKernel(RenderPackage& pkg) {
+    void submitAdjointKernel(RenderPackage& pkg, bool computeCloneStatistics) {
         if (pkg.settings.sharedHeightEnabled)
             throw std::runtime_error("Shared-height rendering is forward-only; its adjoint is not implemented.");
         {
@@ -277,19 +275,35 @@ namespace Pale {
                     uint32_t materialVertexEventCount = 0u;
                     uint32_t materialEndEdgeEventCount = 0u;
                     uint32_t materialStartEdgeEventCount = 0u;
+                    uint32_t gradientRecordCount = 0u;
+                    uint32_t nextRayCountRaw = 0u;
                     {
                         ScopedTimer timer("Adjoint read event counters", spdlog::level::debug);
-                        pkg.queue.memcpy(&measurementEventCount, pkg.intermediates.countMeasurementEvents,
-                                         sizeof(uint32_t));
-                        pkg.queue.memcpy(&measurementTwoPointEventCount, pkg.intermediates.countMeasurementTwoPointEvents,
-                                         sizeof(uint32_t));
-                        pkg.queue.memcpy(&materialVertexEventCount, pkg.intermediates.countMaterialVertexEvents,
-                                         sizeof(uint32_t));
-                        pkg.queue.memcpy(&materialEndEdgeEventCount, pkg.intermediates.countMaterialEndEdgeEvents,
-                                         sizeof(uint32_t));
-                        pkg.queue.memcpy(&materialStartEdgeEventCount, pkg.intermediates.countMaterialStartEdgeEvents,
-                                         sizeof(uint32_t));
-                        pkg.queue.wait();
+                        try {
+                            pkg.queue.memcpy(&measurementEventCount, pkg.intermediates.countMeasurementEvents,
+                                             sizeof(uint32_t));
+                            pkg.queue.memcpy(&measurementTwoPointEventCount, pkg.intermediates.countMeasurementTwoPointEvents,
+                                             sizeof(uint32_t));
+                            pkg.queue.memcpy(&materialVertexEventCount, pkg.intermediates.countMaterialVertexEvents,
+                                             sizeof(uint32_t));
+                            pkg.queue.memcpy(&materialEndEdgeEventCount, pkg.intermediates.countMaterialEndEdgeEvents,
+                                             sizeof(uint32_t));
+                            pkg.queue.memcpy(&materialStartEdgeEventCount, pkg.intermediates.countMaterialStartEdgeEvents,
+                                             sizeof(uint32_t));
+                            // All seven counters are produced by intersection.
+                            // Read them together before sizing dependent kernels;
+                            // contribution kernels do not append rays or records.
+                            pkg.queue.memcpy(&gradientRecordCount, pkg.intermediates.countGradientRecords,
+                                             sizeof(uint32_t));
+                            pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut,
+                                             sizeof(uint32_t));
+                            pkg.queue.wait();
+                        } catch (...) {
+                            // Keep every stack destination alive even if a later
+                            // copy submission fails after earlier copies queued.
+                            pkg.queue.wait();
+                            throw;
+                        }
                     }
                     const auto requireEventCapacity = [](uint32_t count, uint32_t capacity, const char *name) {
                         if (count > capacity) {
@@ -307,13 +321,15 @@ namespace Pale {
                                          "Material end-edge events");
                     requireEventCapacity(materialStartEdgeEventCount, pkg.intermediates.maxMaterialStartEdgeEventCount,
                                          "Material start-edge events");
+                    requireEventCapacity(gradientRecordCount, pkg.intermediates.maxGradientRecordCount,
+                                         "Fused first-bounce gradient records");
                     {
                         ScopedTimer timer(
                             "reduceFusedFirstBounceMeasurementGradientRecords",
                             spdlog::level::debug);
                         reduceFusedFirstBounceMeasurementGradientRecords(
                             pkg,
-                            static_cast<uint32_t>(cameraIndex));
+                            static_cast<uint32_t>(cameraIndex), gradientRecordCount);
                     }
                     if (measurementEventCount > 0u ||
                         measurementTwoPointEventCount > 0u ||
@@ -328,11 +344,6 @@ namespace Pale {
                                                    materialStartEdgeEventCount, static_cast<uint32_t>(cameraIndex));
                     }
 
-                    uint32_t nextRayCountRaw = 0u;
-                    {
-                        ScopedTimer timer("Adjoint read next ray count", spdlog::level::debug);
-                        pkg.queue.memcpy(&nextRayCountRaw, pkg.intermediates.countExtensionOut, sizeof(uint32_t)).wait();
-                    }
                     const uint32_t nextRayCount = std::min(nextRayCountRaw, pkg.intermediates.maxRayQueueCapacity);
                     if (nextRayCountRaw > pkg.intermediates.maxRayQueueCapacity) {
                         Log::PA_ERROR("Overflow: nextRayCount={} max={}", nextRayCountRaw,
@@ -342,7 +353,8 @@ namespace Pale {
                         ScopedTimer timer("Adjoint copy extension rays", spdlog::level::debug);
                         pkg.queue.memcpy(pkg.intermediates.primaryRays,
                                          pkg.intermediates.extensionRaysA,
-                                         nextRayCount * sizeof(RayState)).wait();
+                                         nextRayCount * sizeof(RayState));
+                        waitForProfiling(pkg.queue);
                     }
 
                     activeRayCount = nextRayCount;
@@ -350,7 +362,7 @@ namespace Pale {
             }
         }
 
-        {
+        if (computeCloneStatistics) {
             ScopedTimer timer("Adjoint compute clone signal stats", spdlog::level::debug);
             computePerPrimitiveCloneSignalStats(pkg);
         }
@@ -396,8 +408,7 @@ namespace Pale {
             clearPointGradients(pkg.queue, pkg.depthDistortionGradients);
             clearPointGradients(pkg.queue, pkg.normalConsistencyGradients);
             clearPointGradients(pkg.queue, pkg.intraSlabDepthGradients);
-            clearPointGradients(pkg.queue, pkg.curvatureScaleGradients);
-            pkg.queue.wait();
+            waitForProfiling(pkg.queue);
         }
 
         for (uint32_t cameraIndex = 0; cameraIndex < pkg.numSensors; ++cameraIndex) {
@@ -406,7 +417,8 @@ namespace Pale {
 
             {
                 ScopedTimer timer("Surface regularizer clear median depth adjoint", spdlog::level::debug);
-                pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount).wait();
+                pkg.queue.fill(sensor.medianDepthAdjointBuffer, 0.0f, pixelCount);
+                waitForProfiling(pkg.queue);
             }
 
             if (pkg.settings.normalConsistencyWeight != 0.0f) {
@@ -422,7 +434,7 @@ namespace Pale {
 
         {
             ScopedTimer timer("Surface regularizer final wait", spdlog::level::debug);
-            pkg.queue.wait();
+            waitForProfiling(pkg.queue);
         }
     }
 

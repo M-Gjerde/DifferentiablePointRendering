@@ -54,12 +54,8 @@ namespace Pale {
             return;
         }
 
-        constexpr float maxAbsGradientComponent = 1.0e3f;
-
         const auto isValidGradientComponent = [](float value) -> bool {
-            return sycl::isfinite(value) &&
-                   !sycl::isnan(value) &&
-                   sycl::fabs(value) <= maxAbsGradientComponent;
+            return sycl::isfinite(value);
         };
 
         const bool validGradientRecord =
@@ -116,135 +112,79 @@ namespace Pale {
         return numerator / denom;
     }
 
-    SYCL_EXTERNAL inline float integrateSlabPolynomial(
-        const float *alpha, uint32_t count, uint32_t excludeA, uint32_t excludeB, uint32_t leadingZetaPower) {
-        float coefficients[kMaxLocalSurfelHits];
-        for (uint32_t i = 0u; i < kMaxLocalSurfelHits; ++i) {
-            coefficients[i] = 0.0f;
-        }
-        coefficients[0] = 1.0f;
-        uint32_t degree = 0u;
-        for (uint32_t j = 0u; j < count; ++j) {
-            if (j == excludeA || j == excludeB) {
-                continue;
-            }
-            const float alphaJ = alpha[j];
-            for (int32_t d = static_cast<int32_t>(degree); d >= 0; --d) {
-                coefficients[d + 1] -= alphaJ * coefficients[d];
-            }
-            ++degree;
-        }
-        float integral = 0.0f;
-        for (uint32_t d = 0u; d <= degree; ++d) {
-            integral += coefficients[d] / static_cast<float>(d + leadingZetaPower + 1u);
-        }
-        return integral;
-    }
-
-    SYCL_EXTERNAL inline float computeRawSlabWeight(const float *alpha, uint32_t count, uint32_t surfelIndex) {
-        const float Ii = integrateSlabPolynomial(alpha, count, surfelIndex, kInvalidIndex, 0u);
-        return alpha[surfelIndex] * Ii;
-    }
-
-    SYCL_EXTERNAL inline float computeRawSlabWeightDerivativeWrtAlpha(const float *alpha, uint32_t count,
-                                                                      uint32_t contributionIndex,
-                                                                      uint32_t parameterIndex) {
-        // d w_k / d alpha_k = I_k
-        if (contributionIndex == parameterIndex) {
-            return integrateSlabPolynomial(alpha, count, contributionIndex, kInvalidIndex, 0u);
-        }
-        // d w_i / d alpha_k = -alpha_i J_ik
-        const float Jik = integrateSlabPolynomial(alpha, count, contributionIndex, parameterIndex, 1u);
-        return -alpha[contributionIndex] * Jik;
-    }
-
-    SYCL_EXTERNAL inline float computeNormalizedSlabWeightDerivativeWrtAlpha(
-        const float *alpha, uint32_t count, uint32_t contributionIndex, uint32_t parameterIndex) {
-        float rawWeights[kMaxLocalSurfelHits];
-        float rawWeightSum = 0.0f;
-        float layerTransmission = 1.0f;
-        for (uint32_t i = 0u; i < count; ++i) {
-            rawWeights[i] = computeRawSlabWeight(alpha, count, i);
-            rawWeightSum += rawWeights[i];
-            layerTransmission *= sycl::fmax(0.0f, 1.0f - alpha[i]);
-        }
-
-        if (rawWeightSum <= 1.0e-8f) {
-            return 0.0f;
-        }
-        const float layerOpacity = 1.0f - layerTransmission;
-        float dRawWeightSumDAlphaK = 0.0f;
-        for (uint32_t i = 0u; i < count; ++i) {
-            dRawWeightSumDAlphaK += computeRawSlabWeightDerivativeWrtAlpha(alpha, count, i, parameterIndex);
-        }
-        // d alpha_Q / d alpha_k
-        //
-        // alpha_Q = 1 - prod_j (1-alpha_j)
-        //
-        float dLayerOpacityDAlphaK = 1.0f;
-        for (uint32_t j = 0u; j < count; ++j) {
-            if (j == parameterIndex) {
-                continue;
-            }
-            dLayerOpacityDAlphaK *= sycl::fmax(0.0f, 1.0f - alpha[j]);
-        }
-        const float dRawWiDAlphaK = computeRawSlabWeightDerivativeWrtAlpha(
-            alpha, count, contributionIndex, parameterIndex);
-        const float normalization = layerOpacity / rawWeightSum;
-        const float dNormalizationDAlphaK = (dLayerOpacityDAlphaK * rawWeightSum - layerOpacity * dRawWeightSumDAlphaK)
-                                            / (rawWeightSum * rawWeightSum);
-        return normalization * dRawWiDAlphaK + rawWeights[contributionIndex] * dNormalizationDAlphaK;
-    }
-
     struct SlabWeightNormalization {
         float rawWeights[kMaxLocalSurfelHits]{};
+        float inverseFactors[kSlabQuadratureCount][kMaxLocalSurfelHits]{};
+        float weightedProducts[kSlabQuadratureCount]{};
         float rawWeightSum = 0.0f;
         float layerOpacity = 0.0f;
-        float normalization = 0.0f;
+        float normalization = 1.0f;
     };
 
     SYCL_EXTERNAL inline SlabWeightNormalization computeSlabWeightNormalization(
         const float *alpha, uint32_t count) {
         SlabWeightNormalization result{};
-        float layerTransmission = 1.0f;
-        for (uint32_t i = 0u; i < count; ++i) {
-            result.rawWeights[i] = computeRawSlabWeight(alpha, count, i);
-            result.rawWeightSum += result.rawWeights[i];
-            layerTransmission *= sycl::fmax(0.0f, 1.0f - alpha[i]);
+        if (count == 1u) {
+            result.rawWeights[0] = alpha[0];
+            result.rawWeightSum = alpha[0];
+            result.layerOpacity = alpha[0];
+            return result;
         }
-        result.layerOpacity = 1.0f - layerTransmission;
-        if (result.rawWeightSum > 1.0e-8f) {
+        for (uint32_t node = 0u; node < kSlabQuadratureCount; ++node) {
+            result.weightedProducts[node] = evaluateSlabQuadratureProduct(
+                alpha, count, node, result.inverseFactors[node]);
+            for (uint32_t i = 0u; i < count; ++i) {
+                result.rawWeights[i] += alpha[i] * result.weightedProducts[node] *
+                                        result.inverseFactors[node][i];
+            }
+        }
+        for (uint32_t i = 0u; i < count; ++i) {
+            result.rawWeightSum += result.rawWeights[i];
+        }
+        result.layerOpacity = computeSlabOpacity(alpha, count);
+        if (result.rawWeightSum > 0.0f) {
             result.normalization = result.layerOpacity / result.rawWeightSum;
         }
         return result;
     }
 
-    // All contributions in one derivative column share the same denominator
-    // and its derivative. Preserve the scalar routine's summation order while
-    // computing each raw derivative just once for this parameter.
+    // Reuse the slab's four positive products for every derivative column.
+    // Computing all columns costs O(n^2), without rebuilding polynomials or
+    // dividing by a vanishing transmittance when alpha is exactly one.
     SYCL_EXTERNAL inline void computeNormalizedSlabWeightDerivativeColumn(
         const float *alpha, uint32_t count, uint32_t parameterIndex,
         const SlabWeightNormalization &normalization, float *derivatives) {
-        if (normalization.rawWeightSum <= 1.0e-8f) {
-            for (uint32_t i = 0u; i < count; ++i) derivatives[i] = 0.0f;
+        if (count == 1u) {
+            derivatives[0] = 1.0f;
             return;
         }
+        for (uint32_t i = 0u; i < count; ++i) derivatives[i] = 0.0f;
+        for (uint32_t node = 0u; node < kSlabQuadratureCount; ++node) {
+            const float product = normalization.weightedProducts[node];
+            const float inverseParameterFactor = normalization.inverseFactors[node][parameterIndex];
+            const float crossDerivative = -kSlabQuadratureNodes[node] * inverseParameterFactor;
+            for (uint32_t i = 0u; i < count; ++i) {
+                derivatives[i] += product * normalization.inverseFactors[node][i] *
+                    (i == parameterIndex ? 1.0f : alpha[i] * crossDerivative);
+            }
+        }
+        // At the all-transparent limit the Jacobian is the identity. There
+        // is no normalization quotient to evaluate, and no zero-gradient dead zone.
+        if (normalization.rawWeightSum == 0.0f) return;
         float dRawWeightSumDAlphaK = 0.0f;
         for (uint32_t i = 0u; i < count; ++i) {
-            derivatives[i] = computeRawSlabWeightDerivativeWrtAlpha(alpha, count, i, parameterIndex);
             dRawWeightSumDAlphaK += derivatives[i];
         }
         float dLayerOpacityDAlphaK = 1.0f;
         for (uint32_t j = 0u; j < count; ++j) {
             if (j != parameterIndex) dLayerOpacityDAlphaK *= sycl::fmax(0.0f, 1.0f - alpha[j]);
         }
-        const float dNormalizationDAlphaK =
-            (dLayerOpacityDAlphaK * normalization.rawWeightSum -
-             normalization.layerOpacity * dRawWeightSumDAlphaK) /
-            (normalization.rawWeightSum * normalization.rawWeightSum);
+        const float normalizationDerivativeNumerator =
+            dLayerOpacityDAlphaK - normalization.normalization * dRawWeightSumDAlphaK;
         for (uint32_t i = 0u; i < count; ++i) {
             derivatives[i] = normalization.normalization * derivatives[i] +
-                             normalization.rawWeights[i] * dNormalizationDAlphaK;
+                (normalization.rawWeights[i] / normalization.rawWeightSum) *
+                normalizationDerivativeNumerator;
         }
     }
 

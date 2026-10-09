@@ -196,13 +196,7 @@ inline void launchSharedHeightForward(RenderPackage &pkg, uint32_t cameraIndex) 
         }
         if (sensor.intraSlabDepthAdjointBuffer) sensor.intraSlabDepthAdjointBuffer[pixel] = 0.0f;
         sensor.intraSlabDepthActiveSlabCountBuffer[pixel] = 0u;
-        sensor.curvatureScaleBuffer[pixel] = 0.0f;
-        if (sensor.surfaceCurvatureBuffer != nullptr) {
-            sensor.surfaceCurvatureBuffer[pixel] = std::numeric_limits<float>::quiet_NaN();
-        }
-        if (sensor.curvatureScaleAdjointBuffer) sensor.curvatureScaleAdjointBuffer[pixel] = 0.0f;
-        sensor.curvatureScaleActiveSlabCountBuffer[pixel] = 0u;
-        if (sensor.curvaturePrimitiveIndexBuffer) sensor.curvaturePrimitiveIndexBuffer[pixel] = kInvalidIndex;
+        if (sensor.visiblePrimitiveIndexBuffer) sensor.visiblePrimitiveIndexBuffer[pixel] = kInvalidIndex;
     };
     // Leave room for AdaptiveCpp's launch wrapper under the 4352-byte PTX limit.
     static_assert(sizeof(renderPixel) <= 2048, "Shared-height pixel kernel captures must stay small; use USM pointers for scene data.");

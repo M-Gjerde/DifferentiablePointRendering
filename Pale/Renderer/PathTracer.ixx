@@ -24,20 +24,22 @@ export namespace Pale {
 
         uint32_t rayQueueCapacity() const { return m_rayQueueCapacity; }
         bool hasAdjointScratch() const { return m_intermediates.gradientRecords != nullptr; }
+        uint32_t adjointPrimarySlabCacheCapacity() const {
+            return m_intermediates.adjointPrimarySlabCacheCapacity;
+        }
 
         void setScene(const GPUSceneBuffers &scene, const SceneBuild::BuildProducts &bp);
 
-        void setCurvatureDensificationStats(CurvatureDensificationStats *stats) {
-            m_curvatureDensificationStats = stats;
-        }
 
         void setPrimalActivityStats(PrimalActivityStats *stats) {
             m_primalActivityStats = stats;
         }
 
-        void renderForward(std::vector<SensorGPU> &sensors);
+        void renderForward(std::vector<SensorGPU> &sensors, bool waitForCompletion = true);
 
-        void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients, DebugImages *debugImages);
+        void renderBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients,
+                            DebugImages *debugImages, bool waitForCompletion = true,
+                            bool computeCloneStatistics = true);
 
         void renderDepthDistortionBackward(std::vector<SensorGPU> &sensor, PointGradients &gradients);
 
@@ -47,8 +49,7 @@ export namespace Pale {
                                                PointGradients &depthDistortionGradients,
                                                PointGradients &normalConsistencyGradients,
                                                PointGradients &intraSlabDepthGradients,
-                                               PointGradients &curvatureScaleGradients,
-                                               DebugImages *debugImages);
+                                               DebugImages *debugImages, bool waitForCompletion = true);
 
         void reset();
 
@@ -58,6 +59,7 @@ export namespace Pale {
         void ensureRayCapacity(uint32_t requiredRayQueueCapacity, bool adjoint = false);
 
         void ensureMeasurementTwoPointEventCapacity(uint32_t cameraRayCount);
+        void ensureAdjointPrimarySlabCacheCapacity(uint32_t cameraRayCount);
 
         void ensurePhotonGridBuffersAllocatedAndInitialized(DeviceSurfacePhotonMapGrid &grid);
 
@@ -78,9 +80,9 @@ export namespace Pale {
     private:
         sycl::queue m_queue;
         GPUSceneBuffers m_sceneGPU{};
+        bool m_singlePointCloudInstance = false;
         RenderIntermediatesGPU m_intermediates{};
         PathTracerSettings m_settings{};
-        CurvatureDensificationStats *m_curvatureDensificationStats = nullptr;
         PrimalActivityStats *m_primalActivityStats = nullptr;
         uint32_t m_rayQueueCapacity = 0;
         uint64_t m_sessionSeed = 42;

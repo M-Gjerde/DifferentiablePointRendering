@@ -99,26 +99,8 @@ def get_forward_intra_slab_depth_active_slab_count(
     )
 
 
-def get_forward_curvature_scale(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "curvature_scale" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.float32)
-    values = np.asarray(camera_out["curvature_scale"], dtype=np.float32, order="C")
-    return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
 
 
-def get_forward_curvature_scale_active_slab_count(
-        forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
-    camera_out = forward_out[camera_name]
-    if "curvature_scale_active_slab_count" not in camera_out:
-        h, w = _infer_hw_from_forward(forward_out, camera_name)
-        return np.zeros((h, w), dtype=np.uint32)
-    return np.asarray(
-        camera_out["curvature_scale_active_slab_count"],
-        dtype=np.uint32,
-        order="C",
-    )
 
 
 def get_forward_visible_normal(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
@@ -286,54 +268,35 @@ def verify_opacities_inplace(opacities: torch.Tensor) -> dict[str, float]:
 
 def verify_beta_inplace(
         betas: torch.Tensor,
-        trainable_surfel_mask: Optional[torch.Tensor] = None,
+        trainable_surfel_mask: torch.Tensor | None = None,
 ) -> dict[str, float]:
-    """
-    In-place verification/clamping of beta values.
-
-    Enforces:
-        -2.0 <= beta <= 5.0
-
-    If trainable_surfel_mask is provided, only trainable surfels are verified.
-    Frozen surfels are left untouched.
-    """
-    min_beta_value = -2.5
-    max_beta_value = 0.0
+    """Apply the native beta bounds to trainable values, preserving frozen values."""
+    minimum, maximum = float(pale.BETA_MIN), float(pale.BETA_MAX)
     with torch.no_grad():
-        beta_values = betas.data
-
-        before_min, before_max = _finite_min_max(beta_values)
-        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(beta_values)).item())
-        beta_values.copy_(torch.nan_to_num(beta_values, nan=1.0, posinf=max_beta_value, neginf=min_beta_value))
-
-        if trainable_surfel_mask is None:
-            beta_values.clamp_(min=min_beta_value, max=max_beta_value)
-        else:
-            mask = trainable_surfel_mask.to(
-                device=beta_values.device,
-                dtype=torch.bool,
-            )
-
+        values = betas.data
+        mask = None
+        if trainable_surfel_mask is not None:
+            mask = trainable_surfel_mask.to(device=values.device, dtype=torch.bool)
             if mask.ndim != 1:
                 raise RuntimeError(
                     f"trainable_surfel_mask must be 1D, got shape {tuple(mask.shape)}"
                 )
-
-            if beta_values.shape[0] != mask.shape[0]:
+            if values.ndim == 0 or values.shape[0] != mask.shape[0]:
                 raise RuntimeError(
-                    "Beta/mask shape mismatch: "
-                    f"betas has {beta_values.shape[0]} surfels, "
-                    f"mask has {mask.shape[0]}"
+                    f"Beta/mask shape mismatch: betas has shape {tuple(values.shape)}, "
+                    f"mask has {mask.shape[0]} surfels"
                 )
-
-            beta_values[mask] = torch.clamp(
-                beta_values[mask],
-                min=min_beta_value,
-                max=5.0,
-            )
-
-        after_min, after_max = _finite_min_max(beta_values)
-
+        selected = values if mask is None else values[mask]
+        before_min, before_max = _finite_min_max(selected)
+        nonfinite_count = int(torch.count_nonzero(~torch.isfinite(selected)).item())
+        constrained = torch.nan_to_num(
+            selected, nan=1.0, posinf=maximum, neginf=minimum,
+        ).clamp(min=minimum, max=maximum)
+        if mask is None:
+            values.copy_(constrained)
+        else:
+            values[mask] = constrained
+        after_min, after_max = _finite_min_max(constrained)
         return {
             "before_min": before_min,
             "before_max": before_max,
@@ -341,6 +304,8 @@ def verify_beta_inplace(
             "after_max": after_max,
             "nonfinite_count": nonfinite_count,
         }
+
+
 def apply_point_parameters(
         renderer: pale.Renderer,
         positions: torch.Tensor,

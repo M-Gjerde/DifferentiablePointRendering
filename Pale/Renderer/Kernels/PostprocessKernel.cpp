@@ -5,6 +5,7 @@
 #include "Renderer/Kernels/PostprocessKernel.h"
 
 #include "KernelHelpers.h"
+#include "Core/ScopedTimer.h"
 
 namespace Pale {
 
@@ -18,7 +19,7 @@ namespace Pale {
             const uint32_t raysPerSet = imageWidth * imageHeight;
 
 
-            queue.submit([&](sycl::handler& commandGroupHandler) {
+            sycl::event postprocessEvent = queue.submit([=](sycl::handler& commandGroupHandler) {
                 const float exposureCorrection = sensor.exposureCorrection;
                 const float gammaCorrection = sensor.gammaCorrection;
                 const float inverseGamma =
@@ -112,7 +113,12 @@ namespace Pale {
                     }
                 );
             });
-            queue.wait();
+            // All captured sensor data are values; device buffers outlive this
+            // submission and the renderer waits before exposing host results.
+            if (ScopedTimerDetail::isProfilingEnabled() ||
+                ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug)) {
+                postprocessEvent.wait();
+            }
         }
     }
 

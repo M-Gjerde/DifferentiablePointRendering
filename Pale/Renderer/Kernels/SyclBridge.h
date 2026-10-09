@@ -11,9 +11,8 @@ namespace Pale {
     void submitPhotonMappingKernel(RenderPackage& renderPackage);
     void submitLightTracingKernel(RenderPackage& renderPackage);
     void submitLightTracingKernelCylinderRay(RenderPackage& renderPackage);
-    void submitAdjointKernel(RenderPackage& renderPackage);
+    void submitAdjointKernel(RenderPackage& renderPackage, bool computeCloneStatistics = true);
     void submitDepthDistortionKernel(RenderPackage& renderPackage);
     void submitNormalConsistencyKernel(RenderPackage& renderPackage);
     void submitSurfaceRegularizersKernel(RenderPackage &pkg);
 }
-

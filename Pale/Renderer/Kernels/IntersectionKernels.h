@@ -821,15 +821,21 @@ namespace Pale {
 
                     const float3 hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
                     const float2 uv = phiInverse(hitPositionObject, surfel);
-                    float alphaGeom = 0.0f;
-                    float3 hitPositionW{};
-                    if (profileEnabled) ++profileProfileTests;
-                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                    // Preserve opacityBeta's exact support predicate before paying for a
+                    // world transform. Its accepted-hit opacity calculation stays unchanged.
+                    const float radiusSquared = uv[0] * uv[0] + uv[1] * uv[1];
+                    if (radiusSquared > 1.0f) {
                         continue;
                     }
-                    hitPositionW = toWorldPoint(hitPositionObject, transform);
+                    const float3 hitPositionW = toWorldPoint(hitPositionObject, transform);
                     const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                     if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
+                        continue;
+                    }
+                    float alphaGeom = 0.0f;
+                    // Count opacityBeta invocations, excluding the early support/range rejects.
+                    if (profileEnabled) ++profileProfileTests;
+                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                         continue;
                     }
 
@@ -957,15 +963,21 @@ namespace Pale {
 
                     const float3 hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
                     const float2 uv = phiInverse(hitPositionObject, surfel);
-                    float alphaGeom = 0.0f;
-                    float3 hitPositionW{};
-                    if (profileEnabled) ++profileProfileTests;
-                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                    // Preserve opacityBeta's exact support predicate before paying for a
+                    // world transform. Its accepted-hit opacity calculation stays unchanged.
+                    const float radiusSquared = uv[0] * uv[0] + uv[1] * uv[1];
+                    if (radiusSquared > 1.0f) {
                         continue;
                     }
-                    hitPositionW = toWorldPoint(hitPositionObject, transform);
+                    const float3 hitPositionW = toWorldPoint(hitPositionObject, transform);
                     const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                     if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
+                        continue;
+                    }
+                    float alphaGeom = 0.0f;
+                    // Count opacityBeta invocations, excluding the early support/range rejects.
+                    if (profileEnabled) ++profileProfileTests;
+                    if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                         continue;
                     }
 
@@ -1118,15 +1130,21 @@ namespace Pale {
 
                 hitPositionObject = rayObject.origin + tHitObject * rayObject.direction;
                 const float2 uv = phiInverse(hitPositionObject, surfel);
-                float alphaGeom = 0.0f;
-                float3 hitPositionW{};
-                if (profileEnabled) ++profileProfileTests;
-                if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
+                // Preserve opacityBeta's exact support predicate before paying for a
+                // world transform. Its accepted-hit opacity calculation stays unchanged.
+                const float radiusSquared = uv[0] * uv[0] + uv[1] * uv[1];
+                if (radiusSquared > 1.0f) {
                     continue;
                 }
-                hitPositionW = toWorldPoint(hitPositionObject, transform);
+                const float3 hitPositionW = toWorldPoint(hitPositionObject, transform);
                 const float tHitWorld = dot(hitPositionW - rayWorld.origin, rayWorld.direction);
                 if (tHitWorld < tMinWorld || tHitWorld > tMaxWorld) {
+                    continue;
+                }
+                float alphaGeom = 0.0f;
+                // Count opacityBeta invocations, excluding the early support/range rejects.
+                if (profileEnabled) ++profileProfileTests;
+                if (!opacityBeta(uv, surfel, &alphaGeom) || alphaGeom <= 0.0f) {
                     continue;
                 }
                 LocalSurfelLayerHit candidateHit{};
@@ -1191,17 +1209,66 @@ namespace Pale {
             scene);
     }
 
-    struct PointCloudLocalLayer {
-        uint32_t hitCount = 0u;
-        float furthestT = 0.0f;
-        float transmission = 1.0f;
-        float opacity = 0.0f;
-        float3 referenceNormalW{0.0f};
-        LocalSurfelLayerHit hits[kMaxLocalSurfelHits];
-        float alphaEff[kMaxLocalSurfelHits];
-        float weight[kMaxLocalSurfelHits];
-        float directLightEpsilon[kMaxLocalSurfelHits] = {RayEpsilon};
+    // Four-point Gauss-Legendre quadrature on [0, 1] integrates the slab
+    // weight polynomials exactly through degree seven. Interior nodes keep
+    // every factor positive even when an effective opacity is exactly one.
+    static constexpr uint32_t kSlabQuadratureCount = 4u;
+    static constexpr float kSlabQuadratureNodes[kSlabQuadratureCount] = {
+        0.06943184420297371f, 0.33000947820757187f,
+        0.66999052179242813f, 0.93056815579702629f
     };
+    static constexpr float kSlabQuadratureWeights[kSlabQuadratureCount] = {
+        0.17392742256872693f, 0.32607257743127307f,
+        0.32607257743127307f, 0.17392742256872693f
+    };
+    static_assert(kMaxLocalSurfelHits <= 2u * kSlabQuadratureCount,
+                  "Increase slab quadrature order when increasing slab capacity");
+
+    SYCL_EXTERNAL inline float evaluateSlabQuadratureProduct(
+        const float *alpha, uint32_t count, uint32_t node, float *inverseFactors) {
+        const float z = kSlabQuadratureNodes[node];
+        float product = kSlabQuadratureWeights[node];
+        for (uint32_t i = 0u; i < count; ++i) {
+            const float factor = 1.0f - z * alpha[i];
+            inverseFactors[i] = 1.0f / factor;
+            product *= factor;
+        }
+        return product;
+    }
+
+    SYCL_EXTERNAL inline float computeSlabOpacity(const float *alpha, uint32_t count) {
+        // Equivalent to 1-prod(1-alpha), without subtracting two nearly equal
+        // numbers when all constituents are almost transparent.
+        float opacity = 0.0f;
+        float transmission = 1.0f;
+        for (uint32_t i = 0u; i < count; ++i) {
+            opacity += transmission * alpha[i];
+            transmission *= 1.0f - alpha[i];
+        }
+        return opacity;
+    }
+
+    SYCL_EXTERNAL inline void computeSlabWeights(
+        const float *alpha, uint32_t count, float opacity, float *weights) {
+        if (count == 1u) {
+            weights[0] = alpha[0];
+            return;
+        }
+        for (uint32_t i = 0u; i < count; ++i) weights[i] = 0.0f;
+        for (uint32_t node = 0u; node < kSlabQuadratureCount; ++node) {
+            float inverseFactors[kMaxLocalSurfelHits];
+            const float product = evaluateSlabQuadratureProduct(alpha, count, node, inverseFactors);
+            for (uint32_t i = 0u; i < count; ++i) {
+                weights[i] += alpha[i] * product * inverseFactors[i];
+            }
+        }
+        float weightSum = 0.0f;
+        for (uint32_t i = 0u; i < count; ++i) weightSum += weights[i];
+        if (weightSum > 0.0f) {
+            const float normalization = opacity / weightSum;
+            for (uint32_t i = 0u; i < count; ++i) weights[i] *= normalization;
+        }
+    }
 
     struct PointCloudLocalLayerConsensus {
         float3 pointW{0.0f};
@@ -1402,69 +1469,8 @@ namespace Pale {
             layer.transmission *= sycl::fmax(0.0f, 1.0f - alphaEff);
         }
 
-        layer.opacity = 1.0f - layer.transmission;
-        if (layer.hitCount == 1u) {
-            layer.weight[0] = layer.alphaEff[0];
-            return layer;
-        }
-
-        // -------------------------------------------------------------------------
-        // Average over all unresolved depth orders.
-        // -------------------------------------------------------------------------
-        float localLayerWeightSum = 0.0f;
-
-        if (layer.opacity > 0.0f) {
-            for (uint32_t localHitIndex = 0u; localHitIndex < layer.hitCount; ++localHitIndex) {
-                const float alphaEff = layer.alphaEff[localHitIndex];
-                if (alphaEff <= 0.0f) continue;
-
-                float transmittancePolynomial[kMaxLocalSurfelHits];
-
-                for (uint32_t coefficientIndex = 0u; coefficientIndex < maxLocalSurfelHits; ++coefficientIndex) {
-                    transmittancePolynomial[coefficientIndex] = 0.0f;
-                }
-
-                transmittancePolynomial[0] = 1.0f;
-                uint32_t polynomialDegree = 0u;
-
-                for (uint32_t otherHitIndex = 0u; otherHitIndex < layer.hitCount; ++otherHitIndex) {
-                    if (otherHitIndex == localHitIndex) continue;
-
-                    const float otherAlphaEff = layer.alphaEff[otherHitIndex];
-                    if (otherAlphaEff <= 0.0f) continue;
-
-                    for (int32_t coefficientIndex = static_cast<int32_t>(polynomialDegree);
-                         coefficientIndex >= 0;
-                         --coefficientIndex) {
-                        transmittancePolynomial[coefficientIndex + 1] -=
-                                otherAlphaEff * transmittancePolynomial[coefficientIndex];
-                    }
-
-                    ++polynomialDegree;
-                }
-
-                float expectedPreviousTransmittance = 0.0f;
-
-                for (uint32_t coefficientIndex = 0u; coefficientIndex <= polynomialDegree; ++coefficientIndex) {
-                    expectedPreviousTransmittance +=
-                            transmittancePolynomial[coefficientIndex] / static_cast<float>(coefficientIndex + 1u);
-                }
-
-                const float layerWeight =
-                        alphaEff * sycl::clamp(expectedPreviousTransmittance, 0.0f, 1.0f);
-
-                layer.weight[localHitIndex] = layerWeight;
-                localLayerWeightSum += layerWeight;
-            }
-        }
-
-        if (localLayerWeightSum > 1.0e-8f) {
-            const float weightNormalization = layer.opacity / localLayerWeightSum;
-
-            for (uint32_t localHitIndex = 0u; localHitIndex < layer.hitCount; ++localHitIndex) {
-                layer.weight[localHitIndex] *= weightNormalization;
-            }
-        }
+        layer.opacity = computeSlabOpacity(layer.alphaEff, layer.hitCount);
+        computeSlabWeights(layer.alphaEff, layer.hitCount, layer.opacity, layer.weight);
 
         return layer;
     }

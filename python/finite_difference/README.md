@@ -12,7 +12,7 @@ adjoint in progressively more complicated scenes:
 Every case uses deterministic center rays and a central difference at two
 epsilon values. Most cases use a fixed, spatially varying signed image
 cotangent, so they test the full vector-Jacobian product rather than only an
-L2 residual. One case explicitly tests the L2+SSIM image seed.
+L2 residual.
 
 The checker fails on:
 
@@ -94,15 +94,7 @@ ray position/rotation derivatives, stale forward buffers, and masked Adam state
 migration after pruning/cloning. Set `ACPP_VISIBILITY_MASK=omp` and a writable
 `ACPP_APPDB_DIR` to use AdaptiveCpp's CPU backend without a GPU.
 
-## Optional curvature work and profiling
-
-Curvature work is independent of relative-error densification. The camera
-curvature/slab-search pass runs only when `curvature_scale_weight` is nonzero,
-`enable_curvature_densification` is enabled, or the native renderer setting
-`compute_curvature_diagnostics` is true. Otherwise its image and active-slab
-count are reset to zero. The viewer requests it when displaying curvature or
-per-primitive diagnostics that use the selected slab's identity. Changing to
-one of these views triggers a fresh render.
+## Profiling
 
 For performance measurements, collect GPU traversal counters separately from
 timings: the counters use global atomic additions. Python's debug logging
@@ -175,9 +167,8 @@ The floor defaults to `0.01` and is configurable with
 The optimizer retains its original RGB objective and regularizer gradients.
 
 With half-MSE, each pixel's existing gradient contributions are weighted before
-surfel/camera accumulation, so no additional adjoint traversal is needed. For
-an SSIM mixture, a separate relative-MSE adjoint supplies only densification
-statistics. Both modes bypass the mean-albedo boost. The scalar score retains
+surfel/camera accumulation, so no additional adjoint traversal is needed.
+This bypasses the mean-albedo boost. The scalar score retains
 its tangent projection and camera/iteration averaging; the split direction
 still respects `densification_tangent_only`.
 
@@ -190,7 +181,7 @@ they need calibration in the new statistic's units.
 
 `test_relative_densification.py` compares against an explicitly constructed,
 frozen relative source, tests common radiometric gains, checks optimizer
-isolation with and without SSIM, and verifies that albedo compensation is replaced.
+isolation, and verifies that albedo compensation is replaced.
 
 ### Depth distortion
 
@@ -201,11 +192,13 @@ squared NDC inverse-depth differences. Match the mode and retune
 
 The world-space depth derivative uses the sign of each pair's difference, with
 a zero subgradient at coincident depths. Backward differentiates compositing
-weights for position, rotation, and scale; opacity and beta updates from depth
-distortion remain suppressed.
+weights for position, rotation, scale, opacity, and beta, including the effect
+of each alpha on the transmittance of later hits.
 
 `test/test_world_space_distortion.py` checks camera-distance behavior, the NDC
-near plane, and finite-difference position gradients. Run from `python/` with
+near plane, and finite-difference position, opacity, and off-center beta
+gradients in both modes. It also checks loss weighting, pixel normalization,
+near-opaque foregrounds, and eight low-opacity layers. Run from `python/` with
 the rebuilt module first on `PYTHONPATH`:
 
 ```bash

@@ -2,13 +2,21 @@
 // Created by magnus on 9/12/25.
 //
 #include "PrimalKernels.h"
-#include "CurvatureRegularizer.h"
 #include "IntersectionKernels.h"
 #include "KernelHelpers.h"
 #include "SharedHeightForward.h"
 #include "Core/ScopedTimer.h"
 #include <cmath>
 namespace Pale {
+static void waitForForwardKernelTiming(sycl::event &event) {
+    // The in-order queue already orders device consumers. Only host timing
+    // needs an intermediate barrier; renderForward retains its final wait.
+    if (ScopedTimerDetail::isProfilingEnabled() ||
+        ScopedTimerDetail::isLogLevelEnabled(spdlog::level::debug)) {
+        event.wait();
+    }
+}
+
 void launchRayGenEmitterKernel(RenderPackage &pkg, uint32_t forwardPass) {
     auto queue = pkg.queue;
     auto scene = pkg.scene;
@@ -365,8 +373,14 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
 
             const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
             const float3 anchorPositionW = anchorHit.hitPositionW;
-            const PointCloudLocalLayerConsensus slabConsensus =
-                    computePointCloudLocalLayerConsensus(localLayer, originalRay, scene);
+            PointCloudLocalLayerConsensus slabConsensus{};
+            // Unshared lighting only consumes consensus in the multi-member
+            // plane loss. Preserve its arithmetic when used, and avoid it for
+            // singleton slabs or renders without surface diagnostics.
+            if (shareLocalLayerDirectLighting ||
+                (settings.computeSurfaceDiagnostics && localLayer.hitCount > 1u)) {
+                slabConsensus = computePointCloudLocalLayerConsensus(localLayer, originalRay, scene);
+            }
             const float3 sharedSlabPositionW =
                     slabConsensus.valid != 0u ? slabConsensus.pointW : anchorPositionW;
 
@@ -751,15 +765,8 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         // only the adjoint inputs here, avoiding 15 separate blocking clears.
         if (sensor.depthDistortionAdjointBuffer) sensor.depthDistortionAdjointBuffer[pixelIndex] = 0.0f;
         if (sensor.intraSlabDepthAdjointBuffer) sensor.intraSlabDepthAdjointBuffer[pixelIndex] = 0.0f;
-        if (sensor.curvatureScaleAdjointBuffer) sensor.curvatureScaleAdjointBuffer[pixelIndex] = 0.0f;
-        // These outputs must also be fresh when the optional curvature pass is skipped.
-        sensor.curvatureScaleBuffer[pixelIndex] = 0.0f;
-        if (sensor.surfaceCurvatureBuffer != nullptr) {
-            sensor.surfaceCurvatureBuffer[pixelIndex] = std::numeric_limits<float>::quiet_NaN();
-        }
-        sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 0u;
-        if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
-            sensor.curvaturePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
+        if (sensor.visiblePrimitiveIndexBuffer != nullptr) {
+            sensor.visiblePrimitiveIndexBuffer[pixelIndex] = UINT32_MAX;
         }
         sensor.depthDistortionBuffer[pixelIndex] = distortion;
         sensor.intraSlabDepthBuffer[pixelIndex] = intraSlabDepthLossSum;
@@ -809,7 +816,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             addRenderProfileCounter(&counters->forwardGatherMaxSplatTerminations, profileMaxSplatTerminations);
         }
     });
-    kernelEvent3.wait();
+    waitForForwardKernelTiming(kernelEvent3);
     gatherTimer.stop();
 }
 
@@ -891,34 +898,16 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
             const float3 normalW = normalize(cross(tangentY, tangentX));
             sensor.normalFromDepthBuffer[pixelIndex] = float4{normalW.x(), normalW.y(), normalW.z(), 1.0f};
         });
-        kernelEvent4.wait();
+        waitForForwardKernelTiming(kernelEvent4);
         normalTimer.stop();
     }
 
     // -------------------------------------------------------------------------
-    // Pass 3: curvature-aware surfel-scale regularizer.
-    //
-    // Fit a signed curvature tensor from coherent surfel centers/normals in
-    // the selected slab. For D = diag(s_u, s_v), the tangent-plane departure
-    // is rho(D B D)/2 and the loss is mean(max(0, rho/(2 gamma h)-1)^2).
-    // The fit, frame and slab selection are detached in the adjoint pass.
+    // Pass 3: optional dominant primitive ID from the visible slab.
     const float slabThickness = rendererDebugLocalLayerDepthEpsilon(settings);
-    const CurvatureDensificationStats curvatureDensificationStats =
-        pkg.curvatureDensificationStats;
-    const bool hasCurvatureDensificationConsumer =
-        curvatureDensificationStats.numPoints == scene.pointCount &&
-        curvatureDensificationStats.violationSum != nullptr &&
-        curvatureDensificationStats.violationCount != nullptr &&
-        curvatureDensificationStats.directionTensorUu != nullptr &&
-        curvatureDensificationStats.directionTensorUv != nullptr &&
-        curvatureDensificationStats.directionTensorVv != nullptr;
-    const bool computeCurvature = settings.curvatureScaleRegularizerWeight != 0.0f ||
-        hasCurvatureDensificationConsumer || settings.computeCurvatureDiagnostics;
-    if (!computeCurvature && !settings.computeVisiblePrimitiveDiagnostics) {
-        return;
-    }
-    ScopedTimer curvatureTimer("Forward camera: curvature and slab search", spdlog::level::debug);
-    sycl::event scaleCurvatureEvent = queue.parallel_for<class ScaleCurvatureRegularizerKernel2>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
+    if (!settings.computeVisiblePrimitiveDiagnostics) return;
+    ScopedTimer visiblePrimitiveTimer("Forward camera: visible slab search", spdlog::level::debug);
+    sycl::event visiblePrimitiveEvent = queue.parallel_for<class VisiblePrimitiveKernel2>(sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
             const uint32_t pixelIndex = static_cast<uint32_t>(tid[0]);
             const uint32_t pixelX = pixelIndex % imageWidth;
             const uint32_t pixelY = pixelIndex / imageWidth;
@@ -930,19 +919,18 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
 
             // Locate the local slab corresponding to the visible pseudo surface.
             // Retrace the ray and select the slab closest to the pseudo-surface.
-            Ray scaleRegularizerRay = makePrimaryRayFromPixelJitteredFov(sensor.camera, static_cast<float>(pixelX), static_cast<float>(pixelY), 0.0f, 0.0f);
+            Ray visiblePrimitiveRay = makePrimaryRayFromPixelJitteredFov(sensor.camera, static_cast<float>(pixelX), static_cast<float>(pixelY), 0.0f, 0.0f);
             const uint32_t maxSplatEventsPerRay = rendererDebugMaxSplatEventsPerRay(settings);
             const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
             const float localLayerNormalCosineThreshold = rendererDebugLocalLayerNormalCosineThreshold(settings);
 
             float closestSurfaceDepthDifference = std::numeric_limits<float>::infinity();
             PointCloudLocalLayer selectedLayer{};
-            uint32_t selectedTransformIndex = UINT32_MAX;
             bool foundPointSlab = false;
 
             for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
                 WorldHit worldHit{};
-                intersectScene(scaleRegularizerRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
+                intersectScene(visiblePrimitiveRay, &worldHit, scene, SurfelIntersectMode::FirstHit);
                 if (!worldHit.hit) { break; }
 
                 buildIntersectionNormal(scene, worldHit);
@@ -950,7 +938,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                 if (instance.geometryType == GeometryType::Mesh) { break; }
                 if (instance.geometryType != GeometryType::PointCloud) { break; }
 
-                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(scaleRegularizerRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
+                const PointCloudLocalLayer localLayer = collectPointCloudLocalLayer(visiblePrimitiveRay, worldHit, instance, scene, slabThickness, maxLocalSurfelHits, localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                 if (localLayer.hitCount == 0u) { break; }
 
                 const LocalSurfelLayerHit &anchorHit = localLayer.hits[0];
@@ -959,22 +947,20 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
 
                 if (surfaceDepthDifference < closestSurfaceDepthDifference) {
                     selectedLayer = localLayer;
-                    selectedTransformIndex = instance.transformIndex;
                     closestSurfaceDepthDifference = surfaceDepthDifference;
                     foundPointSlab = true;
                 }
 
-                scaleRegularizerRay.origin += scaleRegularizerRay.direction * (localLayer.furthestT + RayEpsilon);
+                visiblePrimitiveRay.origin += visiblePrimitiveRay.direction * (localLayer.furthestT + RayEpsilon);
             }
 
             if (!foundPointSlab) {
                 return;
             }
 
-            if (sensor.curvaturePrimitiveIndexBuffer != nullptr) {
+            if (sensor.visiblePrimitiveIndexBuffer != nullptr) {
                 // Use the strongest renderer contributor as the displayed
-                // primitive identity, but only within the exact selected slab
-                // used below for the curvature regularizer/statistics.
+                // primitive identity within the selected visible slab.
                 uint32_t dominantHitIndex = 0u;
                 float dominantWeight = selectedLayer.weight[0];
                 for (uint32_t localHitIndex = 1u;
@@ -985,110 +971,13 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                         dominantHitIndex = localHitIndex;
                     }
                 }
-                sensor.curvaturePrimitiveIndexBuffer[pixelIndex] =
+                sensor.visiblePrimitiveIndexBuffer[pixelIndex] =
                     selectedLayer.hits[dominantHitIndex].primitiveIndex;
             }
 
-            if (!computeCurvature) {
-                return;
-            }
-
-            float accumulatedScaleLoss = 0.0f;
-            float accumulatedCurvatureMagnitude = 0.0f;
-            uint32_t observedMemberCount = 0u;
-            const bool accumulateDensificationStats =
-                curvatureDensificationStats.numPoints == scene.pointCount &&
-                curvatureDensificationStats.violationSum != nullptr &&
-                curvatureDensificationStats.violationCount != nullptr &&
-                curvatureDensificationStats.directionTensorUu != nullptr &&
-                curvatureDensificationStats.directionTensorUv != nullptr &&
-                curvatureDensificationStats.directionTensorVv != nullptr &&
-                selectedTransformIndex != UINT32_MAX;
-
-            for (uint32_t localHitIndex = 0u;
-                 localHitIndex < selectedLayer.hitCount;
-                 ++localHitIndex) {
-                const LocalSurfelLayerHit &localHit = selectedLayer.hits[localHitIndex];
-                const Point &surfel = scene.points[localHit.primitiveIndex];
-                CurvatureTensor tensor{};
-                CurvatureTensor worldTensor{};
-                if (!estimateSurfelCurvature(surfel, selectedLayer,
-                        scene.transforms[selectedTransformIndex], scene, slabThickness,
-                        localLayerNormalCosineThreshold, tensor,
-                        sensor.surfaceCurvatureBuffer != nullptr ? &worldTensor : nullptr)) { continue; }
-                if (sensor.surfaceCurvatureBuffer != nullptr) {
-                    // Spectral radius of the symmetric world-space normal derivative:
-                    // max(abs(kappa_1), abs(kappa_2)), independent of normal sign.
-                    accumulatedCurvatureMagnitude += 0.5f * (
-                        sycl::fabs(worldTensor.uu + worldTensor.vv) +
-                        sycl::hypot(worldTensor.uu - worldTensor.vv, 2.0f * worldTensor.uv));
-                }
-                ++observedMemberCount;
-                const CurvatureFootprint footprint = evaluateCurvatureFootprint(
-                    tensor, surfel.scale.x(), surfel.scale.y(), slabThickness);
-                const float residual = footprint.residual;
-                accumulatedScaleLoss += residual * residual;
-
-                // These are forward-only structural statistics. They use the
-                // raw geometric violation and therefore do not depend on the
-                // curvature regularizer loss weight.
-                if (!accumulateDensificationStats ||
-                    localHit.primitiveIndex >= curvatureDensificationStats.numPoints ||
-                    !sycl::isfinite(residual)) {
-                    continue;
-                }
-
-                const uint32_t primitiveIndex = localHit.primitiveIndex;
-                sycl::atomic_ref<float,
-                                 sycl::memory_order::relaxed,
-                                 sycl::memory_scope::device,
-                                 sycl::access::address_space::global_space>(
-                    curvatureDensificationStats.violationSum[primitiveIndex]
-                ).fetch_add(residual);
-                sycl::atomic_ref<uint32_t,
-                                 sycl::memory_order::relaxed,
-                                 sycl::memory_scope::device,
-                                 sycl::access::address_space::global_space>(
-                    curvatureDensificationStats.violationCount[primitiveIndex]
-                ).fetch_add(1u);
-
-                const float tensorUu = footprint.splitTensor.uu;
-                const float tensorUv = footprint.splitTensor.uv;
-                const float tensorVv = footprint.splitTensor.vv;
-                if (tensorUu != 0.0f || tensorUv != 0.0f || tensorVv != 0.0f) {
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>(
-                        curvatureDensificationStats.directionTensorUu[primitiveIndex]
-                    ).fetch_add(tensorUu);
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>(
-                        curvatureDensificationStats.directionTensorUv[primitiveIndex]
-                    ).fetch_add(tensorUv);
-                    sycl::atomic_ref<float,
-                                     sycl::memory_order::relaxed,
-                                     sycl::memory_scope::device,
-                                     sycl::access::address_space::global_space>(
-                        curvatureDensificationStats.directionTensorVv[primitiveIndex]
-                    ).fetch_add(tensorVv);
-                }
-            }
-
-            if (observedMemberCount == 0u) { return; }
-            const float selectedSlabScaleLoss = accumulatedScaleLoss /
-                static_cast<float>(observedMemberCount);
-            sensor.curvatureScaleBuffer[pixelIndex] = selectedSlabScaleLoss;
-            if (sensor.surfaceCurvatureBuffer != nullptr) {
-                sensor.surfaceCurvatureBuffer[pixelIndex] = accumulatedCurvatureMagnitude /
-                    static_cast<float>(observedMemberCount);
-            }
-            sensor.curvatureScaleActiveSlabCountBuffer[pixelIndex] = 1u;
     });
-    scaleCurvatureEvent.wait();
-    curvatureTimer.stop();
+    waitForForwardKernelTiming(visiblePrimitiveEvent);
+    visiblePrimitiveTimer.stop();
 }
 
 void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t gatherPassIdx) {
@@ -1114,12 +1003,6 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
     }
     if (sensor.intraSlabDepthAdjointBuffer) queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
     queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
-    queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
-    if (sensor.surfaceCurvatureBuffer != nullptr) {
-        queue.fill(sensor.surfaceCurvatureBuffer, std::numeric_limits<float>::quiet_NaN(), pixelCount);
-    }
-    if (sensor.curvatureScaleAdjointBuffer) queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
-    queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
     queue.wait();
     // -------------------------------------------------------------------------
     // Pass 1:
@@ -1419,9 +1302,6 @@ void launchPointSampledPathTracingCameraKernel(
         queue.fill(sensor.intraSlabDepthBuffer, 0.0f, pixelCount);
         if (sensor.intraSlabDepthAdjointBuffer) queue.fill(sensor.intraSlabDepthAdjointBuffer, 0.0f, pixelCount);
         queue.fill(sensor.intraSlabDepthActiveSlabCountBuffer, 0u, pixelCount);
-        queue.fill(sensor.curvatureScaleBuffer, 0.0f, pixelCount);
-        if (sensor.curvatureScaleAdjointBuffer) queue.fill(sensor.curvatureScaleAdjointBuffer, 0.0f, pixelCount);
-        queue.fill(sensor.curvatureScaleActiveSlabCountBuffer, 0u, pixelCount);
         queue.wait();
     }
     queue.submit([&](sycl::handler& cgh) {

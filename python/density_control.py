@@ -110,15 +110,15 @@ def make_under_reconstruction_clones(
         normal_shift_on_clone=False,
         normal_shift_scale=0.0,
         max_normal_shift_fraction=0.50,
-        exact_clone_scale_threshold=0.0,
         selection_score_np=None,
-        curvature_violation_np=None,
-        curvature_direction_uu_np=None,
-        curvature_direction_uv_np=None,
-        curvature_direction_vv_np=None,
-        curvature_violation_threshold=0.0,
         split_tangent_only=True,
 ):
+    """Split using the current frame, even when the signal spans older frames.
+
+    The selection score is a window reduction made before each optimizer step.
+    Its signed direction remains in world space. Here, after the latest step,
+    both child displacements are projected into the current parent's plane.
+    """
     with torch.no_grad():
         device = positions.device
         point_count = int(positions.shape[0])
@@ -168,71 +168,8 @@ def make_under_reconstruction_clones(
         else:
             position_score = torch.zeros_like(position_signal)
 
-        curvature_threshold = float(curvature_violation_threshold)
-        curvature_enabled = (
-                math.isfinite(curvature_threshold)
-                and curvature_threshold > 0.0
-                and curvature_violation_np is not None
-        )
-        curvature_violation = torch.zeros(point_count, device=device, dtype=torch.float32)
-        curvature_uu = torch.zeros_like(curvature_violation)
-        curvature_uv = torch.zeros_like(curvature_violation)
-        curvature_vv = torch.zeros_like(curvature_violation)
 
-        if curvature_enabled:
-            curvature_violation = torch.as_tensor(
-                curvature_violation_np,
-                device=device,
-                dtype=torch.float32,
-            ).reshape(-1)
-            if curvature_violation.numel() != point_count:
-                raise ValueError(
-                    "curvature_violation_np must contain one value per surfel, "
-                    f"got {curvature_violation.numel()} for {point_count} surfels"
-                )
-
-            tensor_inputs = (
-                curvature_direction_uu_np,
-                curvature_direction_uv_np,
-                curvature_direction_vv_np,
-            )
-            if all(value is not None for value in tensor_inputs):
-                curvature_uu = torch.as_tensor(
-                    curvature_direction_uu_np, device=device, dtype=torch.float32
-                ).reshape(-1)
-                curvature_uv = torch.as_tensor(
-                    curvature_direction_uv_np, device=device, dtype=torch.float32
-                ).reshape(-1)
-                curvature_vv = torch.as_tensor(
-                    curvature_direction_vv_np, device=device, dtype=torch.float32
-                ).reshape(-1)
-                if any(value.numel() != point_count for value in
-                       (curvature_uu, curvature_uv, curvature_vv)):
-                    raise ValueError(
-                        "curvature direction tensors must contain one value per surfel"
-                    )
-
-            curvature_violation = torch.where(
-                torch.isfinite(curvature_violation),
-                torch.clamp(curvature_violation, min=0.0),
-                torch.zeros_like(curvature_violation),
-            )
-            curvature_uu = torch.where(
-                torch.isfinite(curvature_uu), curvature_uu, torch.zeros_like(curvature_uu)
-            )
-            curvature_uv = torch.where(
-                torch.isfinite(curvature_uv), curvature_uv, torch.zeros_like(curvature_uv)
-            )
-            curvature_vv = torch.where(
-                torch.isfinite(curvature_vv), curvature_vv, torch.zeros_like(curvature_vv)
-            )
-
-        curvature_score = (
-            curvature_violation / curvature_threshold
-            if curvature_enabled
-            else torch.zeros_like(position_score)
-        )
-        selection_score = torch.maximum(position_score, curvature_score)
+        selection_score = position_score
 
         safe_clone_scale_factor = max(float(clone_scale_factor), 1.0)
         minimum_splittable_scale = float(min_clone_scale) * safe_clone_scale_factor * (1.0 + 1.0e-4)
@@ -264,23 +201,8 @@ def make_under_reconstruction_clones(
             keep = torch.topk(selected_score, k=max_new, largest=True).indices
             selected_idx = selected_idx[keep]
 
-        curvature_requested_all = curvature_score >= 1.0
 
-        selected_scale_max = torch.max(scales[selected_idx].detach(), dim=1).values
-        exact_clone_scale_threshold_value = float(exact_clone_scale_threshold)
-        if exact_clone_scale_threshold_value > 0.0:
-            # Curvature creates degrees of freedom through splitting only; it
-            # never enters the legacy exact-clone branch.
-            clone_mask = (
-                    (selected_scale_max <= exact_clone_scale_threshold_value)
-                    & ~curvature_requested_all[selected_idx]
-            )
-        else:
-            clone_mask = torch.zeros_like(selected_scale_max, dtype=torch.bool)
-        split_mask = ~clone_mask
-
-        clone_idx = selected_idx[clone_mask]
-        split_idx = selected_idx[split_mask]
+        split_idx = selected_idx
 
         new_positions = []
         new_rotations = []
@@ -292,41 +214,6 @@ def make_under_reconstruction_clones(
         source_index_chunks = []
         grad_norm_chunks = []
         update_source = None
-        curvature_direction_count = 0
-
-        if clone_idx.numel() > 0:
-            clone_grad = grad_pos[clone_idx]
-
-            if tangent_project_position_grad:
-                clone_grad = tangent_grad[clone_idx]
-
-            clone_grad_norm = torch.linalg.norm(clone_grad, dim=1, keepdim=True)
-            clone_direction = torch.where(
-                    clone_grad_norm > 1.0e-12,
-                    clone_grad / torch.clamp(clone_grad_norm, min=1.0e-12),
-                    torch.zeros_like(clone_grad),
-            )
-
-            clone_spatial_scale = torch.max(scales[clone_idx].detach(), dim=1, keepdim=True).values
-            clone_offset = clone_offset_scale * clone_spatial_scale
-
-            # grad_pos is assumed to contain dL/dposition, so move toward descent.
-            clone_positions = (
-                    positions[clone_idx].detach()
-                    - clone_offset * clone_direction
-            )
-
-            new_positions.append(clone_positions)
-            new_rotations.append(rotations[clone_idx].detach().clone())
-            new_scales.append(scales[clone_idx].detach().clone())
-            new_albedos.append(albedos[clone_idx].detach().clone())
-            new_opacities.append(
-                    torch.clamp(opacities[clone_idx].detach().clone(), 0.0, 1.0)
-            )
-            new_betas.append(betas[clone_idx].detach().clone())
-            new_powers.append(powers[clone_idx].detach().clone())
-            source_index_chunks.append(clone_idx)
-            grad_norm_chunks.append(selection_score[clone_idx])
 
         if split_idx.numel() > 0:
             p = positions[split_idx].detach().clone()
@@ -426,23 +313,10 @@ def make_under_reconstruction_clones(
             "source_index": source_index_t.detach().cpu().numpy().astype(np.int64),
             "grad_norm": grad_norm_t.detach().cpu().numpy().astype(np.float32),
             "selection_score": grad_norm_t.detach().cpu().numpy().astype(np.float32),
-            "clone_count": int(clone_idx.numel()),
+            "clone_count": 0,
             "split_count": int(split_idx.numel()),
             "position_trigger_count": int(torch.count_nonzero(position_score[selected_idx] >= 1.0).item()),
-            "curvature_trigger_count": int(torch.count_nonzero(curvature_requested_all[selected_idx]).item()),
-            # Exclusive attribution by trigger; both paths use the projected gradient.
-            "position_split_count": int(
-                torch.count_nonzero(~curvature_requested_all[split_idx]).item()
-            ),
-            "curvature_split_count": int(
-                torch.count_nonzero(curvature_requested_all[split_idx]).item()
-            ),
-            "split_trigger_is_curvature": (
-                curvature_requested_all[split_idx]
-                .detach().cpu().numpy().astype(bool)
-            ),
-            "curvature_direction_count": curvature_direction_count,
-            "exact_clone_scale_threshold": exact_clone_scale_threshold_value,
+            "position_split_count": int(split_idx.numel()),
             "split_offset_scale": float(clone_offset_scale),
             "split_scale_factor": safe_clone_scale_factor,
             "replace_source": False,
@@ -452,8 +326,6 @@ def make_under_reconstruction_clones(
             result["update_source"] = update_source
 
         return result
-
-
 
 
 def compute_prune_indices_by_degenerate_area(

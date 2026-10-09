@@ -33,6 +33,13 @@ namespace Pale {
 
     void PathTracer::setScene(const GPUSceneBuffers &scene, const SceneBuild::BuildProducts &bp) {
         m_sceneGPU = scene;
+        // Match tryGetSinglePointCloudInstance without reading device memory.
+        m_singlePointCloudInstance = false;
+        if (scene.triangleCount == 0u && scene.tlasNodeCount == 1u && bp.topLevelNodes.size() == 1u) {
+            const auto &root = bp.topLevelNodes[0];
+            m_singlePointCloudInstance = root.count == 1u && root.leftChild < bp.instances.size() &&
+                bp.instances[root.leftChild].geometryType == GeometryType::PointCloud;
+        }
 
         // Photon-map construction is currently disabled: the camera gather path
         // only uses direct lighting while the photon-grid build is inactive.
@@ -96,6 +103,28 @@ namespace Pale {
         m_intermediates.measurementTwoPointEvents = events;
         m_intermediates.maxMeasurementTwoPointEventCount = static_cast<uint32_t>(required);
         Log::PA_INFO("Adjoint slab/light event capacity: {}", required);
+    }
+
+    void PathTracer::ensureAdjointPrimarySlabCacheCapacity(uint32_t cameraRayCount) {
+        if (!m_settings.adjointPrimarySlabCache || !m_singlePointCloudInstance ||
+            m_settings.maxAdjointBounces != 1u || m_settings.adjointSamplesPerPixel <= 1u ||
+            rendererDebugPointHitBatchSize(m_settings) <= 1u ||
+            cameraRayCount <= m_intermediates.adjointPrimarySlabCacheCapacity) {
+            return;
+        }
+        auto *cache = sycl::malloc_device<PointCloudLocalLayer>(cameraRayCount, m_queue);
+        if (!cache) throw std::runtime_error("Unable to allocate the adjoint primary slab cache");
+        try {
+            m_queue.wait_and_throw();
+        } catch (...) {
+            sycl::free(cache, m_queue);
+            throw;
+        }
+        sycl::free(m_intermediates.adjointPrimarySlabCache, m_queue);
+        m_intermediates.adjointPrimarySlabCache = cache;
+        m_intermediates.adjointPrimarySlabCacheCapacity = cameraRayCount;
+        // No clear: spp0 writes every active pixel (including misses) before
+        // another SPP reads it. Each camera/call overwrites its own whole image.
     }
 
     void PathTracer::allocateIntermediates(uint32_t newCapacity) {
@@ -319,6 +348,7 @@ namespace Pale {
 
 
         freeDevicePtr(m_intermediates.pendingStageX, m_queue);
+        freeDevicePtr(m_intermediates.adjointPrimarySlabCache, m_queue);
 
         freeDevicePtr(m_intermediates.countPrimary, m_queue);
         freeDevicePtr(m_intermediates.countContributions, m_queue);
@@ -357,6 +387,7 @@ namespace Pale {
         m_intermediates.maxHitContributionCount = 0;
         m_intermediates.maxMeasurementEventCount = 0;
         m_intermediates.maxPendingAdjointStateCount = 0;
+        m_intermediates.adjointPrimarySlabCacheCapacity = 0u;
         m_intermediates.gradientRecords = nullptr;
         m_intermediates.maxGradientRecordCount = 0;
         m_intermediates.maxMeasurementTwoPointEventCount = 0;
@@ -540,16 +571,13 @@ namespace Pale {
     }
 
 
-    void PathTracer::renderForward(std::vector<SensorGPU> &sensor) {
+    void PathTracer::renderForward(std::vector<SensorGPU> &sensor, bool waitForCompletion) {
         ScopedTimer forwardTimer("Rendering time", spdlog::level::debug);
         m_settings.rayGenMode = RayGenMode::Emitter;
         if (m_settings.integratorKind == IntegratorKind::lightTracing) {
             ensureRayCapacity(std::max(1u, m_settings.photonsPerLaunch));
         }
 
-        if (m_curvatureDensificationStats) {
-            clearCurvatureDensificationStats(m_queue, *m_curvatureDensificationStats);
-        }
         if (m_primalActivityStats) {
             clearPrimalActivityStats(m_queue, *m_primalActivityStats);
         }
@@ -561,9 +589,6 @@ namespace Pale {
             .scene = m_sceneGPU,
             .intermediates = m_intermediates,
             .gradients = {},
-            .curvatureDensificationStats = m_curvatureDensificationStats
-                ? *m_curvatureDensificationStats
-                : CurvatureDensificationStats{},
             .primalActivityStats = m_primalActivityStats
                 ? *m_primalActivityStats
                 : PrimalActivityStats{},
@@ -595,14 +620,15 @@ namespace Pale {
             }
         }
 
-        {
+        if (waitForCompletion) {
             ScopedTimer timer("Forward final queue wait", spdlog::level::debug);
             m_queue.wait();
         }
     }
 
     void PathTracer::renderBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients,
-                                    DebugImages *debugImages) {
+                                    DebugImages *debugImages, bool waitForCompletion,
+                                    bool computeCloneStatistics) {
         uint32_t maximumCameraRayCount = 0u;
         for (const auto &sensor: sensors) {
             const uint32_t requiredRayCapacity = sensor.width * sensor.height;
@@ -610,6 +636,7 @@ namespace Pale {
         }
         ensureRayCapacity(maximumCameraRayCount, true);
         ensureMeasurementTwoPointEventCapacity(maximumCameraRayCount);
+        ensureAdjointPrimarySlabCacheCapacity(maximumCameraRayCount);
 
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting Adjoint rendering pass");
@@ -626,8 +653,9 @@ namespace Pale {
             .debugImages = debugImages,
             .numSensors = static_cast<uint32_t>(sensors.size()),
         };
-        submitAdjointKernel(renderPackage);
-        m_queue.wait();
+        renderPackage.singlePointCloudInstance = m_singlePointCloudInstance;
+        submitAdjointKernel(renderPackage, computeCloneStatistics);
+        if (waitForCompletion) m_queue.wait();
     }
 
     void PathTracer::renderDepthDistortionBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients) {
@@ -677,8 +705,7 @@ namespace Pale {
         PointGradients &depthDistortionGradients,
         PointGradients &normalConsistencyGradients,
         PointGradients &intraSlabDepthGradients,
-        PointGradients &curvatureScaleGradients,
-        DebugImages *debugImages) {
+        DebugImages *debugImages, bool waitForCompletion) {
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting surface regularizer backward pass");
 
@@ -693,14 +720,13 @@ namespace Pale {
             .depthDistortionGradients = depthDistortionGradients,
             .normalConsistencyGradients = normalConsistencyGradients,
             .intraSlabDepthGradients = intraSlabDepthGradients,
-            .curvatureScaleGradients = curvatureScaleGradients,
             .sensors = sensors,
             .debugImages = debugImages,
             .numSensors = static_cast<uint32_t>(sensors.size()),
         };
 
         submitSurfaceRegularizersKernel(renderPackage);
-        m_queue.wait();
+        if (waitForCompletion) m_queue.wait();
     }
 
     void PathTracer::reset() {

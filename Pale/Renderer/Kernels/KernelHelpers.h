@@ -417,7 +417,9 @@ namespace Pale {
         const Point &surfel,
         uint32_t primitiveIndex) {
         SurfelTraversalData traversal{};
-        traversal.position = surfel.position;
+        traversal.positionX = surfel.position.x();
+        traversal.positionY = surfel.position.y();
+        traversal.positionZ = surfel.position.z();
         traversal.primitiveIndex = primitiveIndex;
         traversal.flags = surfel.isEmissive() ? 1u : 0u;
         traversal.opacity = surfel.opacity;
@@ -428,20 +430,29 @@ namespace Pale {
                 surfel.tanV - unitTangentU * dot(unitTangentU, surfel.tanV);
         const float3 unitTangentV =
                 normalizeOrFallback(orthogonalizedTangentV, float3{0.0f, 1.0f, 0.0f});
-        traversal.normal = normalizeOrFallback(cross(unitTangentU, unitTangentV), float3{0.0f, 0.0f, 1.0f});
+        const float3 normal = normalizeOrFallback(cross(unitTangentU, unitTangentV), float3{0.0f, 0.0f, 1.0f});
+        traversal.normalX = normal.x();
+        traversal.normalY = normal.y();
+        traversal.normalZ = normal.z();
 
         const float scaleU = sycl::fabs(surfel.scale.x()) > 1.0e-12f ? surfel.scale.x() : 1.0e-12f;
         const float scaleV = sycl::fabs(surfel.scale.y()) > 1.0e-12f ? surfel.scale.y() : 1.0e-12f;
-        traversal.invScaleTanU = surfel.tanU / scaleU;
-        traversal.invScaleTanV = surfel.tanV / scaleV;
+        const float3 invScaleTanU = surfel.tanU / scaleU;
+        const float3 invScaleTanV = surfel.tanV / scaleV;
+        traversal.invScaleTanUX = invScaleTanU.x();
+        traversal.invScaleTanUY = invScaleTanU.y();
+        traversal.invScaleTanUZ = invScaleTanU.z();
+        traversal.invScaleTanVX = invScaleTanV.x();
+        traversal.invScaleTanVY = invScaleTanV.y();
+        traversal.invScaleTanVZ = invScaleTanV.z();
         return traversal;
     }
 
     SYCL_EXTERNAL inline float2 phiInverse(const float3 &hitWorld, const SurfelTraversalData &surfel) {
-        const float3 r = hitWorld - surfel.position;
+        const float3 r = hitWorld - surfel.position();
         float2 uv;
-        uv[0] = dot(surfel.invScaleTanU, r);
-        uv[1] = dot(surfel.invScaleTanV, r);
+        uv[0] = dot(surfel.invScaleTanU(), r);
+        uv[1] = dot(surfel.invScaleTanV(), r);
         return uv;
     }
 
@@ -620,11 +631,11 @@ namespace Pale {
         float tMax,
         float &outTHit,
         const float &eps) {
-        const float normalDirectionDot = dot(surfel.normal, rayObject.direction);
+        const float normalDirectionDot = dot(surfel.normal(), rayObject.direction);
         if (sycl::fabs(normalDirectionDot) <= eps) {
             return false;
         }
-        const float tHit = dot(surfel.normal, surfel.position - rayObject.origin) / normalDirectionDot;
+        const float tHit = dot(surfel.normal(), surfel.position() - rayObject.origin) / normalDirectionDot;
         if (tHit <= tMin || tHit >= tMax) {
             return false;
         }

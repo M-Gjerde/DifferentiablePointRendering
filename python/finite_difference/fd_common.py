@@ -39,7 +39,7 @@ BOUNDED_PARAMETERS: dict[str, tuple[float, float]] = {
     "albedo_b": (0.0, 1.0),
 }
 
-OBJECTIVE_TYPES = {"linear", "l2", "l2_ssim"}
+OBJECTIVE_TYPES = {"linear", "l2"}
 
 REQUIRED_SETTINGS = {
     "bounces",
@@ -220,9 +220,6 @@ def _render_rgb(renderer: Any, camera: str) -> np.ndarray:
 class Objective:
     kind: str
     payload: np.ndarray
-    ssim_weight: float = 0.0
-    ssim_window_size: int = 5
-    ssim_sigma: float = 0.75
 
     def evaluate(self, image: np.ndarray, gradient: bool) -> tuple[float, np.ndarray | None]:
         if self.kind == "linear":
@@ -233,17 +230,6 @@ class Objective:
             value = float(0.5 * np.mean(residual.astype(np.float64) ** 2))
             image_gradient = np.ascontiguousarray(residual / float(residual.size), dtype=np.float32)
             return value, image_gradient if gradient else None
-        if self.kind == "l2_ssim":
-            from losses import compute_l2_ssim_loss_and_grad
-
-            value, image_gradient, _ = compute_l2_ssim_loss_and_grad(
-                image,
-                self.payload,
-                ssim_weight=self.ssim_weight,
-                window_size=self.ssim_window_size,
-                sigma=self.ssim_sigma,
-            )
-            return float(value), np.ascontiguousarray(image_gradient, dtype=np.float32) if gradient else None
         raise AssertionError(self.kind)
 
 
@@ -274,14 +260,6 @@ def make_objective(shape: tuple[int, int, int], specification: dict[str, Any]) -
     target = np.ascontiguousarray(target, dtype=np.float32)
     if kind == "l2":
         return Objective(kind="l2", payload=target)
-    if kind == "l2_ssim":
-        return Objective(
-            kind="l2_ssim",
-            payload=target,
-            ssim_weight=float(specification.get("ssim_weight", 0.2)),
-            ssim_window_size=int(specification.get("window_size", 5)),
-            ssim_sigma=float(specification.get("sigma", 0.75)),
-        )
     raise ValueError(f"Unsupported objective '{kind}'")
 
 

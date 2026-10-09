@@ -625,11 +625,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Export reconstruction.glb with a UV albedo texture.")
     parser.add_argument("--export-lights", action=argparse.BooleanOptionalAction, default=True,
                         help="Include point lights in reconstruction.glb.")
-    parser.add_argument("--texture-size", default=512, type=int,
+    parser.add_argument("--texture-size", default=1024, type=int,
                         help="Width and height of the reconstructed albedo texture in pixels.")
-    parser.add_argument("--uv-partitions", default=0, type=int,
+    parser.add_argument("--uv-partitions", default=30, type=int,
                         help="UV unwrap partitions (0: automatic; 1: single partition). More partitions add UV seams.")
-    parser.add_argument("--uv-threads", default=0, type=int,
+    parser.add_argument("--uv-threads", default=8, type=int,
                         help="UV unwrap CPU threads (0: automatic, up to 8).")
     parser.add_argument("--export-cameras", action=argparse.BooleanOptionalAction, default=False,
                         help="Include scene cameras in reconstruction.glb.")

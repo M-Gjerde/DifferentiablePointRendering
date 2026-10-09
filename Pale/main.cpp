@@ -1185,11 +1185,6 @@ int main(int argc, char** argv) {
                     buildProducts,
                     nullptr);
 
-            Pale::PointGradients curvatureScaleGradients =
-                Pale::makeGradientsForScene(
-                    deviceSelector.getQueue(),
-                    buildProducts,
-                    nullptr);
 
             for (Pale::SensorGPU& sensor : adjointSensors) {
                 uploadSurfaceRegularizerAdjoints(
@@ -1207,7 +1202,6 @@ int main(int argc, char** argv) {
                 depthDistortionGradients,
                 normalConsistencyGradients,
                 intraSlabDepthGradients,
-                curvatureScaleGradients,
                 surfaceDebugImagesSelected.data());
 
             /*

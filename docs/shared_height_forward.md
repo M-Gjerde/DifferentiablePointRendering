@@ -26,8 +26,8 @@ original renderer. The toggle overrides the legacy camera-kernel selector.
 
 Invalid indices, duplicate indices, emissive members, degenerate axes, or an
 unsupported scene render blank; they do not silently fall back to plane hits.
-The initial mode has no shadows, photon gathering, curvature diagnostics, or
-adjoint. Both photometric and regularizer backward entry points reject it.
+The initial mode has no shadows, photon gathering, or adjoint. Both photometric
+and regularizer backward entry points reject it.
 
 ## Reconstruction
 

@@ -63,6 +63,7 @@ Controls:
 - Viewport camera convention: world `Z` is up; camera local forward remains `-Z`
 - `Camera source`: switch between the orbit viewport camera and one selected `scene.xml` camera
 - Left-drag over the rendered image: orbit camera
+- Left-click over the rendered image: select the surfel under that pixel for editing, including after resizing or using a scene camera
 - Right-drag or middle-drag: pan target
 - Mouse wheel: zoom
 - `Space`: restore the initial orbit view and switch to the viewport camera
@@ -126,35 +127,13 @@ Python renderer settings expose the same choice as
 The existing point-to-plane intra-slab regularizer remains the training loss;
 the mean ray-depth alternative is a diagnostic preview only.
 
-### Surface curvature map
+### Diagnostic shortcuts
 
-The first ten views use number keys **1–9, then 0** in menu/cycle order:
-**8** is Surface curvature, **9** is Curvature loss, and **0** is Surface overlap
-(world space). Curvature primitive score and Position primitive score follow
-them in the display menu and **+/-** cycle without number shortcuts.
-
-Choose **Display → Surface curvature (magnitude)** for an estimate of local
-surface bending. For each fitted member of the visible slab, the map uses
-`max(abs(kappa_1), abs(kappa_2))`, the largest absolute eigenvalue of the fitted
-world-space normal derivative, then averages these magnitudes over valid members.
-Units are inverse scene units: a sphere of radius `R` has magnitude `1/R`.
-The slab is selected near median depth by default, or mean depth if that option
-is enabled, using the existing curvature diagnostic's visible-slab search.
-
-This uses neighboring surfel centers and normals, rather than differentiating
-the depth image. Neighborhood coverage and slab membership affect the estimate;
-unobserved tangent directions cannot be recovered from a single neighbor.
-The existing **Curvature loss** map instead shows a footprint-size penalty,
-which can be zero on a curved surface with sufficiently small surfels.
-
-Valid flat estimates are zero and use the low end of the colormap. Black means
-no usable estimate (including background and isolated surfels). The logarithmic
-color scale starts at zero and rescales to each frame's maximum, shown below
-the display selector. The map is unavailable in **Shared surface experiment**.
-It is a forward diagnostic and does not enable a training loss or splitting.
-
-Python callers can opt in with `preview_surface_curvature=True`; the forward
-result then contains `surface_curvature`, with `NaN` for unavailable estimates.
+Number keys select the first ten display modes: **1** Rendered, **2** Median depth,
+**3** Depth distortion, **4** Mean depth, **5** Visible normal, **6** Depth normal,
+**7** Intra-slab plane distance, **8** Surface overlap, **9** Position primitive
+score, and **0** Intra-slab mean ray depth. Other diagnostics remain available
+in **Display** and the **+/-** cycle.
 
 ### Comparing intra-slab losses
 
@@ -182,12 +161,11 @@ by default and has no backward output.
 ### Training debug defaults
 
 Debug computations follow the selected **Display** view. Normal RGB browsing
-skips surface diagnostics, regularizer backward passes, curvature searches, and
-CPU SSIM calculations. Select a diagnostic directly from **Display** (or cycle
+skips surface diagnostics and regularizer backward passes. Select a diagnostic directly from **Display** (or cycle
 with `+`/`-`) to compute it; selecting **Rendered** stops that work again.
 Regularizer gradient views compute only their selected loss and share one
-gradient allocation. Curvature statistics are allocated only when their view
-is requested. Explicit **Adjoint profiling → Every render** remains an opt-in
+gradient allocation. Dominant primitive IDs are computed only for views that
+need them. Explicit **Adjoint profiling → Every render** remains an opt-in
 background profiling operation.
 
 The debug controls mirror the current defaults in `python/config.py`: position
@@ -195,14 +173,6 @@ threshold `0.005`, radiance-bias strength `0.5`, weight limits `[0.2, 1.5]`, and
 radiance floor `0.005`. Position previews start at this threshold when loading a
 snapshot; **Use saved** selects its recorded threshold and **Use config default**
 restores `0.005`.
-
-The curvature split preview starts disabled (`0`); its logarithmic threshold slider
-ranges from `0` to `1`. Select a positive threshold to preview split candidates,
-or Ctrl-click to type a value beyond the slider range. This changes only the viewer
-preview, not the training configuration. Disabled splitting still displays curvature scores without
-magenta candidate highlighting. SSIM debug defaults are weight `0`, window size
-`5`, and sigma `0.75`. These defaults are copied into the viewer; it does not load
-`config.py` at runtime.
 
 ### Depth-distortion previews
 
@@ -262,12 +232,12 @@ Viewer controls preview these rules without changing a training run's settings.
 
 At each scheduled densification event, training recomputes scores from current
 geometry before selecting candidates. Parents at or above the threshold are
-excluded from both position- and curvature-triggered splits, and optional exact
+excluded from position-triggered splits and optional exact
 clones, before the candidate budget is applied. Accepted splits keep their
 existing offset and scale policy. With `--densification-verbose`, each check logs
 the overlap threshold, blocked candidate count and percentage, candidates remaining
 after the overlap gate, unobserved candidates allowed through, and measurement
-time, including when all candidates are blocked. Counts refer to gradient/curvature
+time, including when all candidates are blocked. Counts refer to gradient
 candidates before size checks and the new-point budget; `added` reports the final
 number of new surfels. Geometry-only scores include
 hidden and transparent surfels; zero usable samples are unknown and do not block.
@@ -296,3 +266,80 @@ this mode at startup with its default two groups of four surfels. Its width,
 depth, and offset controls move smooth support boundaries; **Slab weights**
 visualizes the transition between charts. The geometry is blended before ray
 intersection, and coverage is applied once to the common surface hit.
+
+## Profiling the training workload
+
+Python exposes the viewer's instrumentation through
+`Renderer.set_profiling_enabled(timers=True, counters=False)`,
+`reset_profiling_stats()`, and `get_profiling_stats()`. The result contains raw
+timer records, named traversal/gather counters, and scene counts. Timers use the
+same process-wide collector as the viewer; disable them after the measurement.
+Counter attachment survives parameter uploads and BVH/topology rebuilds.
+
+`python/test/profile_main_checkpoint.py` wraps the real `main.main()` path with
+API wall timings and NVTX ranges. It restores saved renderer settings as well as
+optimizer configuration. For a Restaurant checkpoint at iteration 30,000:
+
+```bash
+PYTHONPATH=cmake-build-corrections:python python python/test/profile_main_checkpoint.py \
+  --checkpoint python/OptimizationOutput/paper/restaurant --iterations 30102 \
+  --timing-json /tmp/restaurant-profile.json --output /tmp/restaurant-profile-run \
+  --adjoint-spp 4 --local-layer-depth-epsilon 0.005 \
+  --save-interval 0 --save-ply-files-interval 0 --mesh-extraction-interval 0 \
+  --no-save-final-mesh --no-metrics --no-image-preview
+```
+
+Use fresh output paths. The default capture excludes the first training step;
+initial/final all-camera rendering and exports are separate from training time.
+Checkpoint loading restarts Adam moments and RNG state. `--use-final-ply`
+explicitly selects `points_final.ply` instead of the newest numbered snapshot.
+
+For repeated fixed-geometry measurements, add `--probe-camera Camera.096` and
+request a shorter run. This uses zero learning rates and skips all-camera
+exports. `--probe-train` instead applies the saved learning-rate schedules.
+`--verification-npz /tmp/restaurant-verification.npz` captures parameters, Adam
+moments, and the selected camera's RGB after the timed work. Zero-rate probes
+have zero Adam moments, so use a nonzero-rate probe to compare gradient effects.
+
+Use separate runs for wall timing, `--native-timers`, and `--native-counters`:
+timers introduce synchronization, and counters add GPU atomics. These are
+software work counters, not hardware utilization counters. Timer spans are
+nested and must not be summed as independent costs. An Nsight Systems trace
+can select the `training_capture` NVTX range; analyze exported SQLite files with
+`python/test/analyze_training_trace.py` (`--skip-updates 0` if the trace already
+excludes warm-up). Match lighting mode, samples, losses, and geometry when
+comparing the viewer with training.
+
+For comparisons while another training process is running, use the alternating
+checkpoint benchmark. It keeps both native modules resident and runs only one
+probe step at a time; initialization, JIT and controller waits are excluded.
+Each block must cover the same cameras. Use a separate directory for each
+native module so rebuilding cannot replace a module mapped by a probe:
+
+```bash
+python python/test/benchmark_checkpoint_abba.py \
+  --baseline-module-dir /absolute/baseline-module \
+  --optimized-module-dir /absolute/optimized-module \
+  --checkpoint python/OptimizationOutput/paper/restaurant --checkpoint-iteration 30000 \
+  --camera Camera.096 --camera Camera.050 --camera Camera.010 \
+  --rounds 6 --block-steps 3 --warmup-steps 3 \
+  --output-dir /tmp/restaurant-abba \
+  -- --adjoint-spp 4 --local-layer-depth-epsilon 0.005
+```
+
+`python/test/compare_training_trace_windows.py` compares SQLite exports using
+the complete fused-step NVTX spans. It reports kernel activity, GPU gaps,
+transfer bytes and synchronization counts separately. A long host copy or wait
+API call can be waiting for prior kernels; it is not evidence of slow PCIe
+transfers. Hardware counters are needed to distinguish arithmetic limits from
+GPU-memory stalls inside a kernel.
+
+The native renderer's `adjoint_primary_slab_cache` setting defaults to true.
+For a single point-cloud instance with batched hits, one adjoint bounce and
+multiple samples, it reuses the exact first slab from sample zero. Every camera
+and backward call overwrites hits and misses before reuse; later null-event
+traversals and random samples are unchanged. The cache uses 512 bytes per pixel
+in the current build (122.1 MiB at 500×500), reported by
+`get_backward_allocation_stats()["primary_slab_cache_bytes"]`. Set the native
+constructor setting to false to compare against recomputation. Unsupported
+paths retain recomputation automatically.

@@ -25,7 +25,7 @@ export namespace Pale {
         std::vector<float>     betas{};
         std::vector<float>     shapes{};
         std::vector<float>     powers{};
-        // 0=initial/unknown, 1=clone, 2=position-gradient split, 3=curvature split.
+        // 0=initial/unknown, 1=clone, 2=position-gradient split.
         // This is diagnostic metadata; rendering does not use it.
         std::vector<std::uint8_t> densificationOrigins{};
         // Number of optimization iterations since this primitive was created

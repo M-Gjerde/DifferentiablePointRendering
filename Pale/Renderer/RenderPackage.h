@@ -31,15 +31,8 @@ namespace Pale {
         float* intraSlabRayDepthBuffer = nullptr;
         float* intraSlabDepthAdjointBuffer = nullptr;
         uint32_t* intraSlabDepthActiveSlabCountBuffer = nullptr;
-        float* curvatureScaleBuffer = nullptr;
-        // Optional visible-surface curvature magnitude, in inverse world units.
-        // NaN denotes no usable estimate; zero is a valid flat estimate.
-        float* surfaceCurvatureBuffer = nullptr;
-        float* curvatureScaleAdjointBuffer = nullptr;
-        uint32_t* curvatureScaleActiveSlabCountBuffer = nullptr;
-        // Optional debug output: dominant primitive from the exact visible slab
-        // selected by the curvature-scale regularizer, or UINT32_MAX.
-        uint32_t* curvaturePrimitiveIndexBuffer = nullptr;
+        // Optional dominant primitive from the visible slab, or UINT32_MAX.
+        uint32_t* visiblePrimitiveIndexBuffer = nullptr;
 
         float*  medianDepthBuffer;        // scalar visualization depth
         float*  meanDepthBuffer;        // scalar visualization depth
@@ -80,17 +73,6 @@ namespace Pale {
 
         size_t numPoints{0};
         size_t cameraSlotCount{0};
-    };
-
-    // Forward-only structural statistics used by Python densification. These
-    // are not adjoints and are reset once at the start of every forward render.
-    struct CurvatureDensificationStats {
-        float *violationSum = nullptr;
-        uint32_t *violationCount = nullptr;
-        float *directionTensorUu = nullptr;
-        float *directionTensorUv = nullptr;
-        float *directionTensorVv = nullptr;
-        size_t numPoints{0};
     };
 
     // Deterministic forward-transport liveness used by topology pruning.
@@ -147,12 +129,13 @@ namespace Pale {
         PointGradients depthDistortionGradients{};
         PointGradients normalConsistencyGradients{};
         PointGradients intraSlabDepthGradients{};
-        PointGradients curvatureScaleGradients{};
-        CurvatureDensificationStats curvatureDensificationStats{};
         PrimalActivityStats primalActivityStats{};
         std::vector<SensorGPU> sensors{};
         DebugImages* debugImages{};
         uint32_t numSensors{};
+        // Host-side equivalent of tryGetSinglePointCloudInstance, refreshed
+        // with the scene. Allows separate kernels with bounded private storage.
+        bool singlePointCloudInstance = false;
 
     };
 

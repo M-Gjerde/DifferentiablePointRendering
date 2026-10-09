@@ -107,8 +107,6 @@ def print_run_configuration(
             f"({config.position_lr_scale_init} -> {config.position_lr_scale_final})",
         ),
         ("lr_decay_timeline", f"start={config.lr_decay_start_iteration}, steps={config.lr_decay_max_steps}"),
-        ("ssim_weight", config.ssim_weight),
-        ("ssim_window/sigma", f"{config.ssim_window_size} / {config.ssim_sigma}"),
         ("depth_distort_weight", config.depth_distort_weight),
         ("depth_distort_world_space", config.depth_distort_world_space),
         ("densification_interval", config.densification_interval),
@@ -117,12 +115,7 @@ def print_run_configuration(
         ("densification_full_position", config.densification_full_position),
         ("densify_grad_abs_min", config.densification_grad_abs_min),
         ("densify_grad_abs_min_final", config.densification_grad_abs_min_final),
-        ("curvature_violation_threshold", config.curvature_violation_threshold),
         ("densification_scale_min", config.densification_scale_min),
-        (
-            "densification_exact_clone_percent_dense",
-            config.densification_exact_clone_percent_dense,
-        ),
         (
             "densify_grad_abs_min_decay",
             f"{config.densification_grad_abs_min_decay_start_iteration} -> "

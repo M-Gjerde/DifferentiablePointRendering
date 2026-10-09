@@ -34,15 +34,12 @@ PARAMETER_NAMES = (
 LOSS_VALUE_KEYS = (
     "total_rgb_loss_value",
     "total_rgb_l2_loss_value",
-    "total_rgb_dssim_loss_value",
     "total_depth_distortion_loss_raw",
     "total_depth_distortion_loss_weighted",
     "total_normal_loss_raw",
     "total_normal_loss_weighted",
     "total_intra_slab_depth_loss_raw",
     "total_intra_slab_depth_loss_weighted",
-    "total_curvature_scale_loss_raw",
-    "total_curvature_scale_loss_weighted",
     "total_loss_value",
 )
 
@@ -97,11 +94,19 @@ def select_active_training_camera_ids(
         return [training_camera_ids[camera_index]]
 
     if config.camera_sampling_mode == "random":
-        rng = np.random.default_rng(config.camera_sampling_seed + iteration)
-        camera_index = int(rng.integers(0, len(training_camera_ids)))
+        # A fresh permutation per full camera loop samples without replacement,
+        # as in 3DGS. Deriving it from the cycle also preserves checkpoint resume.
+        cycle_index, cycle_offset = divmod(iteration - 1, len(training_camera_ids))
+        rng = np.random.default_rng(config.camera_sampling_seed + cycle_index)
+        camera_index = int(rng.permutation(len(training_camera_ids))[cycle_offset])
         return [training_camera_ids[camera_index]]
 
     raise RuntimeError(f"Unknown camera_sampling_mode: {config.camera_sampling_mode}")
+
+
+def topology_updates_allowed(iteration: int, final_iteration: int, freeze_last_iterations: int) -> bool:
+    """Keep the last N global iterations free of densification and all pruning."""
+    return iteration <= final_iteration - freeze_last_iterations
 
 
 def as_config_float(value: Any) -> float:
@@ -353,7 +358,6 @@ def migrate_device_adam_state_snapshot(
         "step": int(snapshot.get("step", 0)),
         # Legacy device snapshots predate these fields and use pure log-space moments.
         "use_log_scale": bool(snapshot.get("use_log_scale", True)),
-        "shifted_log_scale_offset": float(snapshot.get("shifted_log_scale_offset", 0.0)),
     }
 
     for key in DEVICE_ADAM_STATE_ARRAY_KEYS:
@@ -666,50 +670,6 @@ def scheduled_densification_grad_abs_min(
     # These percentages describe the gap, not the full threshold (unless final=0).
     return final_threshold + (initial_threshold - final_threshold) * (1.0 - t) ** decay_power
 
-def densification_scene_extent_for_positions(
-        config: OptimizationConfig,
-        positions,
-        trainable_surfel_mask: torch.Tensor | None = None,
-) -> float:
-    scene_extent = float(config.densification_scene_extent)
-    if scene_extent > 0.0:
-        return scene_extent
-
-    positions_np = positions.detach().cpu().numpy()
-    if trainable_surfel_mask is not None and positions_np.size > 0:
-        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
-        if trainable_np.shape[0] != positions_np.shape[0]:
-            raise RuntimeError(
-                "Trainable surfel mask length mismatch for densification scene extent: "
-                f"{trainable_np.shape[0]} vs {positions_np.shape[0]}"
-            )
-        trainable_positions_np = positions_np[trainable_np]
-        if trainable_positions_np.size > 0:
-            positions_np = trainable_positions_np
-
-    if positions_np.size > 0:
-        scene_extent = float(np.max(np.ptp(positions_np, axis=0)))
-    else:
-        scene_extent = 1.0
-
-    return max(scene_extent, 1.0e-6)
-
-
-def exact_clone_scale_threshold_for_positions(
-        config: OptimizationConfig,
-        positions,
-        trainable_surfel_mask: torch.Tensor | None = None,
-) -> float:
-    exact_clone_percent_dense = float(config.densification_exact_clone_percent_dense)
-    if exact_clone_percent_dense <= 0.0:
-        return 0.0
-
-    return exact_clone_percent_dense * densification_scene_extent_for_positions(
-        config=config,
-        positions=positions,
-        trainable_surfel_mask=trainable_surfel_mask,
-    )
-
 
 def minimum_splittable_scale_for_config(config: OptimizationConfig) -> float:
     split_scale_factor = max(
@@ -725,16 +685,14 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
     intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
-    curvature_scale_weighted = float(loss_state["total_curvature_scale_loss_weighted"])
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
     after_normal = after_depth + normal_weighted
     after_intra_slab = after_normal + intra_slab_weighted
-    after_curvature_scale = after_intra_slab + curvature_scale_weighted
     regularizer_total = (
         depth_weighted + normal_weighted +
-        intra_slab_weighted + curvature_scale_weighted
+        intra_slab_weighted
     )
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
@@ -750,8 +708,6 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
         f"(+{normal_weighted:.3e})\n"
         f"  {'+ intra-slab depth':<28} {after_intra_slab:>12.3e}  "
         f"(+{intra_slab_weighted:.3e})\n"
-        f"  {'+ curvature scale':<28} {after_curvature_scale:>12.3e}  "
-        f"(+{curvature_scale_weighted:.3e})\n"
         f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
         f"  {'total':<28} {total_loss:>12.3e}"
     )
@@ -782,7 +738,6 @@ def format_training_iteration_log(
         active_densification_grad_abs_min: float,
         active_depth_distortion_weight: float,
         active_normal_consistency_weight: float,
-        exact_clone_scale_threshold: float,
         minimum_splittable_scale: float,
         grad_pos_rms: float,
         grad_rotation_rms: float,
@@ -812,20 +767,16 @@ def format_training_iteration_log(
         f"densify_thr={active_densification_grad_abs_min:.3e} "
         f"depth_active_w={active_depth_distortion_weight:.3e} "
         f"normal_active_w={active_normal_consistency_weight:.3e} "
-        f"clone_only_max_scale={exact_clone_scale_threshold:.3e} "
         f"split_min_scale={minimum_splittable_scale:.3e}\n"
         f"  losses_mean[{loss_camera_count}/{loss_camera_expected_count} cameras]:"
         f" rgb={loss_state['total_rgb_loss_value']:.3e}"
         f" rgb_l2={loss_state['total_rgb_l2_loss_value']:.3e}"
-        f" dssim={loss_state['total_rgb_dssim_loss_value']:.3e}"
         f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
         f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
         f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
         f" intra_slab_raw={loss_state['total_intra_slab_depth_loss_raw']:.3e}"
         f" intra_slab_w={loss_state['total_intra_slab_depth_loss_weighted']:.3e}"
-        f" curvature_scale_raw={loss_state['total_curvature_scale_loss_raw']:.3e}"
-        f" curvature_scale_w={loss_state['total_curvature_scale_loss_weighted']:.3e}"
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
         f" pos={grad_pos_rms:.2e}"
@@ -849,7 +800,6 @@ def format_gradient_source_balance(
         depth_regularizer_gradients: dict[str, np.ndarray],
         normal_regularizer_gradients: dict[str, np.ndarray],
         intra_slab_depth_gradients: dict[str, np.ndarray],
-        curvature_scale_gradients: dict[str, np.ndarray],
         surface_regularizer_gradients: dict[str, np.ndarray],
         total_gradients: dict[str, np.ndarray],
 ) -> str:
@@ -873,7 +823,6 @@ def format_gradient_source_balance(
         f"{'depth%':>8}"
         f"{'normal%':>9}"
         f"{'intra%':>9}"
-        f"{'curv%':>8}"
         f"   {'source norms'}",
     ]
 
@@ -883,7 +832,6 @@ def format_gradient_source_balance(
         depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
         normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
         intra_slab_norm = gradient_norm_for_key(intra_slab_depth_gradients, key)
-        curvature_scale_norm = gradient_norm_for_key(curvature_scale_gradients, key)
 
         surface_regularizer_norm = gradient_norm_for_key(
             surface_regularizer_gradients,
@@ -896,7 +844,6 @@ def format_gradient_source_balance(
                 + depth_norm
                 + normal_norm
                 + intra_slab_norm
-                + curvature_scale_norm
         )
 
         loss_percent = (
@@ -919,11 +866,6 @@ def format_gradient_source_balance(
             if source_norm_denom > 1.0e-20
             else 0.0
         )
-        curvature_scale_percent = (
-            100.0 * curvature_scale_norm / source_norm_denom
-            if source_norm_denom > 1.0e-20
-            else 0.0
-        )
 
         lines.append(
             "  "
@@ -935,12 +877,10 @@ def format_gradient_source_balance(
             f"{depth_percent:>7.1f}%"
             f"{normal_percent:>8.1f}%"
             f"{intra_slab_percent:>8.1f}%"
-            f"{curvature_scale_percent:>7.1f}%"
             f"   "
             f"depth={depth_norm:.2e}, "
             f"normal={normal_norm:.2e}, "
             f"intra={intra_slab_norm:.2e}, "
-            f"curvature={curvature_scale_norm:.2e}"
         )
 
     return "\n".join(lines)
@@ -1303,9 +1243,6 @@ def compute_snapshot_adjoint_images(
         forward_out: dict[str, dict],
         target_images: dict[str, np.ndarray],
         camera_ids: list[str],
-        ssim_weight: float = 0.0,
-        ssim_window_size: int = 11,
-        ssim_sigma: float = 1.5,
 ) -> dict[str, Any]:
     loss_grad_images: dict[str, np.ndarray] = {}
 
@@ -1315,16 +1252,7 @@ def compute_snapshot_adjoint_images(
 
         current_rgb_np = render.get_forward_linear_rgb(forward_out, camera_name)
         target_rgb_np = target_images[camera_name]
-        if ssim_weight > 0.0:
-            _, loss_grad_images[camera_name], _ = losses.compute_l2_ssim_loss_and_grad(
-                current_rgb_np,
-                target_rgb_np,
-                ssim_weight=ssim_weight,
-                window_size=ssim_window_size,
-                sigma=ssim_sigma,
-            )
-        else:
-            loss_grad_images[camera_name] = losses.compute_l2_grad(current_rgb_np, target_rgb_np)
+        loss_grad_images[camera_name] = losses.compute_l2_grad(current_rgb_np, target_rgb_np)
 
     if not loss_grad_images:
         return {}
@@ -1430,17 +1358,12 @@ def compute_initial_losses_and_save_outputs(
         opacities: torch.Tensor,
         betas: torch.Tensor,
         powers: torch.Tensor,
-        ssim_weight: float,
-        ssim_window_size: int,
-        ssim_sigma: float,
         depth_distortion_weight: float,
         normal_consistency_weight: float,
         intra_slab_depth_weight: float,
-        curvature_scale_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
         use_intra_slab_depth: bool,
-        use_curvature_scale: bool,
 ) -> tuple[float, ...]:
     initial_points_path = output_dir / "initial_points.ply"
     io_utils.save_gaussians_to_ply(
@@ -1460,7 +1383,6 @@ def compute_initial_losses_and_save_outputs(
     initial_depth_distortion_loss_raw = 0.0
     initial_normal_loss_raw = 0.0
     initial_intra_slab_depth_loss_raw = 0.0
-    initial_curvature_scale_loss_raw = 0.0
 
     renders_dir = renders_output_dir(output_dir)
     for camera_name in all_camera_ids:
@@ -1474,12 +1396,9 @@ def compute_initial_losses_and_save_outputs(
             continue
 
         tgt_np = target_images[camera_name]
-        rgb_loss_value, _, _ = losses.compute_l2_ssim_metrics(
+        rgb_loss_value = losses.compute_l2_loss(
             img_linear_np,
             tgt_np,
-            ssim_weight=ssim_weight,
-            window_size=ssim_window_size,
-            sigma=ssim_sigma,
         )
         initial_rgb_loss += rgb_loss_value
         io_utils.save_render(
@@ -1511,23 +1430,11 @@ def compute_initial_losses_and_save_outputs(
             )
             initial_intra_slab_depth_loss_raw += float(loss_map.sum() / active_count)
 
-        if use_curvature_scale:
-            loss_map = render.get_forward_curvature_scale(initial_images, camera_name)
-            active_count = max(
-                1,
-                int(render.get_forward_curvature_scale_active_slab_count(
-                    initial_images, camera_name
-                ).sum(dtype=np.uint64)),
-            )
-            initial_curvature_scale_loss_raw += float(loss_map.sum() / active_count)
 
     initial_depth_distortion_loss_weighted = depth_distortion_weight * initial_depth_distortion_loss_raw
     initial_normal_loss_weighted = normal_consistency_weight * initial_normal_loss_raw
     initial_intra_slab_depth_loss_weighted = (
         intra_slab_depth_weight * initial_intra_slab_depth_loss_raw
-    )
-    initial_curvature_scale_loss_weighted = (
-        curvature_scale_weight * initial_curvature_scale_loss_raw
     )
 
     initial_total_loss = (
@@ -1535,7 +1442,6 @@ def compute_initial_losses_and_save_outputs(
             + initial_depth_distortion_loss_weighted
             + initial_normal_loss_weighted
             + initial_intra_slab_depth_loss_weighted
-            + initial_curvature_scale_loss_weighted
     )
 
     return (
@@ -1546,8 +1452,6 @@ def compute_initial_losses_and_save_outputs(
         initial_normal_loss_weighted,
         initial_intra_slab_depth_loss_raw,
         initial_intra_slab_depth_loss_weighted,
-        initial_curvature_scale_loss_raw,
-        initial_curvature_scale_loss_weighted,
         initial_total_loss,
     )
 
@@ -1561,8 +1465,6 @@ def print_loss_summary(
         normal_loss_weighted: float,
         intra_slab_depth_loss_raw: float,
         intra_slab_depth_loss_weighted: float,
-        curvature_scale_loss_raw: float,
-        curvature_scale_loss_weighted: float,
         total_loss: float,
 ) -> None:
     print_status(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
@@ -1572,8 +1474,6 @@ def print_loss_summary(
     print_status(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
     print_status(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
     print_status(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
-    print_status(f"{prefix} curvature scale loss (raw)             : {curvature_scale_loss_raw:.6e}")
-    print_status(f"{prefix} curvature scale loss (weighted)        : {curvature_scale_loss_weighted:.6e}")
     print_status(f"{prefix} total loss                             : {total_loss:.6e}")
 
 
@@ -1583,11 +1483,9 @@ def compute_surface_regularizer_losses_and_adjoints(
         depth_distortion_weight: float,
         normal_consistency_weight: float,
         intra_slab_depth_weight: float,
-        curvature_scale_weight: float,
         use_depth_distortion: bool,
         use_normal_consistency: bool,
         use_intra_slab_depth: bool,
-        use_curvature_scale: bool,
 ) -> dict[str, Any]:
     result: dict[str, Any] = make_zero_loss_values()
     result.update({
@@ -1596,9 +1494,7 @@ def compute_surface_regularizer_losses_and_adjoints(
         "depth_normal_adjoints": {},
         "depth_distortion_maps_for_logging": {},
         "intra_slab_depth_grad_images": {},
-        "curvature_scale_grad_images": {},
         "intra_slab_depth_maps_for_logging": {},
-        "curvature_scale_maps_for_logging": {},
         "per_camera_loss_values": {},
     })
 
@@ -1669,23 +1565,6 @@ def compute_surface_regularizer_losses_and_adjoints(
                 0.0,
             ).astype(np.float32, copy=False)
 
-        if use_curvature_scale:
-            curvature_scale_np = render.get_forward_curvature_scale(forward_out, camera_name)
-            active_slab_count_np = render.get_forward_curvature_scale_active_slab_count(
-                forward_out, camera_name
-            )
-            active_slab_count = max(1, int(active_slab_count_np.sum(dtype=np.uint64)))
-            curvature_scale_loss_raw = float(curvature_scale_np.sum() / active_slab_count)
-            curvature_scale_loss_weighted = curvature_scale_weight * curvature_scale_loss_raw
-            camera_loss_values["total_curvature_scale_loss_raw"] = curvature_scale_loss_raw
-            camera_loss_values["total_curvature_scale_loss_weighted"] = curvature_scale_loss_weighted
-            camera_loss_values["total_loss_value"] += curvature_scale_loss_weighted
-            result["curvature_scale_maps_for_logging"][camera_name] = curvature_scale_np
-            result["curvature_scale_grad_images"][camera_name] = np.where(
-                active_slab_count_np > 0,
-                curvature_scale_weight / float(active_slab_count),
-                0.0,
-            ).astype(np.float32, copy=False)
 
         for loss_key in LOSS_VALUE_KEYS:
             result[loss_key] += camera_loss_values[loss_key]
@@ -1707,6 +1586,52 @@ def extract_total_gradient_arrays(
     return (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np)
 
 
+def should_accumulate_densification_statistics(
+        iteration: int,
+        densification_interval: int,
+        densification_cycle_start_iteration: int,
+        densification_stats_skip_iterations: int,
+) -> bool:
+    """The same window gate is used by the host and device reducers."""
+    phase = max(0, int(iteration) - int(densification_cycle_start_iteration))
+    return densification_interval > 0 and (
+        densification_interval <= 1
+        or (phase >= densification_stats_skip_iterations and phase != 0)
+    )
+
+
+def download_densification_statistics(
+        renderer: pale.Renderer,
+        point_count: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Download a window snapshot; reading does not reset device accumulation."""
+    state = renderer.get_densification_stats()
+    arrays = []
+    for key, components in (("position_sum", 1), ("position_count", 1),
+                            ("direction_sum", 3), ("radiance_sum", 1)):
+        values = np.asarray(state[key], dtype=np.float32)
+        if values.size != point_count * components:
+            raise RuntimeError(f"Densification {key} has shape {values.shape} for {point_count} points")
+        arrays.append(np.array(values.reshape(point_count, components), copy=True))
+    return tuple(arrays)
+
+
+def upload_densification_statistics(
+        renderer: pale.Renderer,
+        position_sum: np.ndarray,
+        position_count: np.ndarray,
+        direction_sum: np.ndarray,
+        radiance_sum: np.ndarray,
+) -> None:
+    """Restore canonical row order after a topology change within a window."""
+    renderer.upload_densification_stats({
+        "position_sum": np.ascontiguousarray(position_sum.reshape(-1), dtype=np.float32),
+        "position_count": np.ascontiguousarray(position_count.reshape(-1), dtype=np.float32),
+        "direction_sum": np.ascontiguousarray(direction_sum, dtype=np.float32),
+        "radiance_sum": np.ascontiguousarray(radiance_sum.reshape(-1), dtype=np.float32),
+    })
+
+
 def update_densification_statistics(
         iteration: int,
         densification_interval: int,
@@ -1726,18 +1651,9 @@ def update_densification_statistics(
         densification_tangent_only: bool = True,
         densification_relative_error: bool = False,
 ) -> None:
-    if densification_interval <= 0:
-        return
-
-    densification_phase = max(0, int(iteration) - int(densification_cycle_start_iteration))
-    should_accumulate = (
-            densification_interval <= 1
-            or (
-                    densification_phase >= densification_stats_skip_iterations
-                    and densification_phase != 0
-            )
-    )
-    if not should_accumulate:
+    if not should_accumulate_densification_statistics(
+            iteration, densification_interval, densification_cycle_start_iteration,
+            densification_stats_skip_iterations):
         return
 
     if densify_position_grad_per_camera_np is None:
@@ -1956,107 +1872,6 @@ def update_densification_statistics(
     )
 
 
-CURVATURE_DENSIFICATION_STAT_KEYS = (
-    "violation_sum",
-    "violation_count",
-    "direction_tensor_uu",
-    "direction_tensor_uv",
-    "direction_tensor_vv",
-)
-
-
-def make_curvature_densification_accumulators(point_count: int) -> dict[str, np.ndarray]:
-    return {
-        "violation_sum": np.zeros((point_count,), dtype=np.float32),
-        "violation_count": np.zeros((point_count,), dtype=np.uint64),
-        "direction_tensor_uu": np.zeros((point_count,), dtype=np.float32),
-        "direction_tensor_uv": np.zeros((point_count,), dtype=np.float32),
-        "direction_tensor_vv": np.zeros((point_count,), dtype=np.float32),
-    }
-
-
-def update_curvature_densification_statistics(
-        iteration: int,
-        densification_interval: int,
-        densification_cycle_start_iteration: int,
-        densification_stats_skip_iterations: int,
-        renderer_stats: dict[str, np.ndarray],
-        accumulators: dict[str, np.ndarray],
-) -> None:
-    """Accumulate scalar curvature, but retain only the latest direction tensor.
-
-    The scalar violation is basis-independent and remains useful across a full
-    densification cycle. Tensor components live in the surfel's current local
-    tangent frame, so summing them across optimizer iterations would mix frames
-    whenever the surfel rotates.
-    """
-    if densification_interval <= 0:
-        return
-
-    densification_phase = max(0, int(iteration) - int(densification_cycle_start_iteration))
-    should_accumulate = (
-            densification_interval <= 1
-            or (
-                    densification_phase >= densification_stats_skip_iterations
-                    and densification_phase != 0
-            )
-    )
-    if not should_accumulate:
-        return
-
-    missing_keys = [
-        key for key in CURVATURE_DENSIFICATION_STAT_KEYS
-        if key not in renderer_stats or key not in accumulators
-    ]
-    if missing_keys:
-        raise RuntimeError(
-            "Curvature densification statistics are missing keys: "
-            + ", ".join(missing_keys)
-        )
-
-    violation_sum = np.asarray(renderer_stats["violation_sum"], dtype=np.float32).reshape(-1)
-    violation_count = np.asarray(renderer_stats["violation_count"], dtype=np.uint64).reshape(-1)
-    tensor_uu = np.asarray(renderer_stats["direction_tensor_uu"], dtype=np.float32).reshape(-1)
-    tensor_uv = np.asarray(renderer_stats["direction_tensor_uv"], dtype=np.float32).reshape(-1)
-    tensor_vv = np.asarray(renderer_stats["direction_tensor_vv"], dtype=np.float32).reshape(-1)
-
-    point_count = accumulators["violation_sum"].shape[0]
-    for key, values in (
-            ("violation_sum", violation_sum),
-            ("violation_count", violation_count),
-            ("direction_tensor_uu", tensor_uu),
-            ("direction_tensor_uv", tensor_uv),
-            ("direction_tensor_vv", tensor_vv),
-    ):
-        if values.shape != (point_count,):
-            raise RuntimeError(
-                f"Curvature densification {key} shape mismatch: "
-                f"expected {(point_count,)}, got {values.shape}"
-            )
-
-    valid_observation = (
-            (violation_count > 0)
-            & np.isfinite(violation_sum)
-            & (violation_sum >= 0.0)
-    )
-    accumulators["violation_sum"][valid_observation] += violation_sum[valid_observation]
-    accumulators["violation_count"][valid_observation] += violation_count[valid_observation]
-
-    # K_uu/K_uv/K_vv are expressed in the *current* local tangent frame. Keep
-    # this renderer iteration as a snapshot rather than accumulating components
-    # from older frames. Clearing unobserved entries also prevents stale axes
-    # from directing a split when a surfel has no current curvature observation.
-    for key, values in (
-            ("direction_tensor_uu", tensor_uu),
-            ("direction_tensor_uv", tensor_uv),
-            ("direction_tensor_vv", tensor_vv),
-    ):
-        accumulators[key].fill(0.0)
-        accumulators[key][valid_observation] = np.nan_to_num(
-            values[valid_observation], nan=0.0, posinf=0.0, neginf=0.0
-        )
-
-
 def position_densification_snapshot_statistics(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
@@ -2180,7 +1995,6 @@ def maybe_make_densification_result(
         densification_interval: int,
         densification_verbose: bool,
         densification_grad_abs_min: float,
-        densify_curvature_stats_accum: dict[str, np.ndarray] | None = None,
         force_densification: bool = False,
         renderer: pale.Renderer | None = None,
         overlap_camera_names: list[str] | None = None,
@@ -2263,78 +2077,6 @@ def maybe_make_densification_result(
                 & (grad_pos_norm_np >= densification_grad_abs_min)
         )
 
-        curvature_violation_threshold = float(config.curvature_violation_threshold)
-        curvature_enabled = (
-                np.isfinite(curvature_violation_threshold)
-                and curvature_violation_threshold > 0.0
-                and densify_curvature_stats_accum is not None
-        )
-        curvature_violation_mean_np = np.zeros((positions.shape[0],), dtype=np.float32)
-        curvature_tensor_uu_np = np.zeros_like(curvature_violation_mean_np)
-        curvature_tensor_uv_np = np.zeros_like(curvature_violation_mean_np)
-        curvature_tensor_vv_np = np.zeros_like(curvature_violation_mean_np)
-        valid_curvature_observation_np = np.zeros((positions.shape[0],), dtype=bool)
-
-        if curvature_enabled:
-            missing_keys = [
-                key for key in CURVATURE_DENSIFICATION_STAT_KEYS
-                if key not in densify_curvature_stats_accum
-            ]
-            if missing_keys:
-                raise RuntimeError(
-                    "Curvature densification accumulators are missing keys: "
-                    + ", ".join(missing_keys)
-                )
-
-            curvature_sum_np = np.asarray(
-                densify_curvature_stats_accum["violation_sum"], dtype=np.float32
-            ).reshape(-1)
-            curvature_count_np = np.asarray(
-                densify_curvature_stats_accum["violation_count"], dtype=np.uint64
-            ).reshape(-1)
-            curvature_tensor_uu_np = np.asarray(
-                densify_curvature_stats_accum["direction_tensor_uu"], dtype=np.float32
-            ).reshape(-1)
-            curvature_tensor_uv_np = np.asarray(
-                densify_curvature_stats_accum["direction_tensor_uv"], dtype=np.float32
-            ).reshape(-1)
-            curvature_tensor_vv_np = np.asarray(
-                densify_curvature_stats_accum["direction_tensor_vv"], dtype=np.float32
-            ).reshape(-1)
-
-            curvature_arrays = (
-                curvature_sum_np,
-                curvature_count_np,
-                curvature_tensor_uu_np,
-                curvature_tensor_uv_np,
-                curvature_tensor_vv_np,
-            )
-            if any(array.shape != (positions.shape[0],) for array in curvature_arrays):
-                raise RuntimeError(
-                    "Curvature densification accumulator length does not match the point count"
-                )
-
-            valid_curvature_observation_np = (
-                    (curvature_count_np > 0)
-                    & np.isfinite(curvature_sum_np)
-                    & (curvature_sum_np >= 0.0)
-            )
-            curvature_violation_mean_np[valid_curvature_observation_np] = (
-                    curvature_sum_np[valid_curvature_observation_np]
-                    / curvature_count_np[valid_curvature_observation_np].astype(np.float32)
-            )
-            curvature_violation_mean_np = np.nan_to_num(
-                curvature_violation_mean_np, nan=0.0, posinf=0.0, neginf=0.0
-            )
-            curvature_tensor_uu_np = np.nan_to_num(
-                curvature_tensor_uu_np, nan=0.0, posinf=0.0, neginf=0.0
-            )
-            curvature_tensor_uv_np = np.nan_to_num(
-                curvature_tensor_uv_np, nan=0.0, posinf=0.0, neginf=0.0
-            )
-            curvature_tensor_vv_np = np.nan_to_num(
-                curvature_tensor_vv_np, nan=0.0, posinf=0.0, neginf=0.0
-            )
 
         densification_result = None
         densify_reason = "not_attempted"
@@ -2345,18 +2087,7 @@ def maybe_make_densification_result(
         above_abs_count = int(np.count_nonzero(grad_pos_norm_np >= densification_grad_abs_min))
         position_abs_candidate_count = int(np.count_nonzero(position_abs_candidate_mask_np))
         valid_denom_count = int(np.count_nonzero(valid_denom_np))
-        valid_curvature_count = int(np.count_nonzero(valid_curvature_observation_np))
 
-        scene_extent = densification_scene_extent_for_positions(
-            config=config,
-            positions=positions,
-            trainable_surfel_mask=trainable_surfel_mask,
-        )
-        exact_clone_scale_threshold = exact_clone_scale_threshold_for_positions(
-            config=config,
-            positions=positions,
-            trainable_surfel_mask=trainable_surfel_mask,
-        )
         split_offset_scale = float(config.densification_split_offset_scale)
 
         finite_signal_np = (
@@ -2381,15 +2112,9 @@ def maybe_make_densification_result(
                 & trainable_np
                 & (grad_pos_norm_np >= grad_thresholds_np)
         )
-        curvature_candidate_mask_np = (
-                valid_curvature_observation_np
-                & trainable_np
-                & (curvature_violation_mean_np >= curvature_violation_threshold)
-        ) if curvature_enabled else np.zeros_like(trainable_np)
-        combined_candidate_mask_np = position_candidate_mask_np | curvature_candidate_mask_np
+        combined_candidate_mask_np = position_candidate_mask_np
 
         position_candidate_count = int(np.count_nonzero(position_candidate_mask_np))
-        curvature_candidate_count = int(np.count_nonzero(curvature_candidate_mask_np))
         candidate_count = int(np.count_nonzero(combined_candidate_mask_np))
 
         overlap_blocked_count = 0
@@ -2409,17 +2134,16 @@ def maybe_make_densification_result(
             blocked = observed & (mean_members >= max_mean_members)
             overlap_blocked_count = int(np.count_nonzero(combined_candidate_mask_np & blocked))
             overlap_unknown_count = int(np.count_nonzero(combined_candidate_mask_np & ~observed))
-            # Apply before top-k selection, to position and curvature candidates
-            # alike, including the optional legacy exact-clone branch.
+            # Reject crowded parents before the top-k budget is applied.
             selection_mask = trainable_surfel_mask & torch.as_tensor(
                 ~blocked, device=trainable_surfel_mask.device, dtype=torch.bool)
             overlap_compute_ms = float(overlap["elapsed_ms"])
 
         if candidate_count == 0:
-            if not np.any(valid_denom_np) and not np.any(valid_curvature_observation_np):
+            if not np.any(valid_denom_np):
                 densify_reason = "no_density_samples"
             else:
-                densify_reason = "no_candidates_after_position_or_curvature"
+                densify_reason = "no_position_candidates"
         else:
 
             position_selection_score_np = np.divide(
@@ -2442,12 +2166,6 @@ def maybe_make_densification_result(
                 clone_offset_scale=split_offset_scale,
                 clone_scale_factor=float(config.densification_split_scale_factor),
                 min_clone_scale=float(config.densification_scale_min),
-                exact_clone_scale_threshold=exact_clone_scale_threshold,
-                curvature_violation_np=curvature_violation_mean_np,
-                curvature_direction_uu_np=curvature_tensor_uu_np,
-                curvature_direction_uv_np=curvature_tensor_uv_np,
-                curvature_direction_vv_np=curvature_tensor_vv_np,
-                curvature_violation_threshold=curvature_violation_threshold,
                 split_tangent_only=bool(config.densification_tangent_only),
                 tangent_project_position_grad=True,
             )
@@ -2461,13 +2179,9 @@ def maybe_make_densification_result(
                     position_split_count = int(
                         densification_result.get("position_split_count", 0)
                     )
-                    curvature_split_count = int(
-                        densification_result.get("curvature_split_count", 0)
-                    )
                     densify_reason = (
                         f"densified_clone={clone_count}_split={split_count}"
                         f"_position={position_split_count}"
-                        f"_curvature={curvature_split_count}"
                     )
                 else:
                     densify_reason = "densification_result_without_new_block"
@@ -2495,12 +2209,10 @@ def maybe_make_densification_result(
                 f"added={n_new_from_densification}, "
                 f"pts={positions.shape[0]}, "
                 f"valid_denom={valid_denom_count}, "
-                f"valid_curvature={valid_curvature_count}, "
                 f"finite={finite_count}, "
                 f"trainable={trainable_count}, "
                 f"above_abs={above_abs_count}, "
                 f"position_candidates={position_candidate_count}, "
-                f"curvature_candidates={curvature_candidate_count}, "
                 f"combined_candidates={candidate_count}, "
                 f"{overlap_log}"
                 f"signal_min={signal_min:.3e}, "
@@ -2511,9 +2223,6 @@ def maybe_make_densification_result(
                 f"signal_max={signal_max:.3e}, "
                 f"grad_thr={grad_threshold:.3e}, "
                 f"abs_thr={densification_grad_abs_min:.3e}, "
-                f"curvature_thr={curvature_violation_threshold:.3e}, "
-                f"scene_extent={scene_extent:.3e}, "
-                f"exact_clone_scale_thr={exact_clone_scale_threshold:.3e}, "
                 f"split_offset={split_offset_scale:.3e}"
             )
         elif n_new_from_densification > 0:
@@ -2523,18 +2232,12 @@ def maybe_make_densification_result(
                 position_split_count = int(
                     densification_result.get("position_split_count", 0)
                 ) if densification_result is not None else 0
-                curvature_split_count = int(
-                    densification_result.get("curvature_split_count", 0)
-                ) if densification_result is not None else 0
                 print_status(
                     f"[Iter {iteration:04d}] Split densification: "
                     f"adding {n_new_from_densification} surfels "
                     f"(clone={clone_count}, split={split_count}, "
-                    f"position={position_split_count}, "
-                    f"curvature={curvature_split_count}) | "
+                    f"position={position_split_count}) | "
                     f"grad_thr={grad_threshold:.3e}, "
-                    f"curvature_thr={curvature_violation_threshold:.3e}, "
-                    f"exact_clone_scale_thr={exact_clone_scale_threshold:.3e}, "
                     f"split_offset={split_offset_scale:.3e}, "
                     f"abs_thr={densification_grad_abs_min:.3e}, "
                     f"pts={positions.shape[0]}"

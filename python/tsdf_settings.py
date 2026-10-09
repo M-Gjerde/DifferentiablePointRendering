@@ -29,8 +29,8 @@ def add_tsdf_arguments(parser):
                         help='Voxel edge in scene units; negative: infer from visible surface extent and pixel spacing.')
     parser.add_argument('--sdf-trunc', '--sdf_trunc', type=float, default=-1.0,
                         help='TSDF band in scene units; negative: 4 times the voxel size.')
-    parser.add_argument('--mesh-res', '--mesh_res', type=int, default=512,
-                        help='Target voxels along the longest robust surface extent (default 512).')
+    parser.add_argument('--mesh-res', '--mesh_res', type=int, default=2048,
+                        help='Target voxels along the longest robust surface extent (default 2048).')
     parser.add_argument('--depth-percentile', '--depth_percentile', type=float, default=99.0,
                         help='Per-view valid-depth percentile for automatic far cutoff (default 99).')
     parser.add_argument('--depth-margin', '--depth_margin', type=float, default=1.1,

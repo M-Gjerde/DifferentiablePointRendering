@@ -76,7 +76,7 @@ Fixed mode shades each member at its own hit, overriding shared slab direct
 lighting. Direct-light shadow rays exclude the shading member's entire group,
 and the adjoint uses the same exclusion. Other groups still cast shadows.
 Camera RGB, measurement events, camera attenuation gradients, intra-slab loss,
-and curvature selection use the same group collector. Depth/normal diagnostic
+and visible primitive selection use the same group collector. Depth/normal diagnostic
 losses retain their original ordered physical-hit stream in both passes.
 
 For fixed membership and group ordering, the existing analytic derivatives of
