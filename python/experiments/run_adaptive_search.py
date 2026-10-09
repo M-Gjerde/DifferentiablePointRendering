@@ -743,16 +743,6 @@ def repair_densification_parameters(
         changed = changed or value != repaired[name]
         repaired[name] = value
 
-    name = "curvature_violation_threshold"
-    if name in repaired and name in search_space and float(repaired[name]) > 0.0:
-        dimension = search_space[name]
-        if dimension["type"] == "categorical":
-            value = next_choice(repaired[name], dimension["choices"], increasing=True)
-        else:
-            value = clamp_dimension_value(float(repaired[name]) * 1.5, dimension)
-        changed = changed or value != repaired[name]
-        repaired[name] = value
-
     return repaired if changed else None
 
 
@@ -1343,8 +1333,6 @@ def import_baseline_run(
         "ground_truth",
         "geometry_samples",
         "geometry_seed",
-        "geometry_scale",
-        "geometry_use_vertices",
         "enable_metrics",
         "enable_image_preview",
     }

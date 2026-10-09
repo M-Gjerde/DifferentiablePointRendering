@@ -31,12 +31,7 @@ class RendererSettingsConfig:
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
-            "curvature_scale_weight": config.curvature_scale_weight,
             "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
-            "enable_curvature_densification": (
-                config.curvature_violation_threshold > 0.0
-                and config.densification_interval > 0
-            ),
             "enable_primal_activity_tracking": (
                 config.inactive_transport_prune_cycles > 0
             ),
@@ -62,9 +57,6 @@ class OptimizationConfig:
     skip_zero_gradient_surfels: bool = False
     # Device optimizer only: False selects additive physical-radius updates.
     use_log_scale: bool = True
-    # Opt-in shifted-log parameterization rho=log(s+s0), in scene units.
-    # Zero preserves ordinary rho=log(s).
-    shifted_log_scale_offset: float = 0.5
 
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
@@ -88,10 +80,6 @@ class OptimizationConfig:
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 10_000
 
-    # Objective: photometric loss
-    ssim_weight: float = 0.0
-    ssim_window_size: int = 5
-    ssim_sigma: float = 0.75
 
     # Objective: geometric regularizers
     depth_distort_weight: float = 0.0005
@@ -99,7 +87,6 @@ class OptimizationConfig:
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
-    curvature_scale_weight: float = 0.0e-6
 
     # Rendering model
     share_local_layer_direct_lighting: bool = False
@@ -110,6 +97,9 @@ class OptimizationConfig:
     camera_sampling_seed: int = 0
     scale_single_camera_gradients: bool = False
     normal_from_depth_use_mean_depth: bool = False
+
+    # Final densification/pruning freeze.
+    topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
 
     # Densification: schedule
     densification_interval: int = 200
@@ -148,16 +138,13 @@ class OptimizationConfig:
     min_surfel_area: float = math.pi * 8.0e-5
     min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
 
-    # Densification: curvature trigger and clone/split policy
+    # Densification: clone/split policy
     # Minimum child semi-axis, in scene units (not area). The split selector
     # requires both parent axes >= this * split_scale_factor * (1 + 1e-4),
     # so the smallest circular children have area just above min_surfel_area.
-    curvature_violation_threshold: float = -1
     densification_split_scale_factor: float = 1.7
     densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
-    densification_exact_clone_percent_dense: float = 0.0
-    densification_scene_extent: float = 0.0
 
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -169,18 +156,16 @@ class OptimizationConfig:
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
     mesh_extraction_mesh_res: int = 2048
-    mesh_extraction_num_cluster: int = 0  # Keep disconnected geometry unless explicitly filtered.
+    mesh_extraction_num_cluster: int = 0  # Keep all components with at least 50 triangles.
     mesh_albedo_texture_size: int = 1024
-    mesh_uv_partitions: int = 0
-    mesh_uv_threads: int = 0
+    mesh_uv_partitions: int = 30
+    mesh_uv_threads: int = 8
     mesh_export_lights: bool = True
     mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
     geometry_samples: int = 500_000
     geometry_seed: int = 0
-    geometry_scale: float = 1.0
-    geometry_use_vertices: bool = False
 
     # Output and monitoring
     log_interval: int = 25
@@ -427,15 +412,6 @@ def parse_args() -> OptimizationConfig:
             "Retune --lr-scale when switching; host optimizer is unchanged."
         ),
     )
-    optimizer.add_argument(
-        "--shifted-log-scale-offset",
-        type=float,
-        help=(
-            "Device log-scale optimizer: opt into rho=log(s+s0) using non-negative "
-            "offset s0 in scene units. 0 keeps ordinary rho=log(s). Small surfels "
-            "then update more linearly while large surfels retain log-like growth."
-        ),
-    )
     _add_boolean_argument(optimizer, "--global-lr-decay", dest="use_global_lr_decay")
     _add_boolean_argument(optimizer, "--position-lr-decay", dest="use_position_lr_decay")
     _add_boolean_argument(
@@ -471,20 +447,12 @@ def parse_args() -> OptimizationConfig:
     )
 
     objective = parser.add_argument_group("objective and regularizers")
-    objective.add_argument(
-        "--ssim-weight",
-        type=float,
-        help="DSSIM mixture weight in [0,1]; 0 restores the previous half-MSE-only RGB loss.",
-    )
-    objective.add_argument("--ssim-window-size", type=int)
     _add_typed_fields(
         objective,
         float,
-        "ssim_sigma",
         "normal_consistency_weight",
         "depth_distort_weight",
         "intra_slab_depth_weight",
-        "curvature_scale_weight",
     )
     _add_boolean_argument(
         objective,
@@ -576,29 +544,14 @@ def parse_args() -> OptimizationConfig:
         "densification_radiance_bias_max_weight",
     )
 
-    densification_split = parser.add_argument_group("densification: curvature and split policy")
+    densification_split = parser.add_argument_group("densification: split policy")
     _add_typed_fields(
         densification_split,
         float,
         "densification_scale_min",
         "densification_split_offset_scale",
         "densification_split_scale_factor",
-        "densification_scene_extent",
         "densification_max_new_fraction",
-    )
-    densification_split.add_argument(
-        "--curvature-violation-threshold",
-        type=float,
-        help=(
-            "Mean raw curvature-scale violation required to split a surfel; "
-            "a non-positive value disables curvature densification."
-        ),
-    )
-    densification_split.add_argument(
-        "--densification-exact-clone-percent-dense",
-        "--densification-percent-dense",
-        dest="densification_exact_clone_percent_dense",
-        type=float,
     )
     _add_boolean_argument(
         densification_split,
@@ -624,6 +577,7 @@ def parse_args() -> OptimizationConfig:
         "prune_after",
         "rebuild_bvh_interval",
         "inactive_transport_prune_cycles",
+        "topology_freeze_last_iterations",
     )
     _add_typed_fields(
         pruning,
@@ -684,15 +638,6 @@ def parse_args() -> OptimizationConfig:
         ),
     )
     _add_typed_fields(mesh, int, "geometry_samples", "geometry_seed")
-    _add_typed_fields(mesh, float, "geometry_scale")
-    _add_boolean_argument(
-        mesh,
-        "--geometry-use-vertices",
-        help=(
-            "Use raw mesh vertices as point-to-triangle geometry queries. "
-            "The default uniformly samples both mesh surfaces."
-        ),
-    )
 
     args = parser.parse_args()
     cli_overrides = set(vars(args).keys())
@@ -713,6 +658,8 @@ def parse_args() -> OptimizationConfig:
     configure_checkpoint(config, cli_overrides)
     if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
+    if config.topology_freeze_last_iterations < 0:
+        parser.error("--topology-freeze-last-iterations must be non-negative")
 
 
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
@@ -723,10 +670,6 @@ def parse_args() -> OptimizationConfig:
         parser.error("--densification-radiance-bias-min-weight must be finite and in (0, 1]")
     if not math.isfinite(config.densification_radiance_bias_max_weight) or config.densification_radiance_bias_max_weight < 1:
         parser.error("--densification-radiance-bias-max-weight must be finite and at least 1")
-    if not math.isfinite(config.shifted_log_scale_offset) or config.shifted_log_scale_offset < 0.0:
-        parser.error("--shifted-log-scale-offset must be finite and non-negative")
-    if not config.use_log_scale and config.shifted_log_scale_offset != 0.0:
-        parser.error("--shifted-log-scale-offset requires --log-scale")
 
     resolve_learning_rates(config)
 

@@ -149,25 +149,6 @@
       "values": [0.36, 0.47]
     },
     {
-      "name": "08_single_albedo_l2_ssim_seed",
-      "stage": "single_surfel",
-      "ply": "single_surfel",
-      "parameter": "albedo_g",
-      "index": 1,
-      "values": [0.43],
-      "objective": {
-        "type": "l2_ssim",
-        "target_channels": [0.12, 0.18, 0.08],
-        "ssim_weight": 0.2,
-        "window_size": 5,
-        "sigma": 0.75
-      },
-      "check": {
-        "relative_tolerance": 0.08,
-        "fd_consistency_relative_tolerance": 0.12
-      }
-    },
-    {
       "name": "09_single_albedo_without_visibility_edges",
       "stage": "single_surfel",
       "ply": "single_surfel",

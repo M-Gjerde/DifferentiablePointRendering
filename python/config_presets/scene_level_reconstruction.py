@@ -29,12 +29,7 @@ class RendererSettingsConfig:
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
-            "curvature_scale_weight": config.curvature_scale_weight,
             "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
-            "enable_curvature_densification": (
-                config.curvature_violation_threshold > 0.0
-                and config.densification_interval > 0
-            ),
             "enable_primal_activity_tracking": (
                 config.inactive_transport_prune_cycles > 0
             ),
@@ -79,14 +74,10 @@ class OptimizationConfig:
     use_device_training_step: bool = True
 
     # Objective and regularizers
-    ssim_weight: float = 0.00
-    ssim_window_size: int = 5
-    ssim_sigma: float = 0.75
     depth_distort_weight: float = 1000.0
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-4
-    curvature_scale_weight: float = 0.0e-0
 
     # Rendering and camera sampling
     share_local_layer_direct_lighting: bool = False
@@ -95,6 +86,9 @@ class OptimizationConfig:
     camera_sampling_seed: int = 0
     scale_single_camera_gradients: bool = False
     normal_from_depth_use_mean_depth: bool = False
+
+    # Final densification/pruning freeze.
+    topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
 
     # Densification signal
     # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
@@ -122,11 +116,7 @@ class OptimizationConfig:
     densification_grad_abs_min_final: float = 8.0e-5
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
-    # A non-positive value disables curvature-triggered densification.
-    curvature_violation_threshold: float = -1
     densification_scale_min: float = 6.0e-3
-    densification_exact_clone_percent_dense: float = 0.00
-    densification_scene_extent: float = 0.0
 
     # Densification split and growth policy
     densification_split_offset_scale: float = 0.1
@@ -157,14 +147,17 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 2_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_mesh_res: int = 512
-    mesh_extraction_num_cluster: int = 0  # Preserve disconnected geometry by default.
+    mesh_extraction_mesh_res: int = 2048
+    mesh_extraction_num_cluster: int = 0  # Keep all components with at least 50 triangles.
+    mesh_albedo_texture_size: int = 1024
+    mesh_uv_partitions: int = 30
+    mesh_uv_threads: int = 8
+    mesh_export_lights: bool = True
+    mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
     geometry_samples: int = 500_000
     geometry_seed: int = 0
-    geometry_scale: float = 1.0
-    geometry_use_vertices: bool = False
 
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False
@@ -414,20 +407,12 @@ def parse_args() -> OptimizationConfig:
     )
 
     objective = parser.add_argument_group("objective and regularizers")
-    objective.add_argument(
-        "--ssim-weight",
-        type=float,
-        help="DSSIM mixture weight in [0,1]; 0 restores the previous half-MSE-only RGB loss.",
-    )
-    objective.add_argument("--ssim-window-size", type=int)
     _add_typed_fields(
         objective,
         float,
-        "ssim_sigma",
         "normal_consistency_weight",
         "depth_distort_weight",
         "intra_slab_depth_weight",
-        "curvature_scale_weight",
     )
     objective.add_argument("--depth-distort-start-iteration", type=int)
     _add_boolean_argument(
@@ -471,24 +456,9 @@ def parse_args() -> OptimizationConfig:
         "densification_scale_min",
         "densification_split_offset_scale",
         "densification_split_scale_factor",
-        "densification_scene_extent",
         "densification_max_new_fraction",
         "densify_bsdf_floor",
         "densify_bsdf_gamma",
-    )
-    densification.add_argument(
-        "--curvature-violation-threshold",
-        type=float,
-        help=(
-            "Mean raw curvature-scale violation required to split a surfel; "
-            "a non-positive value disables curvature densification."
-        ),
-    )
-    densification.add_argument(
-        "--densification-exact-clone-percent-dense",
-        "--densification-percent-dense",
-        dest="densification_exact_clone_percent_dense",
-        type=float,
     )
     densification.add_argument(
         "--densification-grad-abs-min-decay-start-iteration",
@@ -540,6 +510,7 @@ def parse_args() -> OptimizationConfig:
         "prune_after",
         "rebuild_bvh_interval",
         "inactive_transport_prune_cycles",
+        "topology_freeze_last_iterations",
     )
     _add_typed_fields(
         pruning,
@@ -574,7 +545,10 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
-    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster")
+    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
+                      "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
+    _add_boolean_argument(mesh, "--mesh-export-lights")
+    _add_boolean_argument(mesh, "--mesh-export-cameras")
     _add_boolean_argument(mesh, "--save-final-mesh")
     mesh.add_argument(
         "--ground-truth",
@@ -587,12 +561,6 @@ def parse_args() -> OptimizationConfig:
         ),
     )
     _add_typed_fields(mesh, int, "geometry_samples", "geometry_seed")
-    _add_typed_fields(mesh, float, "geometry_scale")
-    _add_boolean_argument(
-        mesh,
-        "--geometry-use-vertices",
-        help="Use reconstructed mesh vertices as point-to-triangle geometry queries.",
-    )
 
     args = parser.parse_args()
     cli_overrides = set(vars(args).keys())
@@ -611,6 +579,9 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
+
+    if config.topology_freeze_last_iterations < 0:
+        parser.error("--topology-freeze-last-iterations must be non-negative")
 
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")

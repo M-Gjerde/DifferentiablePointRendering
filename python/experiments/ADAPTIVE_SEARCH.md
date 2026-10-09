@@ -80,7 +80,6 @@ searches densification, available repairs are:
 - a higher densification-gradient threshold;
 - a longer densification interval;
 - a smaller maximum-new-point fraction; and
-- a higher curvature trigger threshold when curvature densification is active.
 
 The other sampled values remain unchanged, making the repair interpretable.
 

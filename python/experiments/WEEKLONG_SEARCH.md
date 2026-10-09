@@ -91,8 +91,7 @@ Relative-error densification remains enabled, with no extra albedo compensation.
 Its radiance floor is fixed at **0.001**, and `densify_after` is fixed at **0**,
 matching the current config. Depth distortion and normal consistency weights
 are both searched over the ranges above.
-Curvature densification/regularization, SSIM, shared lighting,
-adjoint sample count, camera policy, and mesh extraction settings otherwise keep
+Shared lighting, adjoint sample count, camera policy, and mesh extraction settings otherwise keep
 their current defaults. Disabled or inactive options are not searched merely
 because they exist.
 
