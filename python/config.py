@@ -24,7 +24,7 @@ class RendererSettingsConfig:
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
-    adjoint_opacity_uniform_mix: float = 0.2
+    adjoint_opacity_uniform_mix: float = 0.0
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3

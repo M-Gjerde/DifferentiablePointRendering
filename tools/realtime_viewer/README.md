@@ -465,3 +465,27 @@ at opacity zero and one.
 Python diagnostics expose `debug_images=True`, `debug_all_surfels=True`
 (or `debug_surfel_index=N`), `adjoint_passes`, `adjoint_q_null`, and
 `adjoint_q_reflect`. These settings do not change forward sampling.
+
+### Opacity-based adjoint scattering in training
+
+In `python/config.py`, `RendererSettingsConfig.adjoint_opacity_sampling` enables
+opacity-based sampling (default `True`). Set it to `False` to restore the fixed
+`adjoint_q_null` / `adjoint_q_reflect` proposal. Native callers, including the
+viewer, retain fixed sampling unless they explicitly enable the option.
+
+The enabled sampler makes one decision for the complete local slab, using its
+combined opacity, including each member's radial footprint. With
+`adjoint_opacity_uniform_mix = m`, reflection has probability
+`(1 - m) * slab_opacity + m / 2`; transmission uses the complement. The default
+`m = 0.2` keeps both probabilities at least 0.1, retaining opacity derivatives at
+fully transparent or opaque surfaces. `m = 0.0` reproduces pure opacity sampling,
+which can lose derivative support at those endpoints. `m = 1.0` reproduces fixed
+0.5/0.5 sampling, including the same seeded choices.
+
+Probabilities are detached sampling choices; the estimator retains their inverse
+weights. The primary-slab cache and sample coalescing use the same choices as
+ordinary traversal. Forward rendering and regularizer evaluation are unchanged.
+The enabled mode ignores fixed `adjoint_q_null` / `adjoint_q_reflect` values.
+Python callers can also switch modes on an existing renderer through
+`set_traversal_sampling_options({"adjoint_opacity_sampling": True,
+"adjoint_opacity_uniform_mix": 0.2})`.
