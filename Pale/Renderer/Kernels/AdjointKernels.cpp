@@ -2,6 +2,7 @@
 // Created by magnus on 9/8/25.
 //
 #include "Renderer/Kernels/AdjointKernels.h"
+#include "Renderer/AdjointSampling.h"
 #include "AdjointGradientKernels.h"
 #include "Core/ScopedTimer.h"
 #include "IntersectionKernels.h"
@@ -1151,13 +1152,17 @@ namespace Pale {
                                     localLayerDepthEpsilon,
                                     maxLocalSurfelHits,
                                     localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
-                        // One fixed-probability decision per slab. Carry inverse selection PDFs
+                        // One decision per slab. Carry inverse selection PDFs
                         // in pathThroughput (also used by camera-occluder VJPs).
                         // These PDFs are sampling choices, not differentiated terms.
-                        const float qNull = settings.sampling.qNull;
-                        const float qReflect = settings.sampling.qReflect;
+                        const AdjointSlabSampling sampling = settings.adjointOpacitySampling
+                            ? opacitySlabSampling(localLayer.opacity, localLayer.transmission,
+                                                  settings.adjointOpacityUniformMix)
+                            : AdjointSlabSampling{settings.sampling.qNull, settings.sampling.qReflect};
+                        const float qNull = sampling.qNull;
+                        const float qReflect = sampling.qReflect;
                         const float selectionDraw = rng.nextFloat();
-                        const bool takeNull = selectionDraw < qNull;
+                        const bool takeNull = sampling.takeNull(selectionDraw);
                         float3 sampledOutgoingDirectionWorld{0.0f};
                         float3 throughputMultiplier{0.0f};
                         float3 slabNormal{0.0f};
@@ -1198,7 +1203,7 @@ namespace Pale {
                                     renderSeed, currentRayState.pathId, futureSpp,
                                     rng::kStreamTraversal, currentRayState.traversalIndex));
                                 const float futureDraw = futureRng.nextFloat();
-                                const bool reflects = futureDraw >= qNull;
+                                const bool reflects = !sampling.takeNull(futureDraw);
                                 if (reflects) ++measurementEvent.sampleMultiplicity;
                             }
                         }

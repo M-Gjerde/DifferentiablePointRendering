@@ -328,6 +328,14 @@ public:
                 get_f(settingsDict, "adjoint_q_null", m_settings.sampling.qNull);
             m_settings.sampling.qReflect =
                 get_f(settingsDict, "adjoint_q_reflect", m_settings.sampling.qReflect);
+            m_settings.adjointOpacitySampling =
+                get_b(settingsDict, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
+            m_settings.adjointOpacityUniformMix =
+                get_f(settingsDict, "adjoint_opacity_uniform_mix", m_settings.adjointOpacityUniformMix);
+            if (!std::isfinite(m_settings.adjointOpacityUniformMix) ||
+                m_settings.adjointOpacityUniformMix < 0.0f || m_settings.adjointOpacityUniformMix > 1.0f) {
+                throw std::invalid_argument("adjoint_opacity_uniform_mix must be finite and in [0, 1]");
+            }
             m_settings.depthDistortionWeight =
                 get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
             m_settings.depthDistortionWorldSpace =
@@ -469,9 +477,14 @@ public:
         Pale::Log::PA_INFO("  Adjoint samples per pixel : {}", m_settings.adjointSamplesPerPixel);
         Pale::Log::PA_INFO("  Using Adjoint Shadow rays : {}", m_settings.enableAdjointDirectLight);
         Pale::Log::PA_INFO("  Adjoint Shadow ray count  : {}", m_settings.numAdjointPathShadowRays);
-        Pale::Log::PA_INFO("  Adjoint q(null/reflect)   : {}/{}",
-                           m_settings.sampling.qNull,
-                           m_settings.sampling.qReflect);
+        if (m_settings.adjointOpacitySampling) {
+            Pale::Log::PA_INFO("  Adjoint sampling         : slab opacity (uniform mix {})",
+                               m_settings.adjointOpacityUniformMix);
+        } else {
+            Pale::Log::PA_INFO("  Adjoint q(null/reflect)   : {}/{}",
+                               m_settings.sampling.qNull,
+                               m_settings.sampling.qReflect);
+        }
         Pale::Log::PA_INFO("  Depth Distortion Weight   : {}", m_settings.depthDistortionWeight);
         Pale::Log::PA_INFO("  Normal Consistency Weight : {}", m_settings.normalConsistencyWeight);
         Pale::Log::PA_INFO("  Intra-slab depth weight   : {}", m_settings.intraSlabDepthRegularizerWeight);
@@ -548,14 +561,17 @@ public:
     {
         for (auto item : options) {
             const auto key = py::cast<std::string>(item.first);
-            if (key != "adjoint_passes" && key != "max_splat_events_per_ray")
+            if (key != "adjoint_passes" && key != "max_splat_events_per_ray" &&
+                key != "adjoint_opacity_sampling" && key != "adjoint_opacity_uniform_mix")
                 throw std::invalid_argument("Unsupported traversal/sampling option: " + key);
         }
+        const bool opacity = get_b(options, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
+        const float mix = get_f(options, "adjoint_opacity_uniform_mix", m_settings.adjointOpacityUniformMix);
         const int spp = get_i(options, "adjoint_passes", m_settings.adjointSamplesPerPixel);
         const int events = get_i(options, "max_splat_events_per_ray", m_settings.rendererDebugMaxSplatEventsPerRay);
-        if (spp < 1 ||
+        if (!std::isfinite(mix) || mix < 0.0f || mix > 1.0f || spp < 1 ||
             events < 1 || events > static_cast<int>(Pale::kMaxSplatEventsPerRay))
-            throw std::invalid_argument("Require positive SPP and event limit within compiled capacity");
+            throw std::invalid_argument("Require uniform mix in [0, 1], positive SPP and event limit within compiled capacity");
         // Existing passes must finish before host settings change. Scratch uses
         // compiled capacities; the primary slab cache is refreshed at SPP zero.
         {
@@ -563,6 +579,8 @@ public:
             deviceSelector->getQueue().wait_and_throw();
         }
         auto& settings = pathTracer->getSettings();
+        settings.adjointOpacitySampling = m_settings.adjointOpacitySampling = opacity;
+        settings.adjointOpacityUniformMix = m_settings.adjointOpacityUniformMix = mix;
         settings.adjointSamplesPerPixel = m_settings.adjointSamplesPerPixel = spp;
         settings.rendererDebugMaxSplatEventsPerRay = m_settings.rendererDebugMaxSplatEventsPerRay = events;
     }

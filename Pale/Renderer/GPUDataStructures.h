@@ -880,6 +880,10 @@ namespace Pale {
         // Reuse only the deterministic initial camera slab across adjoint SPP.
         bool adjointPrimarySlabCache = true;
         bool adjointPrimarySampleCoalescing = true;
+        // Training opts in through config.py; native callers retain fixed sampling.
+        bool adjointOpacitySampling = false;
+        // Mix with uniform sampling to keep both derivative branches supported.
+        float adjointOpacityUniformMix = 0.2f;
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;

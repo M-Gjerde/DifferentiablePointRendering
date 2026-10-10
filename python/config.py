@@ -20,13 +20,19 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 10
+    adjoint_passes: int = 8
+    adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
+    # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
+    # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
+    adjoint_opacity_uniform_mix: float = 0.2
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
     local_layer_depth_mode: str = "symmetric_ray_depth"
 
     def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool | str]:
+        if not math.isfinite(self.adjoint_opacity_uniform_mix) or not 0.0 <= self.adjoint_opacity_uniform_mix <= 1.0:
+            raise ValueError("adjoint_opacity_uniform_mix must be finite and in [0, 1]")
         settings = asdict(self)
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
@@ -69,8 +75,8 @@ class OptimizationConfig:
     learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0020
-    learning_rate_albedo: float = 0.004
-    learning_rate_opacity: float = 0.002
+    learning_rate_albedo: float = 0.002
+    learning_rate_opacity: float = 0.0015
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -80,16 +86,16 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.3
+    position_lr_scale_init: float = 1.0
+    position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0025
+    depth_distort_weight: float = 0.001
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_start_iteration: int = 1500
+    depth_distort_start_iteration: int = 1000
     normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False

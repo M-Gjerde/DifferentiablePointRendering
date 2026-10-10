@@ -56,6 +56,16 @@ connection. An informational AdaptiveCpp JIT warning alone is not an error.
 ./build-realtime/PaleRealtimeViewer --assets Assets --pointcloud points.ply --scene cbox.xml
 ```
 
+The sidebar keeps the live scene surfel count, last render time, resolution, and
+render controls fixed at the top. **Render & display** and **Camera** open by
+default; **Appearance**, **Scene files**, **Lights**, and **Surfel editor** keep
+less frequent controls out of the way. Diagnostic settings are grouped at the
+bottom, including **Display diagnostics → Median depth settings**.
+
+The **Profiling** panel starts closed. Open it from **View → Profiling** or
+**Scene statistics & profiling**; it shares the sidebar as a tab without reducing
+the viewport height.
+
 Controls:
 
 - Default render mode: photon mapping
