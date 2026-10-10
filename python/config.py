@@ -81,13 +81,13 @@ class OptimizationConfig:
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
     position_lr_scale_init: float = 2.0
-    position_lr_scale_final: float = 0.4
+    position_lr_scale_final: float = 0.3
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.0025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 1500
     normal_consistency_weight: float = 1.0e-3
@@ -134,7 +134,7 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 2.0
+    densification_max_mean_slab_members: float = 1.5
     densification_verbose: bool = False
 
     densification_grad_abs_min: float = 0.5e-3
@@ -142,7 +142,7 @@ class OptimizationConfig:
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
-    densification_split_offset_scale: float = 0.2
+    densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
     densification_radiance_bias_strength: float = 0.8

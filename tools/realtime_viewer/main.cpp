@@ -2383,7 +2383,8 @@ namespace {
         const SceneBounds& bounds,
         uint32_t renderWidth,
         uint32_t renderHeight,
-        bool showViewportGrid) {
+        bool showViewportGrid,
+        const ImVec4& backgroundColor) {
         const float extent = std::max(
             10.0f,
             std::max(bounds.radius * 2.5f, orbit.distance * 2.5f));
@@ -2402,9 +2403,9 @@ namespace {
         const float fx = fy * (width / height);
         const std::size_t pixelCount =
             static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
-        const uint8_t backgroundR = channelToByte(kBlenderViewportBackground.x);
-        const uint8_t backgroundG = channelToByte(kBlenderViewportBackground.y);
-        const uint8_t backgroundB = channelToByte(kBlenderViewportBackground.z);
+        const uint8_t backgroundR = channelToByte(backgroundColor.x);
+        const uint8_t backgroundG = channelToByte(backgroundColor.y);
+        const uint8_t backgroundB = channelToByte(backgroundColor.z);
 
         for (int y = 0; y < static_cast<int>(renderHeight); ++y) {
             for (uint32_t x = 0; x < renderWidth; ++x) {
@@ -2480,6 +2481,7 @@ namespace {
         uint32_t renderHeight,
         bool showViewportGrid,
         bool forceRenderOpacity,
+        const ImVec4& backgroundColor,
         std::vector<uint8_t>& displayPixels) {
         const std::size_t pixelCount =
             static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
@@ -2494,7 +2496,8 @@ namespace {
             bounds,
             renderWidth,
             renderHeight,
-            showViewportGrid);
+            showViewportGrid,
+            backgroundColor);
 
         for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
             const std::size_t baseIndex = pixelIndex * 4u;
@@ -2979,6 +2982,7 @@ int main(int argc, char** argv) {
         double walkCursorY = 0.0;
         bool forceRenderOpacity = false;
         bool showViewportGrid = false;
+        ImVec4 viewportBackgroundColor = kBlenderViewportBackground;
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
         int densityGridSize = 64;
@@ -4545,6 +4549,7 @@ int main(int argc, char** argv) {
                     displayedRenderHeight,
                     showViewportGrid,
                     forceRenderOpacity,
+                    viewportBackgroundColor,
                     pixels);
             } else {
                 pixels = renderPixels;
@@ -5690,6 +5695,9 @@ int main(int argc, char** argv) {
                     updateDisplayTexture();
                 }
                 if (ImGui::Checkbox("Show grid", &showViewportGrid)) {
+                    updateDisplayTexture();
+                }
+                if (ImGui::ColorEdit3("Background color", &viewportBackgroundColor.x)) {
                     updateDisplayTexture();
                 }
             }
