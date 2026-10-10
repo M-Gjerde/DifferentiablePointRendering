@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 5
+    adjoint_passes: int = 4
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -68,7 +68,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0025
+    learning_rate_scale: float = 0.0015
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.0025
     learning_rate_beta: float = 0.0005
@@ -76,11 +76,11 @@ class OptimizationConfig:
     # Optimizer: learning-rate schedules
     # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
-    use_global_lr_decay: bool = False
+    use_global_lr_decay: bool = True
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 3.0
+    position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 1.0
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
@@ -109,7 +109,7 @@ class OptimizationConfig:
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
-    min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
+    min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -132,11 +132,11 @@ class OptimizationConfig:
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
     densification_max_mean_slab_members: float = 2.0
-    densification_verbose: bool = True
+    densification_verbose: bool = False
 
 
-    densification_grad_abs_min: float = 1.0e-3
-    densification_grad_abs_min_final: float = 1.0e-3
+    densification_grad_abs_min: float = 0.8e-3
+    densification_grad_abs_min_final: float = 0.8e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
@@ -146,9 +146,6 @@ class OptimizationConfig:
     densification_radiance_bias_strength: float = 0.8
     densification_radiance_bias_min_weight: float = 0.25
     densification_radiance_bias_max_weight: float = 1.5
-
-
-
 
     rebuild_bvh_interval: int = densification_interval
     # Mesh extraction and evaluation
@@ -163,7 +160,7 @@ class OptimizationConfig:
     mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
-    geometry_samples: int = 500_000
+    geometry_samples: int = 2_000_000
     geometry_seed: int = 0
 
     # Output and monitoring
