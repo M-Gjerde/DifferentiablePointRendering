@@ -363,6 +363,9 @@ namespace Pale {
     constexpr uint32_t kMaxLocalSurfelHits = 8;
     constexpr uint32_t kMaxPointHitBatch = 8;
     constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
+    // Camera visibility gathers a complete slab even when the batch cap is smaller.
+    constexpr uint32_t kMaxPointLayerCandidates =
+        kMaxPointHitBatch > kMaxLocalSurfelHits ? kMaxPointHitBatch : kMaxLocalSurfelHits;
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
@@ -376,13 +379,19 @@ namespace Pale {
     struct alignas(16) Ray {
         float3 origin{0.0f}; // 16
         float3 direction{0.0f}; // 32
-        float3 normal{0.0f};
+        // Surface normals belong to hit/surface records; rays do not consume
+        // them. Keeping only the line and its bound avoids a fourth 16-byte block.
         // Continuation along this fixed ray starts here. Moving the origin can
         // round back in front of a surfel and count the same plane twice.
         float minimumT{0.0f};
     };
 
+    CHECK_16(Ray);
+    static_assert(sizeof(Ray) == 48);
+    static_assert(offsetof(Ray, minimumT) == 32);
+    static_assert(std::is_standard_layout_v<Ray>);
     static_assert(std::is_trivially_copyable_v<Ray>);
+    static_assert(sycl::is_device_copyable<Ray>::value);
 
     struct alignas(16) RayState {
         Ray ray{};
@@ -397,6 +406,8 @@ namespace Pale {
         uint32_t pathId;
     };
 
+    CHECK_16(RayState);
+    static_assert(sizeof(RayState) == 96);
     static_assert(std::is_trivially_copyable_v<RayState>);
 
 
@@ -418,6 +429,15 @@ namespace Pale {
         float alphaEff[kMaxLocalSurfelHits];
         float weight[kMaxLocalSurfelHits];
         float directLightEpsilon[kMaxLocalSurfelHits] = {RayEpsilon};
+    };
+
+    struct AdjointPrimarySlabCacheEntry {
+        PointCloudLocalLayer layer;
+        // Deterministic point-light irradiance at each member's own hit point.
+        // Lazily populated by the first reflecting sample, cleared by spp0.
+        float3 incidentIrradiance[kMaxLocalSurfelHits];
+        uint32_t lightingValid = 0u;
+        uint32_t reflectionContributionsEmitted = 0u;
     };
 
     struct SurfelEvent {
@@ -626,6 +646,7 @@ namespace Pale {
     };
 
     struct MeasurementGradientEvent {
+        uint32_t sampleMultiplicity = 1u;
         PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
         float layerWeights[kMaxLocalSurfelHits];
         float directLightEps[kMaxLocalSurfelHits];
@@ -657,6 +678,7 @@ namespace Pale {
     };
 
     struct MeasurementGradientEventXY {
+        uint32_t sampleMultiplicity = 1u;
         PointCloudSurfaceRecord xSurface[kMaxLocalSurfelHits];
         float layerWeights[kMaxLocalSurfelHits];
         float directLightEps[kMaxLocalSurfelHits];
@@ -712,6 +734,7 @@ namespace Pale {
 
     struct SurfelGradientRecord {
         uint32_t primitiveIndex = UINT32_MAX;
+        uint32_t sampleMultiplicity = 1u;
 
         float gradBeta = FLT_MAX;
         float gradEta = FLT_MAX;
@@ -856,12 +879,7 @@ namespace Pale {
         uint32_t adjointSamplesPerPixel = 6;
         // Reuse only the deterministic initial camera slab across adjoint SPP.
         bool adjointPrimarySlabCache = true;
-        // Experimental adjoint-only importance sampling. PDFs are detached;
-        // zero-probability branches lose derivative support at opacity endpoints.
-        bool adjointOpacitySampling = false;
-        // Fraction of uniform reflection/null sampling in the opacity proposal.
-        // 0 preserves pure opacity sampling; 1 gives qReflect=qNull=0.5.
-        float adjointOpacityUniformMix = 0.0f;
+        bool adjointPrimarySampleCoalescing = true;
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
@@ -926,7 +944,7 @@ namespace Pale {
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
         uint32_t rendererDebugMaxSplatEventsPerRay = kMaxSplatEventsPerRay;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
-        uint32_t rendererDebugPointHitBatchSize = 6;
+        uint32_t rendererDebugPointHitBatchSize = 8;
         bool rendererDebugPointHitBatchLookahead = true;
         bool rendererDebugShareLocalLayerDirectLighting = false;
     };
@@ -1055,7 +1073,7 @@ namespace Pale {
 
         PendingAdjointStageX *pendingStageX = nullptr;
         uint32_t maxPendingAdjointStateCount = 0;
-        PointCloudLocalLayer *adjointPrimarySlabCache = nullptr;
+        AdjointPrimarySlabCacheEntry *adjointPrimarySlabCache = nullptr;
         uint32_t adjointPrimarySlabCacheCapacity = 0u;
 
         MeasurementGradientEvent *measurementEvents;

@@ -207,6 +207,7 @@ class PythonRenderer
         float learningRateOpacity = 0.0f;
         float learningRateBeta = 0.0f;
         float cameraBatchScale = 1.0f;
+        float opacityPriorWeight = 0.0f;
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float epsilon = 1.0e-8f;
@@ -311,20 +312,14 @@ public:
                 get_i(settingsDict, "adjoint_passes", m_settings.adjointSamplesPerPixel);
             m_settings.adjointPrimarySlabCache =
                 get_b(settingsDict, "adjoint_primary_slab_cache", m_settings.adjointPrimarySlabCache);
+            m_settings.adjointPrimarySampleCoalescing =
+                get_b(settingsDict, "adjoint_primary_sample_coalescing", m_settings.adjointPrimarySampleCoalescing);
             m_settings.random.seed = get_i(settingsDict, "seed", m_settings.random.seed);
             m_settings.renderDebugGradientImages =
                 get_b(settingsDict, "debug_images", m_settings.renderDebugGradientImages);
             m_settings.surfelIndexForDebugImages = get_b(settingsDict, "debug_all_surfels", false)
                 ? Pale::kDebugGradientAllSurfels
                 : get_i(settingsDict, "debug_surfel_index", m_settings.surfelIndexForDebugImages);
-            m_settings.adjointOpacitySampling =
-                get_b(settingsDict, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
-            m_settings.adjointOpacityUniformMix =
-                get_f(settingsDict, "adjoint_opacity_uniform_mix", m_settings.adjointOpacityUniformMix);
-            if (!std::isfinite(m_settings.adjointOpacityUniformMix) ||
-                m_settings.adjointOpacityUniformMix < 0.0f || m_settings.adjointOpacityUniformMix > 1.0f) {
-                throw std::invalid_argument("adjoint_opacity_uniform_mix must be finite and in [0, 1]");
-            }
             m_settings.enableAdjointDirectLight =
                 get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
             m_settings.numAdjointPathShadowRays =
@@ -553,17 +548,14 @@ public:
     {
         for (auto item : options) {
             const auto key = py::cast<std::string>(item.first);
-            if (key != "adjoint_opacity_sampling" && key != "adjoint_opacity_uniform_mix" &&
-                key != "adjoint_passes" && key != "max_splat_events_per_ray")
+            if (key != "adjoint_passes" && key != "max_splat_events_per_ray")
                 throw std::invalid_argument("Unsupported traversal/sampling option: " + key);
         }
-        const bool opacity = get_b(options, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
-        const float mix = get_f(options, "adjoint_opacity_uniform_mix", m_settings.adjointOpacityUniformMix);
         const int spp = get_i(options, "adjoint_passes", m_settings.adjointSamplesPerPixel);
         const int events = get_i(options, "max_splat_events_per_ray", m_settings.rendererDebugMaxSplatEventsPerRay);
-        if (!std::isfinite(mix) || mix < 0.0f || mix > 1.0f || spp < 1 ||
+        if (spp < 1 ||
             events < 1 || events > static_cast<int>(Pale::kMaxSplatEventsPerRay))
-            throw std::invalid_argument("Require uniform_mix in [0,1], positive SPP and event limit within compiled capacity");
+            throw std::invalid_argument("Require positive SPP and event limit within compiled capacity");
         // Existing passes must finish before host settings change. Scratch uses
         // compiled capacities; the primary slab cache is refreshed at SPP zero.
         {
@@ -571,8 +563,6 @@ public:
             deviceSelector->getQueue().wait_and_throw();
         }
         auto& settings = pathTracer->getSettings();
-        settings.adjointOpacitySampling = m_settings.adjointOpacitySampling = opacity;
-        settings.adjointOpacityUniformMix = m_settings.adjointOpacityUniformMix = mix;
         settings.adjointSamplesPerPixel = m_settings.adjointSamplesPerPixel = spp;
         settings.rendererDebugMaxSplatEventsPerRay = m_settings.rendererDebugMaxSplatEventsPerRay = events;
     }
@@ -746,7 +736,7 @@ public:
         result["adjoint_scratch_allocated"] = pathTracer->hasAdjointScratch();
         result["primary_slab_cache_bytes"] =
             static_cast<size_t>(pathTracer->adjointPrimarySlabCacheCapacity()) *
-            sizeof(Pale::PointCloudLocalLayer);
+            sizeof(Pale::AdjointPrimarySlabCacheEntry);
         result["gradient_bytes"] = std::move(gradientBytes);
         result["sensor_adjoint_bytes"] = sensorBytes;
         size_t debugBytes = 0u;
@@ -1085,6 +1075,7 @@ public:
     py::dict render_rgb_training_step(const py::list& cameraNamesList,
                                       const py::dict& optionsDictionary = py::dict())
     {
+        float opacityPriorRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
         ensureDebugImages();
@@ -1121,7 +1112,7 @@ public:
             // Adam may execute even if a later allocation, refit or readback throws.
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
-            launchDeviceTrainingStepKernel(
+            opacityPriorRaw = launchDeviceTrainingStepKernel(
                 syclQueue, gradients, nullptr, nullptr, nullptr, options);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
@@ -1148,6 +1139,8 @@ public:
         result["l2_loss_values"] = std::move(l2LossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
+        result["opacity_prior_loss_raw"] = opacityPriorRaw;
+        result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
         if (returnGradientStats)
         {
             result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -1217,6 +1210,7 @@ public:
 
     py::dict apply_device_training_step(const py::dict& optionsDictionary = py::dict())
     {
+        float opacityPriorRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
         const bool includeDepthDistortion =
@@ -1246,7 +1240,7 @@ public:
             // Adam may execute even if a later allocation, refit or readback throws.
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
-            launchDeviceTrainingStepKernel(
+            opacityPriorRaw = launchDeviceTrainingStepKernel(
                 syclQueue,
                 gradients,
                 depthGradients,
@@ -1260,6 +1254,8 @@ public:
         py::dict result;
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
+        result["opacity_prior_loss_raw"] = opacityPriorRaw;
+        result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
         return result;
     }
 
@@ -1268,6 +1264,7 @@ public:
     py::dict render_training_step(const py::list& cameraNamesList,
                                   const py::dict& optionsDictionary = py::dict())
     {
+        float opacityPriorRaw = 0.0f;
         auto queue = deviceSelector->getQueue();
         const auto options = parseDeviceTrainingStepOptions(optionsDictionary);
         const auto rgbOptions = parseRgbLossOptions(optionsDictionary);
@@ -1300,7 +1297,7 @@ public:
             // Adam may execute even if a later allocation, refit or readback throws.
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
-            launchDeviceTrainingStepKernel(queue, gradients,
+            opacityPriorRaw = launchDeviceTrainingStepKernel(queue, gradients,
                 regularizers.depth && regularizers.depthWeight != 0.0f ? &depthDistortionGradients : nullptr,
                 regularizers.normal && regularizers.normalWeight != 0.0f ? &normalConsistencyGradients : nullptr,
                 regularizers.intra && regularizers.intraWeight != 0.0f ? &intraSlabDepthGradients : nullptr, options);
@@ -1326,6 +1323,8 @@ public:
             result["regularizer_loss_state"] = makeSurfaceRegularizerLossValues(batch.sensors, regularizers, logging);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
+        result["opacity_prior_loss_raw"] = opacityPriorRaw;
+        result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
         // No finite cotangent is discarded based on its magnitude.
         result["cotangent_culling_discarded_mass"] = 0.0f;
         if (returnGradientStats) result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -4904,6 +4903,9 @@ private:
             get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
         options.cameraBatchScale =
             get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
+        options.opacityPriorWeight = get_f(optionsDictionary, "opacity_prior_weight", 0.0f);
+        if (!std::isfinite(options.opacityPriorWeight) || options.opacityPriorWeight < 0.0f)
+            throw std::invalid_argument("opacity_prior_weight must be finite and non-negative");
         options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
         options.beta2 = get_f(optionsDictionary, "adam_beta2", options.beta2);
         options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
@@ -5220,7 +5222,9 @@ private:
         queue.wait_and_throw();
     }
 
-    void launchDeviceTrainingStepKernel(sycl::queue queue,
+    // Returns the raw pre-update opacity prior loss. The disabled path does no
+    // reduction/readback and leaves the existing optimizer gradients unchanged.
+    float launchDeviceTrainingStepKernel(sycl::queue queue,
                                         const Pale::PointGradients& pointGradients,
                                         const Pale::PointGradients* depthGradients,
                                         const Pale::PointGradients* normalGradients,
@@ -5250,6 +5254,40 @@ private:
         validateOptionalGradientSource(depthGradients, "depthDistortionGradients");
         validateOptionalGradientSource(normalGradients, "normalConsistencyGradients");
         validateOptionalGradientSource(intraSlabGradients, "intraSlabDepthGradients");
+
+        float opacityPriorRaw = 0.0f;
+        float opacityPriorGradientScale = 0.0f;
+        if (options.opacityPriorWeight > 0.0f)
+        {
+            float squaredResidualSum = 0.0f;
+            std::uint32_t trainableCount = 0u;
+            {
+                sycl::buffer<float, 1> lossBuffer(&squaredResidualSum, sycl::range<1>(1));
+                sycl::buffer<std::uint32_t, 1> countBuffer(&trainableCount, sycl::range<1>(1));
+                queue.submit([&](sycl::handler& cgh)
+                {
+                    auto lossSum = sycl::reduction(lossBuffer, cgh, sycl::plus<float>());
+                    auto countSum = sycl::reduction(countBuffer, cgh, sycl::plus<std::uint32_t>());
+                    cgh.parallel_for<class OpacityPriorReductionKernelTag>(
+                        sycl::range<1>(sceneGpu.pointCount), lossSum, countSum,
+                        [points = sceneGpu.points](sycl::id<1> id, auto& loss, auto& count)
+                        {
+                            const auto& point = points[id[0]];
+                            if (!point.isEmissive())
+                            {
+                                const float residual = point.opacity - 1.0f;
+                                loss += residual * residual;
+                                count += 1u;
+                            }
+                        });
+                }).wait_and_throw();
+            }
+            if (trainableCount > 0u)
+            {
+                opacityPriorRaw = squaredResidualSum / static_cast<float>(trainableCount);
+                opacityPriorGradientScale = 2.0f * options.opacityPriorWeight / static_cast<float>(trainableCount);
+            }
+        }
 
         // A scale-parameterization change invalidates the existing scale moments.
         const bool scaleParameterizationChanged =
@@ -5323,6 +5361,7 @@ private:
                 lrScale = options.learningRateScale,
                 lrAlbedo = options.learningRateAlbedo,
                 lrOpacity = options.learningRateOpacity,
+                opacityPriorGradientScale,
                 lrBeta = options.learningRateBeta,
                 cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
             {
@@ -5484,6 +5523,12 @@ private:
                     normalGradOpacity,
                     intraSlabGradOpacity,
                     gradOpacity[primitiveIndex]);
+                // Add once, after image-gradient scaling. Do not contaminate
+                // the photometric gradients used by densification.
+                const float optimizerOpacityGradient = cleanGradient(
+                    opacityPriorGradientScale > 0.0f
+                        ? opacityGradient * cameraBatchScale + opacityPriorGradientScale * (point.opacity - 1.0f)
+                        : opacityGradient * cameraBatchScale);
                 const float betaGradient = sumFloatGradient(
                     depthGradBeta,
                     normalGradBeta,
@@ -5525,7 +5570,7 @@ private:
                     const bool hasScaleGradient = lrScale != 0.0f && (optimizerScaleGradientX != 0.0f || optimizerScaleGradientY != 0.0f);
                     const bool hasAlbedoGradient = lrAlbedo != 0.0f && hasVectorGradient(albedoGradient);
                     const bool hasOpacityGradient = lrOpacity != 0.0f && hasGradientComponent(
-                        opacityGradient * cameraBatchScale);
+                        optimizerOpacityGradient);
                     const bool hasBetaGradient = lrBeta != 0.0f &&
                         hasGradientComponent(betaGradient * cameraBatchScale);
                     if (!(hasPositionGradient || hasRotationGradient || hasScaleGradient || hasAlbedoGradient ||
@@ -5673,7 +5718,7 @@ private:
                 point.albedo.z() = clampValue(cleanParameter(point.albedo.z(), 0.0f) - albedoUpdateZ, 0.0f, 1.0f);
 
                 const float opacityUpdate = adamUpdate(
-                    cleanGradient(opacityGradient * cameraBatchScale),
+                    optimizerOpacityGradient,
                     opacityM[primitiveIndex],
                     opacityV[primitiveIndex],
                     lrOpacity);
@@ -5690,6 +5735,7 @@ private:
         {
             updateEvent.wait_and_throw();
         }
+        return opacityPriorRaw;
     }
 
     void freePointBvhRefitPlan(sycl::queue queue)

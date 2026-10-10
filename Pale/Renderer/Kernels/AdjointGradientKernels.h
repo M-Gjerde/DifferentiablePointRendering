@@ -507,7 +507,6 @@ namespace Pale {
         Ray ray{};
         ray.origin = startPositionWorld + rayDirection * RayEpsilon;
         ray.direction = rayDirection;
-        ray.normal = startNormalWorld;
         const float3 dxy = startPositionWorld - endPositionWorld;
         float tracedTransmittance = 1.0f;
         for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {

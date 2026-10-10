@@ -447,28 +447,11 @@ colors** explicitly sets it to the current peak. Hold this scale, geometry,
 camera, and seed fixed when comparing SPP. The ordinary screenshot button saves
 the signed map, including derivatives on pixels with zero rendered opacity.
 
-**Opacity-based scattering** is an experimental adjoint-only sampling mode:
-`qNull = product(1 - effectiveAlpha)` across the slab and
-`qReflect = 1 - qNull`. Effective alpha includes each member's radial profile.
-Selected branches use the matching inverse probability; sampling PDFs are
-held constant in the VJP. Fixed probabilities remain the default. In the
-interior, changing these probabilities changes variance, not expected derivative
-scale. Near zero or one, inverse probabilities can give high variance. At the
-endpoints, the unsampled branch loses derivative support: fully transparent
-slabs cannot provide reflection derivatives, and fully opaque slabs cannot
-provide camera-transmission derivatives. A transparent *member* of a partially
-opaque slab can still receive gradients. No probability floor is silently added.
+Adjoint scattering uses the configured fixed `qNull` and `qReflect` probabilities,
+shown below the SPP slider. Selected branches retain their inverse-probability
+weights. Positive probabilities for both branches preserve derivative support
+at opacity zero and one.
 
-The **Uniform sampling mixture** slider explicitly mixes opacity sampling with
-uniform reflection/null sampling: `qReflect = λ/2 + (1−λ) × slabOpacity`.
-`λ=0.2` gives probabilities in `[0.1,0.9]`; `λ=0.5` gives `[0.25,0.75]`.
-Any positive mixture preserves both branches' derivative support, including at
-opacity zero and one. PDFs remain detached and their inverse weights are used.
-This is a sampling proposal, not a radiance approximation or a biased gradient.
-At `λ=1`, the sampler reproduces fixed 0.5/0.5 sampling, including its seed mapping.
-
-Python diagnostics expose the same options as `debug_images=True`,
-`debug_all_surfels=True` (or `debug_surfel_index=N`), and
-`adjoint_opacity_sampling=True`, `adjoint_opacity_uniform_mix=0.2`. These settings
-do not change forward sampling. The mixture defaults to zero; fixed sampling
-remains the production default until explicitly enabled.
+Python diagnostics expose `debug_images=True`, `debug_all_surfels=True`
+(or `debug_surfel_index=N`), `adjoint_passes`, `adjoint_q_null`, and
+`adjoint_q_reflect`. These settings do not change forward sampling.

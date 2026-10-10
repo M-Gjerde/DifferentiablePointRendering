@@ -112,7 +112,7 @@ namespace Pale {
             cameraRayCount <= m_intermediates.adjointPrimarySlabCacheCapacity) {
             return;
         }
-        auto *cache = sycl::malloc_device<PointCloudLocalLayer>(cameraRayCount, m_queue);
+        auto *cache = sycl::malloc_device<AdjointPrimarySlabCacheEntry>(cameraRayCount, m_queue);
         if (!cache) throw std::runtime_error("Unable to allocate the adjoint primary slab cache");
         try {
             m_queue.wait_and_throw();

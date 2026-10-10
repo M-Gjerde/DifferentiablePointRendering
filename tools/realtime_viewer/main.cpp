@@ -3046,8 +3046,6 @@ int main(int argc, char** argv) {
         bool viewerAdjointDirectLight = true;
         int viewerAdjointSamplesPerPixel = 1;
         int viewerAdjointBounces = 1;
-        bool viewerAdjointOpacitySampling = false;
-        float viewerAdjointOpacityUniformMix = 0.0f;
         bool viewerAdjointAllSurfels = true;
         int viewerAdjointSurfelIndex = 1;
         int viewerAdjointProperty = 8;
@@ -4723,8 +4721,6 @@ int main(int argc, char** argv) {
             adjointSettings.adjointSamplesPerPixel =
                 static_cast<uint32_t>(viewerAdjointSamplesPerPixel);
             adjointSettings.enableAdjointDirectLight = viewerAdjointDirectLight;
-            adjointSettings.adjointOpacitySampling = viewerAdjointOpacitySampling;
-            adjointSettings.adjointOpacityUniformMix = viewerAdjointOpacityUniformMix;
             adjointSettings.renderDebugGradientImages = derivativeView;
             adjointSettings.surfelIndexForDebugImages = viewerAdjointAllSurfels
                 ? Pale::kDebugGradientAllSurfels
@@ -5338,19 +5334,8 @@ int main(int argc, char** argv) {
                 }
                 changed |= ImGui::SliderInt("Derivative adjoint SPP", &viewerAdjointSamplesPerPixel,
                     1, 256, "%d", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-                changed |= ImGui::Checkbox("Opacity-based scattering", &viewerAdjointOpacitySampling);
-                if (viewerAdjointOpacitySampling) {
-                    changed |= ImGui::SliderFloat("Uniform sampling mixture", &viewerAdjointOpacityUniformMix,
-                        0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-                    ImGui::TextWrapped("0 uses slab opacity; 1 uses fixed 0.5/0.5 probabilities. "
-                        "Positive mixture weights keep both branches reachable.");
-                    if (viewerAdjointOpacityUniformMix == 0.0f) {
-                        ImGui::TextWrapped("Pure opacity sampling loses derivative support at opacity endpoints.");
-                    }
-                } else {
-                    ImGui::Text("Fixed: qNull %.3f, qReflect %.3f",
-                        settings.sampling.qNull, settings.sampling.qReflect);
-                }
+                ImGui::Text("Fixed: qNull %.3f, qReflect %.3f",
+                    settings.sampling.qNull, settings.sampling.qReflect);
                 changed |= ImGui::InputInt("Adjoint seed", &viewerAdjointSeed);
                 viewerAdjointSeed = std::max(0, viewerAdjointSeed);
                 if (ImGui::Button("Resample adjoint")) {

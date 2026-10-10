@@ -676,7 +676,7 @@ namespace Pale {
         const float3 dirWorld = transformDirection(cam.invView, dirCamera);
         const float3 originWorld = transformPoint(cam.invView, float3{0, 0, 0});
 
-        return Ray{originWorld, dirWorld, cam.forward};
+        return Ray{originWorld, dirWorld};
     }
 
     inline sycl::int3 worldToCell(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {

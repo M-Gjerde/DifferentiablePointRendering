@@ -40,7 +40,6 @@ void launchRayGenEmitterKernel(RenderPackage &pkg, uint32_t forwardPass) {
         RayState ray{};
         ray.ray.origin = ls.positionW + ls.normalW * 1e-5f;
         ray.ray.direction = ls.direction;
-        ray.ray.normal = ls.normalW;
         ray.pathThroughput = initialThroughput;
         ray.bounceIndex = 0;
         ray.traversalIndex = 0;
@@ -99,7 +98,6 @@ void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
                 RayState nextRayState{};
                 nextRayState.ray.origin = worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f);
                 nextRayState.ray.direction = sampledOutgoingDirectionW;
-                nextRayState.ray.normal = worldHit.geometricNormalW;
                 nextRayState.bounceIndex = currentRayState.bounceIndex + 1; // real bounce
                 nextRayState.traversalIndex = currentRayState.traversalIndex + 1;
                 nextRayState.pixelIndex = currentRayState.pixelIndex;
@@ -171,7 +169,6 @@ void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
                 RayState nextRayState{};
                 nextRayState.ray.origin = worldHit.hitPositionW + orientedNormal * RayEpsilon;
                 nextRayState.ray.direction = sampledOutgoingDirectionW;
-                nextRayState.ray.normal = orientedNormal;
                 nextRayState.bounceIndex = currentRayState.bounceIndex + 1;
                 nextRayState.traversalIndex = currentRayState.traversalIndex + 1;
                 nextRayState.pixelIndex = currentRayState.pixelIndex;
@@ -1529,7 +1526,6 @@ void generateNextRays(RenderPackage& pkg, uint32_t activeRayCount) {
                 // Spawn next ray
                 nextState.ray.origin = worldHit.hitPositionW + (worldHit.geometricNormalW * 1e-6f);
                 nextState.ray.direction = sampledOutgoingDirectionW;
-                nextState.ray.normal = worldHit.geometricNormalW;
                 nextState.bounceIndex = rayState.bounceIndex + 1;
                 nextState.pixelIndex = rayState.pixelIndex;
                 nextState.pathThroughput = rayState.pathThroughput * throughputMultiplier;

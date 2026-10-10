@@ -151,7 +151,6 @@ namespace Pale {
             if (rng128.nextFloat() < qNull) {
                 if (includeSelectionPdf) { endpoint.discreteSelectionPdf *= qNull; }
                 advanceRayPast(auxiliaryRay, auxiliaryHit.t);
-                auxiliaryRay.normal = computePointCloudOrientedNormal(auxiliarySurfel, auxiliaryRay.direction);
                 continue;
             }
             if (includeSelectionPdf) { endpoint.discreteSelectionPdf *= qReflect; }
@@ -315,7 +314,8 @@ namespace Pale {
         uint32_t pointCount,
         float *alphaEffOut,
         float3 *incidentIrradianceOut,
-        float3 *directRadianceOut) {
+        float3 *directRadianceOut,
+        AdjointPrimarySlabCacheEntry *primaryCache = nullptr) {
         const uint32_t slabCount = eventRecord.surfelSlabCount;
         float3 orientedNormals[kMaxLocalSurfelHits];
 
@@ -342,7 +342,11 @@ namespace Pale {
             alphaEffOut[i] = sycl::clamp(surfel.opacity * surface.alphaGeom, 0.0f, 1.0f);
         }
 
-        if (settings.rendererDebugShareLocalLayerDirectLighting) {
+        if (primaryCache != nullptr && primaryCache->lightingValid != 0u) {
+            for (uint32_t i = 0u; i < slabCount; ++i) {
+                incidentIrradianceOut[i] = primaryCache->incidentIrradiance[i];
+            }
+        } else if (settings.rendererDebugShareLocalLayerDirectLighting) {
             const SharedSlabDirectLightVertex sharedVertex =
                     reconstructSharedSlabDirectLightVertex(eventRecord, scene, pointCount);
             if (sharedVertex.valid != 0u) {
@@ -401,6 +405,12 @@ namespace Pale {
             }
         }
 
+        if (primaryCache != nullptr && primaryCache->lightingValid == 0u) {
+            for (uint32_t i = 0u; i < slabCount; ++i) {
+                primaryCache->incidentIrradiance[i] = incidentIrradianceOut[i];
+            }
+            primaryCache->lightingValid = 1u;
+        }
         for (uint32_t i = 0u; i < slabCount; ++i) {
             const uint32_t primitiveIndex = eventRecord.xSurface[i].primitiveIndex;
             if (primitiveIndex == kInvalidIndex || primitiveIndex >= pointCount) {
@@ -476,6 +486,7 @@ namespace Pale {
             // target slab has an opacity-bearing surfel on its shadow segment.
             // -------------------------------------------------------------
             MeasurementGradientEventXY event{};
+            event.sampleMultiplicity = slabEvent.sampleMultiplicity;
             event.surfelSlabCount = slabEvent.surfelSlabCount;
             for (uint32_t i = 0u; i < slabEvent.surfelSlabCount; ++i) {
                 event.xSurface[i] = slabEvent.xSurface[i];
@@ -570,7 +581,6 @@ namespace Pale {
                 Ray shadowRay{};
                 shadowRay.origin = startState.position + lightDirection * RayEpsilon;
                 shadowRay.direction = lightDirection;
-                shadowRay.normal = startState.orientedNormal;
                 float shadowTransmission = 1.0f;
                 if (!traceAdjointShadowTransmission(scene, shadowRay, startState.position, lightDistance,
                                                     currentSurface.primitiveIndex, lightPrimitiveIndex,
@@ -621,7 +631,6 @@ namespace Pale {
         Ray auxiliaryRay{};
         auxiliaryRay.origin = startState.position + startState.orientedNormal * RayEpsilon;
         auxiliaryRay.direction = auxiliaryDirectionWorld;
-        auxiliaryRay.normal = startState.orientedNormal;
         AdjointAuxiliaryEndpoint endpoint = sampleAdjointAuxiliaryPointEndpoint(
             scene, auxiliaryRay, auxiliaryRecursiveRng, qNull, qReflect, currentSurface.primitiveIndex,
             currentRayState.pathId, currentRayState.pixelIndex, true);
@@ -742,55 +751,57 @@ namespace Pale {
         }
         const bool writePhotometric = validGradientRecord && gradientRecord.accumulatePhotometric != 0u;
         const uint32_t primitiveCameraIndex = primitiveIndex * cameraSlotCount + cameraSlot;
-        if (writePhotometric) {
-            atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
-            atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
-            atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
-            atomicAddFloat(
-                gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].x(),
-                gradientRecord.gradPositionX);
-            atomicAddFloat(
-                gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].y(),
-                gradientRecord.gradPositionY);
-            atomicAddFloat(
-                gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].z(),
-                gradientRecord.gradPositionZ);
-            atomicAddUint32(
-                gradients.gradPositionRecordCountPerPrimitivePerCamera[primitiveCameraIndex],
-                1u);
-        }
-        // An invalid auxiliary statistic must never suppress an optimizer update.
-        if (gradientRecord.hasCloneSignal != 0u && validCloneSignal) {
-            atomicAddFloat(gradients.cloneSignal[primitiveIndex].x(), gradientRecord.cloneSignalX);
-            atomicAddFloat(gradients.cloneSignal[primitiveIndex].y(), gradientRecord.cloneSignalY);
-            atomicAddFloat(gradients.cloneSignal[primitiveIndex].z(), gradientRecord.cloneSignalZ);
-            atomicAddFloat(
-                gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].x(),
-                gradientRecord.cloneSignalX);
-            atomicAddFloat(
-                gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].y(),
-                gradientRecord.cloneSignalY);
-            atomicAddFloat(
-                gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].z(),
-                gradientRecord.cloneSignalZ);
-            atomicAddUint32(
-                gradients.cloneSignalRecordCountPerPrimitivePerCamera[primitiveCameraIndex],
-                1u);
-            atomicAddFloat(
-                gradients.cloneRadianceRmsSumPerPrimitivePerCamera[primitiveCameraIndex],
-                gradientRecord.cloneRadianceRms);
-        }
-        if (writePhotometric) {
-            atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
-            atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
-            atomicAddFloat(gradients.gradRotation[primitiveIndex].x(), gradientRecord.gradRotationX);
-            atomicAddFloat(gradients.gradRotation[primitiveIndex].y(), gradientRecord.gradRotationY);
-            atomicAddFloat(gradients.gradRotation[primitiveIndex].z(), gradientRecord.gradRotationZ);
-            atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
-            atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
-            atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
-            atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
-            atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
+        for (uint32_t sample = 0u; sample < gradientRecord.sampleMultiplicity; ++sample) {
+            if (writePhotometric) {
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].x(), gradientRecord.gradPositionX);
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].y(), gradientRecord.gradPositionY);
+                atomicAddFloat(gradients.gradPosition[primitiveIndex].z(), gradientRecord.gradPositionZ);
+                atomicAddFloat(
+                    gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].x(),
+                    gradientRecord.gradPositionX);
+                atomicAddFloat(
+                    gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].y(),
+                    gradientRecord.gradPositionY);
+                atomicAddFloat(
+                    gradients.gradPositionPerPrimitivePerCamera[primitiveCameraIndex].z(),
+                    gradientRecord.gradPositionZ);
+                atomicAddUint32(
+                    gradients.gradPositionRecordCountPerPrimitivePerCamera[primitiveCameraIndex],
+                    1u);
+            }
+            // An invalid auxiliary statistic must never suppress an optimizer update.
+            if (gradientRecord.hasCloneSignal != 0u && validCloneSignal) {
+                atomicAddFloat(gradients.cloneSignal[primitiveIndex].x(), gradientRecord.cloneSignalX);
+                atomicAddFloat(gradients.cloneSignal[primitiveIndex].y(), gradientRecord.cloneSignalY);
+                atomicAddFloat(gradients.cloneSignal[primitiveIndex].z(), gradientRecord.cloneSignalZ);
+                atomicAddFloat(
+                    gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].x(),
+                    gradientRecord.cloneSignalX);
+                atomicAddFloat(
+                    gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].y(),
+                    gradientRecord.cloneSignalY);
+                atomicAddFloat(
+                    gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].z(),
+                    gradientRecord.cloneSignalZ);
+                atomicAddUint32(
+                    gradients.cloneSignalRecordCountPerPrimitivePerCamera[primitiveCameraIndex],
+                    1u);
+                atomicAddFloat(
+                    gradients.cloneRadianceRmsSumPerPrimitivePerCamera[primitiveCameraIndex],
+                    gradientRecord.cloneRadianceRms);
+            }
+            if (writePhotometric) {
+                atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
+                atomicAddFloat(gradients.gradScale[primitiveIndex].y(), gradientRecord.gradScaleV);
+                atomicAddFloat(gradients.gradRotation[primitiveIndex].x(), gradientRecord.gradRotationX);
+                atomicAddFloat(gradients.gradRotation[primitiveIndex].y(), gradientRecord.gradRotationY);
+                atomicAddFloat(gradients.gradRotation[primitiveIndex].z(), gradientRecord.gradRotationZ);
+                atomicAddFloat(gradients.gradOpacity[primitiveIndex], gradientRecord.gradEta);
+                atomicAddFloat(gradients.gradBeta[primitiveIndex], gradientRecord.gradBeta);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
+                atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
+            }
         }
         return true;
     }
@@ -855,6 +866,7 @@ namespace Pale {
         const float albedoScale =
                 surfelX.alpha_r * M_1_PIf * eventRecord.layerWeights[parameterIndex] * invSpp;
         SurfelGradientRecord gradientRecord = makeZeroSurfelGradientRecord(primitiveIndex);
+        gradientRecord.sampleMultiplicity = eventRecord.sampleMultiplicity;
         gradientRecord.gradPositionX = gradPosition.x();
         gradientRecord.gradPositionY = gradPosition.y();
         gradientRecord.gradPositionZ = gradPosition.z();
@@ -885,7 +897,8 @@ namespace Pale {
         uint32_t pointCount,
         uint32_t *gradientRecordCounter,
         SurfelGradientRecord *gradientRecords,
-        uint32_t gradientRecordCapacity) {
+        uint32_t gradientRecordCapacity,
+        AdjointPrimarySlabCacheEntry *primaryCache) {
         const uint32_t slabCount = eventRecord.surfelSlabCount;
         if (slabCount == 0u ||
             slabCount > kMaxLocalSurfelHits ||
@@ -912,7 +925,8 @@ namespace Pale {
             pointCount,
             alphaEff,
             slabIncidentIrradiance,
-            slabDirectRadiance);
+            slabDirectRadiance,
+            primaryCache);
 
         const SlabWeightNormalization slabWeightNormalization =
             computeSlabWeightNormalization(alphaEff, slabCount);
@@ -998,11 +1012,15 @@ namespace Pale {
         waitForAdjointKernelTiming(kernelEvent1);
     }
 
-    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex) {
+    template<bool ProfileCounters>
+    class AdjointIntersectKernel;
+
+    template<bool ProfileCounters>
+    static void launchAdjointIntersectKernelImpl(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex) {
         auto &queue = pkg.queue;
         auto &settings = pkg.settings;
         auto &intermediates = pkg.intermediates;
-        auto &scene = pkg.scene;
+        const auto sceneCapture = pkg.scene;
         auto &sensor = pkg.sensors[cameraIndex];
         SurfelGradientRecord *gradientRecords = intermediates.gradientRecords;
         uint32_t *gradientRecordCounter = intermediates.countGradientRecords;
@@ -1014,8 +1032,10 @@ namespace Pale {
             pkg.singlePointCloudInstance && rendererDebugPointHitBatchSize(settings) > 1u &&
             intermediates.adjointPrimarySlabCache != nullptr &&
             activeRayCount <= intermediates.adjointPrimarySlabCacheCapacity;
-        sycl::event kernelEvent2 = queue.parallel_for<class launchAdjointIntersectKernelTag>(
+        sycl::event kernelEvent2 = queue.parallel_for<AdjointIntersectKernel<ProfileCounters>>(
             sycl::range<1>(activeRayCount), [=](sycl::id<1> globalId) {
+                GPUSceneBuffers scene = sceneCapture;
+                if constexpr (!ProfileCounters) scene.profileCounters = nullptr;
                 const uint32_t rayIndex = static_cast<uint32_t>(globalId[0]);
                 RayState currentRayState = intermediates.primaryRays[rayIndex];
                 const uint32_t pathId = currentRayState.pathId;
@@ -1056,9 +1076,9 @@ namespace Pale {
                         currentRayState.bounceIndex == 0u && currentRayState.traversalIndex == 0u;
                     if (initialCachedSlab && spp > 0u) {
                         // Primary rays have identical zero jitter for all SPP.
-                        // Only geometry is cached; the sampling RNG, throughput
-                        // and later qNull ray origins remain sample-specific.
-                        prebuiltPointLayer = intermediates.adjointPrimarySlabCache[rayIndex];
+                        // Geometry and deterministic lighting can be reused;
+                        // the sampling RNG and throughput remain sample-specific.
+                        prebuiltPointLayer = intermediates.adjointPrimarySlabCache[rayIndex].layer;
                         hasPrebuiltPointLayer = true;
                         if (prebuiltPointLayer.hitCount > 0u) {
                             const LocalSurfelLayerHit &anchorHit = prebuiltPointLayer.hits[0];
@@ -1103,7 +1123,9 @@ namespace Pale {
                         if (initialCachedSlab) {
                             // spp0 overwrites misses too, preventing stale hits
                             // after camera, geometry or topology changes.
-                            intermediates.adjointPrimarySlabCache[rayIndex] = prebuiltPointLayer;
+                            intermediates.adjointPrimarySlabCache[rayIndex].layer = prebuiltPointLayer;
+                            intermediates.adjointPrimarySlabCache[rayIndex].lightingValid = 0u;
+                            intermediates.adjointPrimarySlabCache[rayIndex].reflectionContributionsEmitted = 0u;
                         }
                     } else {
                         intersectScene(currentRayState.ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
@@ -1129,35 +1151,13 @@ namespace Pale {
                                     localLayerDepthEpsilon,
                                     maxLocalSurfelHits,
                                     localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
-                        // One decision per slab, including all member opacities
-                        // and their radial profiles. Carry inverse selection PDFs
+                        // One fixed-probability decision per slab. Carry inverse selection PDFs
                         // in pathThroughput (also used by camera-occluder VJPs).
                         // These PDFs are sampling choices, not differentiated terms.
-                        float qNull = settings.sampling.qNull;
-                        float qReflect = settings.sampling.qReflect;
+                        const float qNull = settings.sampling.qNull;
+                        const float qReflect = settings.sampling.qReflect;
                         const float selectionDraw = rng.nextFloat();
-                        bool takeNull = selectionDraw < qNull;
-                        if (settings.adjointOpacitySampling) {
-                            const float opacity = sycl::clamp(localLayer.opacity, 0.0f, 1.0f);
-                            const float transmission = sycl::clamp(localLayer.transmission, 0.0f, 1.0f);
-                            const float uniformMix = sycl::clamp(settings.adjointOpacityUniformMix, 0.0f, 1.0f);
-                            // Sample the smaller probability directly: computing
-                            // tiny opacity as 1 - transmission would round it to
-                            // zero. Likewise preserve tiny transmission near A=1.
-                            if (uniformMix == 1.0f) {
-                                qReflect = qNull = 0.5f;
-                                takeNull = selectionDraw < qNull;
-                            } else if (opacity <= transmission) {
-                                qReflect = opacity + uniformMix * (0.5f - opacity);
-                                qNull = 1.0f - opacity;
-                                if (uniformMix > 0.0f) qNull = 1.0f - qReflect;
-                                takeNull = selectionDraw >= qReflect;
-                            } else {
-                                qNull = transmission + uniformMix * (0.5f - transmission);
-                                qReflect = 1.0f - qNull;
-                                takeNull = selectionDraw < qNull;
-                            }
-                        }
+                        const bool takeNull = selectionDraw < qNull;
                         float3 sampledOutgoingDirectionWorld{0.0f};
                         float3 throughputMultiplier{0.0f};
                         float3 slabNormal{0.0f};
@@ -1177,6 +1177,31 @@ namespace Pale {
                             continue;
                         }
                         if (scene.profileCounters) ++profileReflects;
+                        // With one bounce, identical primary reflection samples
+                        // have identical deterministic point-light derivatives.
+                        // Evaluate those derivatives once, then replay every
+                        // original accumulation, including densification counts.
+                        // Null samples still trace their original paths. Predict
+                        // their first choice using the very same per-SPP seed;
+                        // no probability, sample, or inverse-PDF weight changes.
+                        if (initialCachedSlab && settings.adjointPrimarySampleCoalescing &&
+                            !settings.renderDebugGradientImages &&
+                            !settings.rendererDebugShareLocalLayerDirectLighting &&
+                            gradientRecords != nullptr && gradientRecordCounter != nullptr &&
+                            gradientRecordCapacity > 0u) {
+                            auto &cache = intermediates.adjointPrimarySlabCache[rayIndex];
+                            if (cache.reflectionContributionsEmitted != 0u) break;
+                            cache.reflectionContributionsEmitted = 1u;
+                            for (uint32_t futureSpp = spp + 1u;
+                                 futureSpp < settings.adjointSamplesPerPixel; ++futureSpp) {
+                                rng::Xorshift128 futureRng(rng::makeSeed(
+                                    renderSeed, currentRayState.pathId, futureSpp,
+                                    rng::kStreamTraversal, currentRayState.traversalIndex));
+                                const float futureDraw = futureRng.nextFloat();
+                                const bool reflects = futureDraw >= qNull;
+                                if (reflects) ++measurementEvent.sampleMultiplicity;
+                            }
+                        }
                         if (settings.rendererDebugShareLocalLayerDirectLighting &&
                             localLayer.hitCount > 0u) {
                             const PointCloudLocalLayerConsensus slabConsensus =
@@ -1305,7 +1330,8 @@ namespace Pale {
                                     pointCount,
                                     gradientRecordCounter,
                                     gradientRecords,
-                                    gradientRecordCapacity);
+                                    gradientRecordCapacity,
+                                    initialCachedSlab ? &intermediates.adjointPrimarySlabCache[rayIndex] : nullptr);
                             } else {
                                 appendEventAtomic(
                                     intermediates.countMeasurementEvents,
@@ -1318,7 +1344,6 @@ namespace Pale {
                         }
                         nextRayState.ray.origin = worldHit.hitPositionW + slabNormal * RayEpsilon;
                         nextRayState.ray.direction = sampledOutgoingDirectionWorld;
-                        nextRayState.ray.normal = slabNormal;
                         nextRayState.bounceIndex = currentRayState.bounceIndex + 1u;
                         nextRayState.pixelIndex = currentRayState.pixelIndex;
                         nextRayState.pathId = currentRayState.pathId;
@@ -1351,9 +1376,32 @@ namespace Pale {
         waitForAdjointKernelTiming(kernelEvent2);
     }
 
+    void launchAdjointIntersectKernel(RenderPackage &pkg, uint32_t spp, uint32_t activeRayCount, uint32_t cameraIndex) {
+        if (pkg.scene.profileCounters != nullptr)
+            launchAdjointIntersectKernelImpl<true>(pkg, spp, activeRayCount, cameraIndex);
+        else
+            launchAdjointIntersectKernelImpl<false>(pkg, spp, activeRayCount, cameraIndex);
+    }
+
+    // Camera visibility does not differentiate segment endpoints. Retain all
+    // occluders, but omit the three unused endpoint derivative vectors.
+    struct CameraOccluderDerivative {
+        float3 gradPosition{0.0f};
+        float gradScaleU = 0.0f;
+        float gradScaleV = 0.0f;
+        float gradEta = 0.0f;
+        float gradBeta = 0.0f;
+        float3 gradRotation{0.0f};
+        float prefixTransmittance = 1.0f;
+        float oneMinusAlpha = 1.0f;
+        uint32_t primitiveIndex = kInvalidIndex;
+    };
+    static_assert(sizeof(CameraOccluderDerivative) == 64u);
+
+    template<bool ProfileCounters>
     static void measurementGradientEvent(RenderPackage &pkg, uint32_t cameraIndex, uint32_t measurementEventCount) {
         auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
+        const auto sceneCapture = pkg.scene;
         auto &settings = pkg.settings;
         auto &sensor = pkg.sensors[cameraIndex];
         DebugImages debugImage{};
@@ -1370,6 +1418,8 @@ namespace Pale {
         // target and camera-visibility gradients. Each member keeps its own
         // shadow connection when lighting is not shared.
         sycl::event kernelEvent = queue.parallel_for(sycl::range<1>(measurementEventCount), [=](sycl::id<1> globalId) {
+            GPUSceneBuffers scene = sceneCapture;
+            if constexpr (!ProfileCounters) scene.profileCounters = nullptr;
             const uint32_t eventIndex = static_cast<uint32_t>(globalId[0]);
             const MeasurementGradientEvent eventRecord = measurementEvents[eventIndex];
             const uint32_t slabCount = eventRecord.surfelSlabCount;
@@ -1430,7 +1480,7 @@ namespace Pale {
             if (!foundTargetSurface || targetDistance <= 1.0e-8f) return;
             const float scalarWeightOcclusion = dot(pathWeight, targetSlabRadiance);
             if (scalarWeightOcclusion == 0.0f) return;
-            OccluderDerivative occluderDerivatives[kMaxCameraOccluderRecords];
+            CameraOccluderDerivative occluderDerivatives[kMaxCameraOccluderRecords];
             uint32_t storedOccluderCount = 0u;
             const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
             const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
@@ -1457,7 +1507,7 @@ namespace Pale {
                     const float remainingTargetDistance = dot(targetAnchorPosition - ray.origin, ray.direction);
                     if (remainingTargetDistance <= RayEpsilon) break;
 
-                    LocalSurfelLayerHit pointHits[kMaxPointHitBatch];
+                    LocalSurfelLayerHit pointHits[kMaxPointLayerCandidates];
                     uint32_t pointInstanceIndex = kInvalidIndex;
                     const uint32_t hitCount = collectScenePointHitsDirect(
                         ray,
@@ -1562,8 +1612,8 @@ namespace Pale {
                         }
                     }
                     if (storedOccluderCount < kMaxCameraOccluderRecords) {
-                        OccluderDerivative &record = occluderDerivatives[storedOccluderCount++];
-                        record = OccluderDerivative{};
+                        CameraOccluderDerivative &record = occluderDerivatives[storedOccluderCount++];
+                        record = CameraOccluderDerivative{};
                         record.primitiveIndex = localHit.primitiveIndex;
                         record.gradPosition = gradPosition;
                         record.gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
@@ -1584,7 +1634,7 @@ namespace Pale {
             float suffixTransmittance = 1.0f;
             for (uint32_t reverseIndex = storedOccluderCount; reverseIndex > 0u; --reverseIndex) {
                 const uint32_t occluderIndex = reverseIndex - 1u;
-                const OccluderDerivative &occluder = occluderDerivatives[occluderIndex];
+                const CameraOccluderDerivative &occluder = occluderDerivatives[occluderIndex];
                 const float scale = -occluder.prefixTransmittance * suffixTransmittance * scalarWeightOcclusion *
                                     invSpp;
                 SurfelGradientRecord gradientRecord = makeZeroSurfelGradientRecord(occluder.primitiveIndex);
@@ -1725,7 +1775,6 @@ namespace Pale {
 
                 Ray ray{};
                 ray.direction = rayDirection;
-                ray.normal = sharedVertex.anchorNormalW;
                 ray.origin = sharedVertex.positionW + sharedVertex.anchorNormalW *
                              sharedVertex.directLightEpsilon;
 
@@ -2092,11 +2141,11 @@ namespace Pale {
         waitForAdjointKernelTiming(kernelEvent);
     }
 
-    template<bool Batched>
+    template<bool Batched, bool ProfileCounters>
     static void measurementGradientEventXYIndividual(RenderPackage &pkg, uint32_t eventCount, uint32_t cameraIndex) {
         constexpr uint32_t occluderCapacity = Batched ? kMaxSplatEventsPerRay : kMaxShadowOccluderRecords;
         auto &queue = pkg.queue;
-        auto &scene = pkg.scene;
+        const auto sceneCapture = pkg.scene;
         auto &settings = pkg.settings;
         auto &sensor = pkg.sensors[cameraIndex];
         DebugImages debugImage{};
@@ -2120,6 +2169,8 @@ namespace Pale {
         // for every possible member leaves most lanes inactive. Each member
         // still reconstructs and differentiates its own light connection.
         sycl::event kernelEvent4 = queue.parallel_for(sycl::range<1>(eventCount), [=](sycl::id<1> globalId) {
+            GPUSceneBuffers scene = sceneCapture;
+            if constexpr (!ProfileCounters) scene.profileCounters = nullptr;
             const uint32_t eventIndex = static_cast<uint32_t>(globalId[0]);
             const MeasurementGradientEventXY eventRecord = measurementEvents[eventIndex];
             const uint32_t slabCount = eventRecord.surfelSlabCount;
@@ -2151,7 +2202,6 @@ namespace Pale {
                 const float eps = eventRecord.directLightEps[localIndex];
                 Ray ray{};
                 ray.direction = rayDirection;
-                ray.normal = xState.orientedNormal;
                 // Match traceShadowTransmissionToPoint exactly: the primal
                 // launches from the surface-normal offset, not along the
                 // point-light direction.
@@ -2391,6 +2441,7 @@ namespace Pale {
                     gradientRecord.gradRotationZ = rotation.z();
                     gradientRecord.gradEta = visibilityScale * occluder.gradEta;
                     gradientRecord.gradBeta = visibilityScale * occluder.gradBeta;
+                    gradientRecord.sampleMultiplicity = eventRecord.sampleMultiplicity;
                     setRelativeDensificationSignal(gradientRecord, sensor, xSurface.pathId);
                     if (accumulateSurfelGradientRecordDirect(
                             gradients, gradientRecord, cameraSlot, cameraSlotCount)) {
@@ -2425,6 +2476,7 @@ namespace Pale {
                 targetRecord.gradRotationX = gradRotation.x();
                 targetRecord.gradRotationY = gradRotation.y();
                 targetRecord.gradRotationZ = gradRotation.z();
+                targetRecord.sampleMultiplicity = eventRecord.sampleMultiplicity;
                 setRelativeDensificationSignal(targetRecord, sensor, xSurface.pathId);
                 if (accumulateSurfelGradientRecordDirect(
                         gradients, targetRecord, cameraSlot, cameraSlotCount)) {
@@ -2443,8 +2495,13 @@ namespace Pale {
             if (batched) measurementGradientEventXYShared<true>(pkg, eventCount, cameraIndex);
             else measurementGradientEventXYShared<false>(pkg, eventCount, cameraIndex);
         } else {
-            if (batched) measurementGradientEventXYIndividual<true>(pkg, eventCount, cameraIndex);
-            else measurementGradientEventXYIndividual<false>(pkg, eventCount, cameraIndex);
+            if (pkg.scene.profileCounters != nullptr) {
+                if (batched) measurementGradientEventXYIndividual<true, true>(pkg, eventCount, cameraIndex);
+                else measurementGradientEventXYIndividual<false, true>(pkg, eventCount, cameraIndex);
+            } else {
+                if (batched) measurementGradientEventXYIndividual<true, false>(pkg, eventCount, cameraIndex);
+                else measurementGradientEventXYIndividual<false, false>(pkg, eventCount, cameraIndex);
+            }
         }
     }
 
@@ -3400,7 +3457,10 @@ namespace Pale {
         // derivatives and accumulate through the same atomics as XY events.
         if (safeMeasurementEventCount > 0u) {
             ScopedTimer timer("measurementGradientEvent", spdlog::level::debug);
-            measurementGradientEvent(pkg, cameraIndex, safeMeasurementEventCount);
+            if (pkg.scene.profileCounters != nullptr)
+                measurementGradientEvent<true>(pkg, cameraIndex, safeMeasurementEventCount);
+            else
+                measurementGradientEvent<false>(pkg, cameraIndex, safeMeasurementEventCount);
         }
         // -------------------------------------------------------------------------
         // Surface -> point-light events accumulate directly for both lighting

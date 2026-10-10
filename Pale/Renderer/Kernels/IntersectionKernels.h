@@ -2070,7 +2070,6 @@ namespace Pale {
         Ray shadowRay{};
         shadowRay.origin = shadingPositionW + shadingNormalW * eps;
         shadowRay.direction = lightDirection;
-        shadowRay.normal = shadingNormalW;
 
         float shadowTransmission = 1.0f;
         const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
@@ -2294,7 +2293,6 @@ namespace Pale {
         Ray shadowRay{};
         shadowRay.origin = shadingPositionW + shadingNormalW * RayEpsilon2;
         shadowRay.direction = lightDirection;
-        shadowRay.normal = shadingNormalW;
 
         float shadowTransmission = 1.0f;
 
@@ -2947,7 +2945,6 @@ namespace Pale {
             settings.pointGeometryRayOffsetMultiplier * settings.pointGeometrySupportRadius);
         Ray shadowRay{};
         shadowRay.origin = surfacePositionW + surfaceNormalW * rayOffset;
-        shadowRay.normal = surfaceNormalW;
 
         float transmission = 1.0f;
         for (uint32_t traversalIndex = 0u; traversalIndex < kMaxSplatEventsPerRay; ++traversalIndex) {
