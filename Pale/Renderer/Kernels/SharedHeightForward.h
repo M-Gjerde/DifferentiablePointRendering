@@ -186,7 +186,8 @@ inline void launchSharedHeightForward(RenderPackage &pkg, uint32_t cameraIndex) 
         }
         sensor.medianDepthBuffer[pixel] = medianDepth;
         sensor.medianWorldPositionBuffer[pixel] = medianPosition;
-        sensor.visibleNormalBuffer[pixel] = medianNormal;
+        sensor.visibleNormalBuffer[pixel] = float4{medianNormal.x(), medianNormal.y(), medianNormal.z(),
+            medianNormal.w() > 0.0f ? weightSum : 0.0f};
         sensor.normalFromDepthBuffer[pixel] = float4{0.0f};
         sensor.depthDistortionBuffer[pixel] = 0.0f;
         if (sensor.depthDistortionAdjointBuffer) sensor.depthDistortionAdjointBuffer[pixel] = 0.0f;

@@ -741,6 +741,15 @@ namespace {
         appendCounterTextRow(stream, "Opacity terminations", counters.forwardGatherOpacityTerminations, pixelCount);
         appendCounterTextRow(stream, "Max-splat terminations", counters.forwardGatherMaxSplatTerminations, pixelCount);
 
+        stream << "\nAdjoint intersection work\nCounter\tTotal\tPer ray\n";
+        const double adjointRayCount = static_cast<double>(counters.adjointIntersectionRays);
+        appendCounterTextRow(stream, "Rays", counters.adjointIntersectionRays, adjointRayCount);
+        appendCounterTextRow(stream, "Local layers", counters.adjointLocalLayers, adjointRayCount);
+        appendCounterTextRow(stream, "Null events", counters.adjointNullEvents, adjointRayCount);
+        appendCounterTextRow(stream, "Reflection events", counters.adjointReflectEvents, adjointRayCount);
+        appendCounterTextRow(stream, "No-hit terminations", counters.adjointNoHitTerminations, adjointRayCount);
+        appendCounterTextRow(stream, "Max-splat terminations", counters.adjointMaxSplatTerminations, adjointRayCount);
+
         stream << "\nForward gather rates\n";
         stream << "Metric\tValue\n";
         stream << "Candidates per point-hit query\t"
@@ -979,6 +988,24 @@ namespace {
                         : 0.0;
                 ImGui::Text("Candidates/query: %.3f", candidatesPerQuery);
                 ImGui::Text("Hits/layer: %.3f", hitsPerLayer);
+            }
+
+            if (ImGui::CollapsingHeader("Adjoint intersection work", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const double rayCount = static_cast<double>(counters.adjointIntersectionRays);
+                if (ImGui::BeginTable("AdjointIntersectionCounterTable", 3,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                    ImGui::TableSetupColumn("Counter");
+                    ImGui::TableSetupColumn("Total");
+                    ImGui::TableSetupColumn("Per ray");
+                    ImGui::TableHeadersRow();
+                    drawCounterRow("Rays", counters.adjointIntersectionRays, rayCount);
+                    drawCounterRow("Local layers", counters.adjointLocalLayers, rayCount);
+                    drawCounterRow("Null events", counters.adjointNullEvents, rayCount);
+                    drawCounterRow("Reflection events", counters.adjointReflectEvents, rayCount);
+                    drawCounterRow("No-hit terminations", counters.adjointNoHitTerminations, rayCount);
+                    drawCounterRow("Max-splat terminations", counters.adjointMaxSplatTerminations, rayCount);
+                    ImGui::EndTable();
+                }
             }
 
             if (ImGui::CollapsingHeader("Raw timer events")) {
@@ -3020,6 +3047,7 @@ int main(int argc, char** argv) {
         int viewerAdjointSamplesPerPixel = 1;
         int viewerAdjointBounces = 1;
         bool viewerAdjointOpacitySampling = false;
+        float viewerAdjointOpacityUniformMix = 0.0f;
         bool viewerAdjointAllSurfels = true;
         int viewerAdjointSurfelIndex = 1;
         int viewerAdjointProperty = 8;
@@ -4696,6 +4724,7 @@ int main(int argc, char** argv) {
                 static_cast<uint32_t>(viewerAdjointSamplesPerPixel);
             adjointSettings.enableAdjointDirectLight = viewerAdjointDirectLight;
             adjointSettings.adjointOpacitySampling = viewerAdjointOpacitySampling;
+            adjointSettings.adjointOpacityUniformMix = viewerAdjointOpacityUniformMix;
             adjointSettings.renderDebugGradientImages = derivativeView;
             adjointSettings.surfelIndexForDebugImages = viewerAdjointAllSurfels
                 ? Pale::kDebugGradientAllSurfels
@@ -5311,8 +5340,13 @@ int main(int argc, char** argv) {
                     1, 256, "%d", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
                 changed |= ImGui::Checkbox("Opacity-based scattering", &viewerAdjointOpacitySampling);
                 if (viewerAdjointOpacitySampling) {
-                    ImGui::TextWrapped("Experimental: qNull = slab transmission, qReflect = 1 - qNull. "
-                        "Zero-opacity slabs lose reflection derivatives; opaque slabs lose transmission derivatives.");
+                    changed |= ImGui::SliderFloat("Uniform sampling mixture", &viewerAdjointOpacityUniformMix,
+                        0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::TextWrapped("0 uses slab opacity; 1 uses fixed 0.5/0.5 probabilities. "
+                        "Positive mixture weights keep both branches reachable.");
+                    if (viewerAdjointOpacityUniformMix == 0.0f) {
+                        ImGui::TextWrapped("Pure opacity sampling loses derivative support at opacity endpoints.");
+                    }
                 } else {
                     ImGui::Text("Fixed: qNull %.3f, qReflect %.3f",
                         settings.sampling.qNull, settings.sampling.qReflect);

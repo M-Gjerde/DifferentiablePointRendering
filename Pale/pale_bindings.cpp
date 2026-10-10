@@ -319,6 +319,12 @@ public:
                 : get_i(settingsDict, "debug_surfel_index", m_settings.surfelIndexForDebugImages);
             m_settings.adjointOpacitySampling =
                 get_b(settingsDict, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
+            m_settings.adjointOpacityUniformMix =
+                get_f(settingsDict, "adjoint_opacity_uniform_mix", m_settings.adjointOpacityUniformMix);
+            if (!std::isfinite(m_settings.adjointOpacityUniformMix) ||
+                m_settings.adjointOpacityUniformMix < 0.0f || m_settings.adjointOpacityUniformMix > 1.0f) {
+                throw std::invalid_argument("adjoint_opacity_uniform_mix must be finite and in [0, 1]");
+            }
             m_settings.enableAdjointDirectLight =
                 get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
             m_settings.numAdjointPathShadowRays =
@@ -543,6 +549,34 @@ public:
         }
     }
 
+    void set_traversal_sampling_options(const py::dict& options)
+    {
+        for (auto item : options) {
+            const auto key = py::cast<std::string>(item.first);
+            if (key != "adjoint_opacity_sampling" && key != "adjoint_opacity_uniform_mix" &&
+                key != "adjoint_passes" && key != "max_splat_events_per_ray")
+                throw std::invalid_argument("Unsupported traversal/sampling option: " + key);
+        }
+        const bool opacity = get_b(options, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
+        const float mix = get_f(options, "adjoint_opacity_uniform_mix", m_settings.adjointOpacityUniformMix);
+        const int spp = get_i(options, "adjoint_passes", m_settings.adjointSamplesPerPixel);
+        const int events = get_i(options, "max_splat_events_per_ray", m_settings.rendererDebugMaxSplatEventsPerRay);
+        if (!std::isfinite(mix) || mix < 0.0f || mix > 1.0f || spp < 1 ||
+            events < 1 || events > static_cast<int>(Pale::kMaxSplatEventsPerRay))
+            throw std::invalid_argument("Require uniform_mix in [0,1], positive SPP and event limit within compiled capacity");
+        // Existing passes must finish before host settings change. Scratch uses
+        // compiled capacities; the primary slab cache is refreshed at SPP zero.
+        {
+            py::gil_scoped_release release;
+            deviceSelector->getQueue().wait_and_throw();
+        }
+        auto& settings = pathTracer->getSettings();
+        settings.adjointOpacitySampling = m_settings.adjointOpacitySampling = opacity;
+        settings.adjointOpacityUniformMix = m_settings.adjointOpacityUniformMix = mix;
+        settings.adjointSamplesPerPixel = m_settings.adjointSamplesPerPixel = spp;
+        settings.rendererDebugMaxSplatEventsPerRay = m_settings.rendererDebugMaxSplatEventsPerRay = events;
+    }
+
     void set_profiling_enabled(bool timers = true, bool counters = false)
     {
         auto queue = deviceSelector->getQueue();
@@ -638,6 +672,12 @@ public:
         counters["forwardGatherNoHitTerminations"] = values.forwardGatherNoHitTerminations;
         counters["forwardGatherOpacityTerminations"] = values.forwardGatherOpacityTerminations;
         counters["forwardGatherMaxSplatTerminations"] = values.forwardGatherMaxSplatTerminations;
+        counters["adjointIntersectionRays"] = values.adjointIntersectionRays;
+        counters["adjointLocalLayers"] = values.adjointLocalLayers;
+        counters["adjointNullEvents"] = values.adjointNullEvents;
+        counters["adjointReflectEvents"] = values.adjointReflectEvents;
+        counters["adjointNoHitTerminations"] = values.adjointNoHitTerminations;
+        counters["adjointMaxSplatTerminations"] = values.adjointMaxSplatTerminations;
 
         py::list timers;
         for (const auto& record : records)
@@ -4057,11 +4097,21 @@ public:
 
     void rebuild_bvh()
     {
+        rebuildSceneAcceleration(false);
+    }
+
+    void rebuildSceneAcceleration(bool reloadGeometryFromAssets)
+    {
         syncPointParametersFromGpuIfDirty();
         freePointBvhRefitPlan(deviceSelector->getQueue());
         const std::size_t previousDeviceOptimizerPointCount = deviceTrainingState.pointCount;
         Pale::AssetAccessFromManager assetAccessor(*assetManager);
-        buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
+        if (reloadGeometryFromAssets) {
+            buildProducts = Pale::SceneBuild::build(scene, assetAccessor, Pale::SceneBuild::BuildOptions());
+        } else {
+            // A BVH-only rebuild must preserve the exact optimized tangent frame.
+            Pale::SceneBuild::rebuildBVHs(scene, assetAccessor, buildProducts, Pale::SceneBuild::BuildOptions());
+        }
         Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, deviceSelector->getQueue());
         sceneGpu.profileCounters = gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
         if (previousDeviceOptimizerPointCount != 0u &&
@@ -4262,7 +4312,7 @@ public:
         // -----------------------------------------------------------------
         // 4) Rebuild BVH and GPU buffers from updated asset (renderer is ground truth)
         // -----------------------------------------------------------------
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
     }
 
     void add_new_points(const py::dict& parameterDictionary)
@@ -4405,7 +4455,7 @@ public:
         }
         Pale::Log::PA_INFO("add_new_points: final point count in geometry = {} (added {} new points)",
                            pointGeometry.positions.size(), newPointCount);
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
     }
 
     std::vector<std::string> getCameraNames()
@@ -4461,7 +4511,7 @@ public:
 
         // Only needed if BVH / acceleration depends on opacity (often it doesn't).
         // If you can skip it, do so for performance.
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
@@ -4497,7 +4547,7 @@ public:
 
         // Only needed if BVH / acceleration depends on opacity (often it doesn't).
         // If you can skip it, do so for performance.
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
@@ -4530,7 +4580,7 @@ public:
         }
 
         pointGeometry.albedos[index][axis] = newIntensity;
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
     }
 
     static inline void orthonormalizeFrame(glm::vec3& tanU, glm::vec3& tanV)
@@ -4582,7 +4632,7 @@ public:
         default: throw std::runtime_error("set_point_rotation_degrees: invalid axisIndex");
         }
         pointGeometry.quat[index] = normalizeQuaternionOrIdentity(glm::angleAxis(glm::radians(angleDegrees), axis));
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
     }
 
     std::vector<Pale::SensorGPU> selectSensorsByName(const std::optional<std::string>& cameraName) const
@@ -4645,7 +4695,7 @@ public:
 
         // Only needed if BVH / acceleration depends on opacity (often it doesn't).
         // If you can skip it, do so for performance.
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
         //Pale::Log::PA_ERROR("Opacity: {}/{}", pointGeometry.opacities[index], buildProducts.points[index].opacity);
     }
 
@@ -4682,7 +4732,7 @@ public:
 
         // Only needed if BVH / acceleration depends on opacity (often it doesn't).
         // If you can skip it, do so for performance.
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
         //Pale::Log::PA_ERROR("Beta: {}/{}", pointGeometry.betas[index], buildProducts.points[index].beta);
     }
 
@@ -4731,7 +4781,7 @@ public:
             pointGeometry.betas[index] = beta;
             pointGeometry.scales[index] = newScale;
         }
-        rebuild_bvh();
+        rebuildSceneAcceleration(true);
     }
 
 private:
@@ -6009,7 +6059,7 @@ private:
                             sycl::memory_order::relaxed,
                             sycl::memory_scope::device,
                             sycl::access::address_space::global_space>(*normalConsistencySum);
-                        normalAtomic.fetch_add(1.0f - dotNormal);
+                        normalAtomic.fetch_add(1.0f - visibleW * dotNormal);
 
                         auto countAtomic = sycl::atomic_ref<
                             std::uint32_t,
@@ -6112,16 +6162,19 @@ private:
                         const float depthY = clean(depthNormal.y());
                         const float depthZ = clean(depthNormal.z());
 
+                        // Detached accumulated opacity: scale normal adjoints only.
+                        // No adjoint is emitted for visibleNormal.w().
+                        const float opacityWeightedScale = normalScale * visibleW;
                         visibleAdjoint = Pale::float4{
-                            -normalScale * depthX,
-                            -normalScale * depthY,
-                            -normalScale * depthZ,
+                            -opacityWeightedScale * depthX,
+                            -opacityWeightedScale * depthY,
+                            -opacityWeightedScale * depthZ,
                             0.0f
                         };
                         depthAdjoint = Pale::float4{
-                            -normalScale * visibleX,
-                            -normalScale * visibleY,
-                            -normalScale * visibleZ,
+                            -opacityWeightedScale * visibleX,
+                            -opacityWeightedScale * visibleY,
+                            -opacityWeightedScale * visibleZ,
                             0.0f
                         };
                     }
@@ -6421,6 +6474,10 @@ PYBIND11_MODULE(pale, m)
              py::arg("settings") = py::dict()
         ).def("supports_zero_gradient_surfel_skipping", [](const PythonRenderer &) -> bool { return true; })
         .def("supports_optional_log_scale", [](const PythonRenderer&) -> bool { return true; })
+        .def("set_traversal_sampling_options", &PythonRenderer::set_traversal_sampling_options,
+             py::arg("options"),
+             "Synchronize and set the event limit or adjoint proposal/SPP without rebuilding the scene. "
+             "The event limit also applies to forward rendering. Unsupported keys and out-of-capacity limits are rejected.")
         .def("set_profiling_enabled", &PythonRenderer::set_profiling_enabled,
              py::arg("timers") = true, py::arg("counters") = false,
              "Enable the viewer's process-wide wall timers and this renderer's software GPU counters. "

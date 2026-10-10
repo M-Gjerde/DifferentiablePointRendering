@@ -65,6 +65,13 @@ def extract_mesh_from_point_cloud(
         command.append("--export-lights" if config.mesh_export_lights else "--no-export-lights")
         command.append("--export-cameras" if config.mesh_export_cameras else "--no-export-cameras")
 
+    extraction_description = "Mesh extraction and textured GLB export" if export_gltf else "Mesh extraction"
+    print_status(
+        f"{log_prefix} {extraction_description} started. This can take a few minutes. "
+        f"Progress log: {extraction_log_path}",
+        flush=True,
+    )
+    extraction_start_time = time.perf_counter()
     with extraction_log_path.open("w", encoding="utf-8") as extraction_log:
         result = subprocess.run(
             command,
@@ -85,6 +92,12 @@ def extract_mesh_from_point_cloud(
     if not mesh_path.is_file():
         print_status(f"{log_prefix} Mesh extraction completed but did not create {mesh_path}")
         return None
+    print_status(
+        f"{log_prefix} {extraction_description} completed in "
+        f"{time.perf_counter() - extraction_start_time:.1f} s. "
+        f"Output: {mesh_output_dir / 'reconstruction.glb' if export_gltf else mesh_path}",
+        flush=True,
+    )
     return mesh_path
 
 
@@ -2477,6 +2490,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                           densification_position_base_threshold=
                               snapshot_densification_position_base_threshold)
 
+    if final_mesh_future is not None and not final_mesh_future.done():
+        print_status(
+            "[Final] Waiting for mesh extraction and textured GLB export to finish. "
+            "This can take a few minutes; progress log: "
+            f"{config.output_dir / 'mesh' / 'extraction.log'}",
+            flush=True,
+        )
     mesh_checkpoint_worker.wait()
 
     print_status(f"Final parameters written to PLY: {ply_path}")

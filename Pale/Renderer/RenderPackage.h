@@ -37,7 +37,7 @@ namespace Pale {
         float*  medianDepthBuffer;        // scalar visualization depth
         float*  meanDepthBuffer;        // scalar visualization depth
         float4* medianWorldPositionBuffer;        // xyz = world-space median point, w = valid
-        float4* visibleNormalBuffer;        // xyz = world-space median point, w = valid
+        float4* visibleNormalBuffer;        // xyz = world-space normal, w = accumulated opacity (0 if invalid)
         float4* normalFromDepthBuffer;       // xyz = normal, w = valid
 
         float * medianDepthAdjointBuffer;

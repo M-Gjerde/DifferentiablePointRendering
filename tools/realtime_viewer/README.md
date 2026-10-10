@@ -106,6 +106,12 @@ click **Render** first to capture camera or scene edits that have not yet render
 
 ### Slab distance modes
 
+**Renderer debug → Surfel traversal → Max splat events** defaults to **8**.
+The compiled per-ray capacity is also 8, so the slider and Python's
+`max_splat_events_per_ray` can reach that value. The separate local slab member
+limit remains 8. A larger event limit lets partially transparent rays visit more
+layers before traversal stops; the actual cost depends on opacity and overlap.
+
 Under **Surfel traversal → Slab distance**, select:
 
 - **Along surface normal**: use the anchor-normal distance
@@ -331,6 +337,17 @@ intersection, and coverage is applied once to the common surface hit.
 
 ## Profiling the training workload
 
+For headless timing of the viewer's normal RGB path, explicitly build
+`PaleSplatEventsBenchmark` in the viewer build directory. Its source and the
+alternating-build controller are in `python/test/benchmark_splat_events.cpp` and
+`python/test/benchmark_splat_events.py`. The controller keeps old and new binaries
+resident, warms all cameras, and alternates old-capacity/limit 8, new-capacity/limit
+8, and new-capacity/limit 12 in symmetric order. It tests shared and per-surfel
+lighting, excludes JIT, readback and diagnostics from timing, and collects traversal
+counts and RGB differences separately. Pass `--help` to the Python controller for
+its required scene, frozen PLY, executable and fresh output paths. Other GPU work
+can still affect these measurements; record that load when interpreting results.
+
 Python exposes the viewer's instrumentation through
 `Renderer.set_profiling_enabled(timers=True, counters=False)`,
 `reset_profiling_stats()`, and `get_profiling_stats()`. The result contains raw
@@ -442,6 +459,16 @@ slabs cannot provide reflection derivatives, and fully opaque slabs cannot
 provide camera-transmission derivatives. A transparent *member* of a partially
 opaque slab can still receive gradients. No probability floor is silently added.
 
+The **Uniform sampling mixture** slider explicitly mixes opacity sampling with
+uniform reflection/null sampling: `qReflect = λ/2 + (1−λ) × slabOpacity`.
+`λ=0.2` gives probabilities in `[0.1,0.9]`; `λ=0.5` gives `[0.25,0.75]`.
+Any positive mixture preserves both branches' derivative support, including at
+opacity zero and one. PDFs remain detached and their inverse weights are used.
+This is a sampling proposal, not a radiance approximation or a biased gradient.
+At `λ=1`, the sampler reproduces fixed 0.5/0.5 sampling, including its seed mapping.
+
 Python diagnostics expose the same options as `debug_images=True`,
 `debug_all_surfels=True` (or `debug_surfel_index=N`), and
-`adjoint_opacity_sampling=True`. These settings do not change forward sampling.
+`adjoint_opacity_sampling=True`, `adjoint_opacity_uniform_mix=0.2`. These settings
+do not change forward sampling. The mixture defaults to zero; fixed sampling
+remains the production default until explicitly enabled.

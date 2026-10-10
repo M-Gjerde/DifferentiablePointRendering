@@ -278,6 +278,13 @@ namespace Pale {
         uint64_t forwardGatherNoHitTerminations = 0u;
         uint64_t forwardGatherOpacityTerminations = 0u;
         uint64_t forwardGatherMaxSplatTerminations = 0u;
+
+        uint64_t adjointIntersectionRays = 0u;
+        uint64_t adjointLocalLayers = 0u;
+        uint64_t adjointNullEvents = 0u;
+        uint64_t adjointReflectEvents = 0u;
+        uint64_t adjointNoHitTerminations = 0u;
+        uint64_t adjointMaxSplatTerminations = 0u;
     };
 
     CHECK_16(RenderProfilingCounters);
@@ -370,6 +377,9 @@ namespace Pale {
         float3 origin{0.0f}; // 16
         float3 direction{0.0f}; // 32
         float3 normal{0.0f};
+        // Continuation along this fixed ray starts here. Moving the origin can
+        // round back in front of a surfel and count the same plane twice.
+        float minimumT{0.0f};
     };
 
     static_assert(std::is_trivially_copyable_v<Ray>);
@@ -849,6 +859,9 @@ namespace Pale {
         // Experimental adjoint-only importance sampling. PDFs are detached;
         // zero-probability branches lose derivative support at opacity endpoints.
         bool adjointOpacitySampling = false;
+        // Fraction of uniform reflection/null sampling in the opacity proposal.
+        // 0 preserves pure opacity sampling; 1 gives qReflect=qNull=0.5.
+        float adjointOpacityUniformMix = 0.0f;
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
@@ -911,7 +924,7 @@ namespace Pale {
         float rendererDebugLocalLayerDepthEpsilon = LocalLayerDepthEpsilon;
         LocalLayerDepthMode rendererDebugLocalLayerDepthMode = LocalLayerDepthMode::SymmetricRayDepth;
         float rendererDebugLocalLayerNormalCosineThreshold = LocalLayerNormalCosineThreshold;
-        uint32_t rendererDebugMaxSplatEventsPerRay = 8;
+        uint32_t rendererDebugMaxSplatEventsPerRay = kMaxSplatEventsPerRay;
         uint32_t rendererDebugMaxLocalSurfelHits = 8;
         uint32_t rendererDebugPointHitBatchSize = 6;
         bool rendererDebugPointHitBatchLookahead = true;

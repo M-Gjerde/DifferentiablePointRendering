@@ -184,10 +184,10 @@ namespace Pale {
         /* 1.  Origin outside slabs AND entry after exit  ➜  miss          */
         if (tmin > tmax) return false;
         /* 2.  Whole box lies behind the ray                                  */
-        if (tmax < 0.0f) return false;
+        if (tmax < ray.minimumT) return false;
         /* 3.  Already found a closer hit in the SAME SPACE                   */
         if (tmin > tMaxLimit) return false;
-        tEntry = max(tmin, 0.0f); // clamp if origin is inside
+        tEntry = max(tmin, ray.minimumT);
         return true;
     }
 
@@ -213,10 +213,10 @@ namespace Pale {
             return false;
         }
         /* 2.  Whole box lies behind the ray                                  */
-        if (tmax <= 0.0f) return false;
+        if (tmax <= ray.minimumT) return false;
         /* 3.  Already found a closer hit in the SAME SPACE                   */
         if (tmin > tMaxLimit) return false;
-        tEntry = max(tmin, RayEpsilon); // clamp if origin is inside
+        tEntry = max(tmin, max(RayEpsilon, ray.minimumT));
         return true;
     }
 
@@ -240,9 +240,9 @@ namespace Pale {
         if (tmin > tmax) {
             return false;
         }
-        if (tmax <= 0.0f) return false;
+        if (tmax <= ray.minimumT) return false;
         if (tmin > tMaxLimit) return false;
-        tEntry = max(tmin, RayEpsilon);
+        tEntry = max(tmin, max(RayEpsilon, ray.minimumT));
         return true;
     }
 
@@ -256,6 +256,7 @@ namespace Pale {
         /* 2.  Transform direction – w = 0  (no translation component)       */
         float4 hD = xf.worldToObject * float4{rayW.direction, 0.f};
         r.direction = normalize(float3{hD.x(), hD.y(), hD.z()}); // w is already 0
+        r.minimumT = rayW.minimumT * length(float3{hD.x(), hD.y(), hD.z()});
         return r;
     }
 
@@ -411,6 +412,13 @@ namespace Pale {
             return fallback;
         }
         return value * sycl::rsqrt(lengthSquared);
+    }
+
+    SYCL_EXTERNAL inline void advanceRayPast(Ray &ray, float furthestT, float epsilon = RayEpsilon) {
+        // Keep intersection arithmetic identical across batches. nextafter
+        // guarantees progress even when epsilon is smaller than one depth ULP.
+        ray.minimumT = sycl::fmax(furthestT + epsilon,
+            sycl::nextafter(furthestT, std::numeric_limits<float>::infinity()));
     }
 
     SYCL_EXTERNAL inline SurfelTraversalData makeSurfelTraversalData(

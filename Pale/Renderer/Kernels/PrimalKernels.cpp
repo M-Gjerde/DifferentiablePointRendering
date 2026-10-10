@@ -129,7 +129,7 @@ void launchIntersectKernel(RenderPackage &pkg, uint32_t activeRayCount) {
                 //   - does NOT increment bounceIndex
                 // -----------------------------------------------------------------
                 if (randomNumber < transmitProbability) {
-                    currentRayState.ray.origin = worldHit.hitPositionW + currentRayState.ray.direction * RayEpsilon;
+                    advanceRayPast(currentRayState.ray, worldHit.t);
                     currentRayState.traversalIndex += 1;
                     // No throughput attenuation here because this branch was sampled
                     // with exactly the physical transmission probability.
@@ -640,7 +640,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                     break;
                 }
 
-                renderingRay.origin += renderingRay.direction * (furthestConsumedT + RayEpsilon);
+                advanceRayPast(renderingRay, furthestConsumedT, RayEpsilon);
                 if (renderingTransmittance <= kAlphaEpsilon ||
                     (consumedAllFetchedHits && hitCount < pointHitBatchLookaheadCapacity)) {
                     if (profileEnabled && renderingTransmittance <= kAlphaEpsilon && !profileStoppedByOpacity) {
@@ -704,7 +704,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                         }
                     }
                     renderPointLocalLayer(localLayer, renderingRay);
-                    renderingRay.origin += renderingRay.direction * (localLayer.furthestT + RayEpsilon);
+                    advanceRayPast(renderingRay, localLayer.furthestT, RayEpsilon);
                     // Match batched traversal: later slabs cannot contribute
                     // after opacity termination, including through their shadow
                     // connections. Do not mark them as live for pruning.
@@ -792,8 +792,9 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
             sensor.medianDepthBuffer[pixelIndex] = 0.0f;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
         }
+        // Normal RGBA stores accumulated opacity in W (zero also marks invalid pixels).
         if (surfaceDepthValid) {
-            sensor.visibleNormalBuffer[pixelIndex] = float4{accumulatedWeightedNormal.x(), accumulatedWeightedNormal.y(), accumulatedWeightedNormal.z(), 1.0f};
+            sensor.visibleNormalBuffer[pixelIndex] = float4{accumulatedWeightedNormal.x(), accumulatedWeightedNormal.y(), accumulatedWeightedNormal.z(), accumulatedRegularizerWeight};
         } else {
             sensor.visibleNormalBuffer[pixelIndex] = float4{0.0f};
         }
@@ -951,7 +952,7 @@ void launchCameraGatherKernel2(RenderPackage &pkg, uint32_t cameraIndex, uint32_
                     foundPointSlab = true;
                 }
 
-                visiblePrimitiveRay.origin += visiblePrimitiveRay.direction * (localLayer.furthestT + RayEpsilon);
+                advanceRayPast(visiblePrimitiveRay, localLayer.furthestT, RayEpsilon);
             }
 
             if (!foundPointSlab) {
@@ -1131,7 +1132,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
 
                 if (furthestConsumedT <= 0.0f) { break; }
 
-                primaryRay.origin += primaryRay.direction * (furthestConsumedT + RayEpsilon);
+                advanceRayPast(primaryRay, furthestConsumedT, RayEpsilon);
                 if (hitCount < batchCapacity) { break; }
             }
         } else {
@@ -1152,7 +1153,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                     pointHit.hitPositionW = worldHit.hitPositionW;
                     pointHit.uv = phiInverse(worldHit.hitPositionW, scene.points[worldHit.primitiveIndex]);
                     accumulatePointHit(pointHit);
-                    primaryRay.origin = worldHit.hitPositionW + primaryRay.direction * RayEpsilon;
+                    advanceRayPast(primaryRay, worldHit.t);
                     continue;
                 }
                 // -------------------------------------------------------------
@@ -1210,7 +1211,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
         if (surfaceDepthValid) {
             sensor.medianDepthBuffer[pixelIndex] = medianDepth;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f};
-            sensor.visibleNormalBuffer[pixelIndex] = float4{medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), 1.0f};
+            sensor.visibleNormalBuffer[pixelIndex] = float4{medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), accumulatedMeanDepthWeight};
         } else {
             sensor.medianDepthBuffer[pixelIndex] = 0.0f;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{0.0f};
@@ -1418,7 +1419,7 @@ void launchPointSampledPathTracingCameraKernel(
                         medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f
                     };
                     sensor.visibleNormalBuffer[pixelIndex] = float4{
-                        medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), 1.0f
+                        medianNormalW.x(), medianNormalW.y(), medianNormalW.z(), accumulatedMeanDepthWeight
                     };
                 }
                 else {

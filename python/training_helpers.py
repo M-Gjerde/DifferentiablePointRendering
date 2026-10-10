@@ -906,15 +906,18 @@ def compute_normal_consistency_loss_and_adjoints(
     valid_count = max(int(mask.sum()), 1)
     scale = float(weight) / float(valid_count)
 
+    # W carries accumulated opacity. Treat it as a detached confidence factor:
+    # differentiate only the two normal vectors, not this multiplier.
+    opacity = vis_rgba[..., 3]
     dot_nd = np.sum(vis * dep, axis=-1)
     loss_map = np.zeros_like(dot_nd, dtype=np.float32)
-    loss_map[mask] = scale * (1.0 - dot_nd[mask])
+    loss_map[mask] = scale * (1.0 - opacity[mask] * dot_nd[mask])
     loss = float(loss_map.sum())
 
     dL_dvis = np.zeros_like(vis, dtype=np.float32)
     dL_ddep = np.zeros_like(dep, dtype=np.float32)
-    dL_dvis[mask] = -scale * dep[mask]
-    dL_ddep[mask] = -scale * vis[mask]
+    dL_dvis[mask] = -scale * opacity[mask, None] * dep[mask]
+    dL_ddep[mask] = -scale * opacity[mask, None] * vis[mask]
 
     return loss, dL_dvis, dL_ddep
 

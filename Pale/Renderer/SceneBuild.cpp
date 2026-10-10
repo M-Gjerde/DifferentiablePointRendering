@@ -217,7 +217,9 @@ namespace Pale {
     void SceneBuild::rebuildBVHs(const std::shared_ptr<Scene> &scene, IAssetAccess &assetAccess,
                                  BuildProducts &buildProducts,
                                  const BuildOptions &buildOptions) {
-        buildProducts.instances = {};
+        buildProducts.instances.clear();
+        buildProducts.transforms.clear();
+        buildProducts.materials.clear();
 
         collectInstances(scene,
                          assetAccess,
@@ -236,9 +238,11 @@ namespace Pale {
         buildProducts.pointQbvhNodes.clear();
         buildProducts.pointQbvhRanges.clear();
         buildProducts.pointPermutation.clear();
-        // Note: we do NOT touch vertices/triangles/points/instances/etc.
+        // Preserve the native point frames; a frame -> quaternion -> frame
+        // round trip is not an identity in float32.
         buildBottomLevelBVHs(buildProducts, buildOptions);
         buildTopLevelBVH(buildProducts, buildOptions);
+        collectLights(scene, assetAccess, buildProducts);
 
         buildProducts.diffuseSurfaceArea = computeDiffuseSurfaceAreaWorld(buildProducts);
     }

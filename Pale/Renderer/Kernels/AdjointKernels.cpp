@@ -117,13 +117,13 @@ namespace Pale {
             const InstanceRecord &hitInstance = scene.instances[shadowHit.instanceIndex];
             if (hitInstance.geometryType == GeometryType::Mesh) { return false; }
             if (shadowHit.primitiveIndex == skipPrimitiveA || shadowHit.primitiveIndex == skipPrimitiveB) {
-                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
+                advanceRayPast(shadowRay, shadowHit.t);
                 continue;
             }
             if (hitInstance.geometryType == GeometryType::PointCloud) {
                 const Point &shadowSurfel = scene.points[shadowHit.primitiveIndex];
                 transmissionOut *= 1.0f - shadowHit.alphaGeom * shadowSurfel.opacity;
-                shadowRay.origin = shadowHit.hitPositionW + shadowRay.direction * RayEpsilon;
+                advanceRayPast(shadowRay, shadowHit.t);
                 continue;
             }
             return false;
@@ -144,13 +144,13 @@ namespace Pale {
             if (auxiliaryInstance.geometryType == GeometryType::Mesh || auxiliaryInstance.geometryType !=
                 GeometryType::PointCloud) { break; }
             if (auxiliaryHit.primitiveIndex == startPrimitiveIndex) {
-                auxiliaryRay.origin = auxiliaryHit.hitPositionW + auxiliaryRay.direction * RayEpsilon;
+                advanceRayPast(auxiliaryRay, auxiliaryHit.t);
                 continue;
             }
             const Point &auxiliarySurfel = scene.points[auxiliaryHit.primitiveIndex];
             if (rng128.nextFloat() < qNull) {
                 if (includeSelectionPdf) { endpoint.discreteSelectionPdf *= qNull; }
-                auxiliaryRay.origin = auxiliaryHit.hitPositionW + auxiliaryRay.direction * RayEpsilon;
+                advanceRayPast(auxiliaryRay, auxiliaryHit.t);
                 auxiliaryRay.normal = computePointCloudOrientedNormal(auxiliarySurfel, auxiliaryRay.direction);
                 continue;
             }
@@ -1032,6 +1032,7 @@ namespace Pale {
                 bool shouldEnqueueNextRayState = false;
                 const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
                 const uint32_t maxLocalSurfelHits = rendererDebugMaxLocalSurfelHits(settings);
+                const uint32_t maxSplatEvents = rendererDebugMaxSplatEventsPerRay(settings);
                 const uint32_t pointHitBatchSize = rendererDebugPointHitBatchSize(settings);
                 const uint32_t pointHitBatchLookaheadCapacity =
                     rendererDebugPointHitBatchLookaheadCapacity(settings);
@@ -1040,7 +1041,9 @@ namespace Pale {
                 const bool canUsePointHitBatches =
                     pointHitBatchSize > 1u &&
                     tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
-                for (uint32_t inlineTraversalIndex = 0u; inlineTraversalIndex < kMaxSplatEventsPerRay; ++
+                uint32_t profileLayers = 0u, profileNulls = 0u;
+                uint32_t profileReflects = 0u, profileMisses = 0u, profileLimits = 0u;
+                for (uint32_t inlineTraversalIndex = 0u; inlineTraversalIndex < maxSplatEvents; ++
                      inlineTraversalIndex) {
                     (void) inlineTraversalIndex;
                     const uint64_t stepSeed = rng::makeSeed(renderSeed, currentRayState.pathId, spp,
@@ -1106,6 +1109,7 @@ namespace Pale {
                         intersectScene(currentRayState.ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
                     }
                     if (!worldHit.hit) {
+                        if (scene.profileCounters) ++profileMisses;
                         clearAdjointLocalPendingState(pendingCameraSegment, pendingAdjointStage);
                         break;
                     }
@@ -1136,16 +1140,21 @@ namespace Pale {
                         if (settings.adjointOpacitySampling) {
                             const float opacity = sycl::clamp(localLayer.opacity, 0.0f, 1.0f);
                             const float transmission = sycl::clamp(localLayer.transmission, 0.0f, 1.0f);
+                            const float uniformMix = sycl::clamp(settings.adjointOpacityUniformMix, 0.0f, 1.0f);
                             // Sample the smaller probability directly: computing
                             // tiny opacity as 1 - transmission would round it to
                             // zero. Likewise preserve tiny transmission near A=1.
-                            if (opacity <= transmission) {
-                                qReflect = opacity;
+                            if (uniformMix == 1.0f) {
+                                qReflect = qNull = 0.5f;
+                                takeNull = selectionDraw < qNull;
+                            } else if (opacity <= transmission) {
+                                qReflect = opacity + uniformMix * (0.5f - opacity);
                                 qNull = 1.0f - opacity;
+                                if (uniformMix > 0.0f) qNull = 1.0f - qReflect;
                                 takeNull = selectionDraw >= qReflect;
                             } else {
-                                qNull = transmission;
-                                qReflect = 1.0f - transmission;
+                                qNull = transmission + uniformMix * (0.5f - transmission);
+                                qReflect = 1.0f - qNull;
                                 takeNull = selectionDraw < qNull;
                             }
                         }
@@ -1154,16 +1163,20 @@ namespace Pale {
                         float3 slabNormal{0.0f};
                         MeasurementGradientEvent measurementEvent{};
                         uint32_t slabRecordCount = 0;
+                        if (scene.profileCounters) ++profileLayers;
                         if (takeNull) {
+                            if (scene.profileCounters) {
+                                ++profileNulls;
+                                if (inlineTraversalIndex + 1u == maxSplatEvents) ++profileLimits;
+                            }
                             const float attenuation = localLayer.transmission;
-                            currentRayState.ray.origin =
-                                    currentRayState.ray.origin + currentRayState.ray.direction * (
-                                        localLayer.furthestT + RayEpsilon);
+                            advanceRayPast(currentRayState.ray, localLayer.furthestT);
                             currentRayState.pathThroughput *= 1.0f / qNull;
                             currentRayState.transmission *= attenuation;
                             currentRayState.traversalIndex++;
                             continue;
                         }
+                        if (scene.profileCounters) ++profileReflects;
                         if (settings.rendererDebugShareLocalLayerDirectLighting &&
                             localLayer.hitCount > 0u) {
                             const PointCloudLocalLayerConsensus slabConsensus =
@@ -1325,6 +1338,14 @@ namespace Pale {
                     storeAdjointPendingState(intermediates, pathId, hasPendingState, pendingCameraSegment,
                                              pendingAdjointStage);
                     enqueueAdjointNextRayState(intermediates, shouldEnqueueNextRayState, nextRayState);
+                }
+                if (auto* counters = scene.profileCounters) {
+                    addRenderProfileCounter(&counters->adjointIntersectionRays, 1u);
+                    addRenderProfileCounter(&counters->adjointLocalLayers, profileLayers);
+                    addRenderProfileCounter(&counters->adjointNullEvents, profileNulls);
+                    addRenderProfileCounter(&counters->adjointReflectEvents, profileReflects);
+                    addRenderProfileCounter(&counters->adjointNoHitTerminations, profileMisses);
+                    addRenderProfileCounter(&counters->adjointMaxSplatTerminations, profileLimits);
                 }
             });
         waitForAdjointKernelTiming(kernelEvent2);
@@ -1557,7 +1578,7 @@ namespace Pale {
                     prefixWithinLayer *= oneMinusAlpha;
                 }
                 segmentTransmittance *= prefixWithinLayer;
-                ray.origin += ray.direction * (occludingLayer.furthestT + RayEpsilon);
+                advanceRayPast(ray, occludingLayer.furthestT, RayEpsilon);
             }
             // Camera -> target slab transmission.
             float suffixTransmittance = 1.0f;
@@ -1849,7 +1870,7 @@ namespace Pale {
                         }
 
                         if (furthestConsumedT <= 0.0f || segmentTransmittance <= 1.0e-6f) break;
-                        ray.origin += ray.direction * (furthestConsumedT + eps);
+                        advanceRayPast(ray, furthestConsumedT, eps);
                         if (hitCount < batchCapacity) break;
                     }
                 } else {
@@ -1910,7 +1931,7 @@ namespace Pale {
                         }
 
                         if (segmentTransmittance <= 1.0e-6f) break;
-                        ray.origin += ray.direction * (furthestLayerT + eps);
+                        advanceRayPast(ray, furthestLayerT, eps);
                     }
                 }
 
@@ -2279,7 +2300,7 @@ namespace Pale {
                         }
 
                         if (furthestConsumedT <= 0.0f || segmentTransmittance <= 1.0e-6f) break;
-                        ray.origin += ray.direction * (furthestConsumedT + eps);
+                        advanceRayPast(ray, furthestConsumedT, eps);
                         if (hitCount < batchCapacity) break;
                     }
                 } else {
@@ -2340,7 +2361,7 @@ namespace Pale {
                         }
 
                         if (segmentTransmittance <= 1.0e-6f) break;
-                        ray.origin += ray.direction * (furthestLayerT + eps);
+                        advanceRayPast(ray, furthestLayerT, eps);
                     }
                 }
 
@@ -2910,7 +2931,7 @@ namespace Pale {
                             break;
                         }
 
-                        regularizerRay.origin += regularizerRay.direction * (furthestConsumedT + RayEpsilon);
+                        advanceRayPast(regularizerRay, furthestConsumedT, RayEpsilon);
                         if (!keepTracingRegularizer || batchHitCount < batchCapacity) {
                             break;
                         }
@@ -2935,7 +2956,7 @@ namespace Pale {
                         surfaceHit.uv = phiInverse(worldHit.hitPositionW, scene.points[worldHit.primitiveIndex]);
 
                         const bool keepTracingRegularizer = recordRegularizerHit(surfaceHit);
-                        regularizerRay.origin = worldHit.hitPositionW + regularizerRay.direction * RayEpsilon;
+                        advanceRayPast(regularizerRay, worldHit.t);
                         if (!keepTracingRegularizer) { break; }
                     }
                 }
@@ -3301,7 +3322,7 @@ namespace Pale {
                             if (furthestConsumedT <= 0.0f) {
                                 break;
                             }
-                            slabRay.origin += slabRay.direction * (furthestConsumedT + RayEpsilon);
+                            advanceRayPast(slabRay, furthestConsumedT, RayEpsilon);
                             if (slabRenderingTransmittance <= kAlphaEpsilon ||
                                 (consumedAllFetchedHits && hitCount < pointHitBatchLookaheadCapacity)) {
                                 break;
@@ -3331,7 +3352,7 @@ namespace Pale {
                                 maxLocalSurfelHits,
                                 localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
                             accumulateIntraSlabLayerGradient(localLayer);
-                            slabRay.origin += slabRay.direction * (localLayer.furthestT + RayEpsilon);
+                            advanceRayPast(slabRay, localLayer.furthestT, RayEpsilon);
                         }
                     }
                 }

@@ -20,7 +20,10 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 5
+    adjoint_passes: int = 4
+    adjoint_opacity_sampling: bool = True
+    # qReflect = mix/2 + (1-mix)*slabOpacity. Mix 0.2 gives a 0.1 probability floor.
+    adjoint_opacity_uniform_mix: float = 0.0  # 0: pure opacity; 1: uniform 0.5/0.5.
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -56,7 +59,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 20_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -80,7 +83,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 1.5
+    position_lr_scale_init: float = 1.75
     position_lr_scale_final: float = 0.4
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
@@ -89,9 +92,10 @@ class OptimizationConfig:
     # Objective: geometric regularizers
     depth_distort_weight: float = 0.001
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_start_iteration: int = 2000
+    depth_distort_start_iteration: int = 2500
     normal_consistency_weight: float = 10.0e-4
-    normal_consistency_start_iteration: int = 3000
+    normal_consistency_start_iteration: int = 3500
+    normal_from_depth_use_mean_depth: bool = False
 
     intra_slab_depth_weight: float = 0.0e-5
 
@@ -105,11 +109,10 @@ class OptimizationConfig:
     camera_sampling_mode: str = "round_robin"  # "round_robin" or "random": Random will still loop all cameras but in no particular order
     camera_sampling_seed: int = 0
     scale_single_camera_gradients: bool = False
-    normal_from_depth_use_mean_depth: bool = False
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
-    min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
+    min_surfel_opacity: float = 0.3  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -131,7 +134,7 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 3.0
+    densification_max_mean_slab_members: float = 2.0
     densification_verbose: bool = False
 
     densification_grad_abs_min: float = 0.5e-3

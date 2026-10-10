@@ -291,3 +291,9 @@ target_link_libraries(PaleRealtimeViewer
         imguizmo
         OpenGL::GL)
 add_sycl_to_target(TARGET PaleRealtimeViewer)
+
+# Explicitly built, headless forward-render benchmark (no UI or training updates).
+add_executable(PaleSplatEventsBenchmark EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/python/test/benchmark_splat_events.cpp")
+target_link_libraries(PaleSplatEventsBenchmark PRIVATE PaleLibRealtime)
+add_sycl_to_target(TARGET PaleSplatEventsBenchmark)

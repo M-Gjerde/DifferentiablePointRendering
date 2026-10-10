@@ -104,6 +104,7 @@ def get_forward_intra_slab_depth_active_slab_count(
 
 
 def get_forward_visible_normal(forward_out: dict[str, dict], camera_name: str) -> np.ndarray:
+    """Return normal RGB and accumulated opacity in W (zero for invalid pixels)."""
     camera_out = forward_out[camera_name]
     if "visible_normal" not in camera_out:
         h, w = _infer_hw_from_forward(forward_out, camera_name)

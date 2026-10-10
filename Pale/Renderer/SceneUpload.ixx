@@ -8,6 +8,7 @@ module;
 #include <sycl/sycl.hpp>
 
 #include "Renderer/GPUDataStructures.h"
+#include "Renderer/Kernels/KernelHelpers.h"
 
 export module Pale.Render.SceneUpload;
 
@@ -493,15 +494,6 @@ export namespace Pale {
                 }
             }
 
-            if (gpuSceneBuffers.pointTraversalDataCount > 0 &&
-                gpuSceneBuffers.pointTraversalData != nullptr &&
-                !buildProducts.pointTraversalData.empty()) {
-                queue.memcpy(
-                    gpuSceneBuffers.pointTraversalData,
-                    buildProducts.pointTraversalData.data(),
-                    gpuSceneBuffers.pointTraversalDataCount * sizeof(SurfelTraversalData));
-            }
-
             if (gpuSceneBuffers.blasNodeCount > 0 &&
                 gpuSceneBuffers.blasNodes != nullptr &&
                 !buildProducts.bottomLevelNodes.empty()) {
@@ -615,7 +607,20 @@ export namespace Pale {
                     gpuSceneBuffers.pointPermutationCount * sizeof(uint32_t));
     }
 
-            queue.wait();
+            // Use the same device arithmetic as refitNode<true>. Uploading the
+            // host-computed normals/exponents makes the first no-op refit change
+            // intersection depths and, at discrete slab boundaries, radiance.
+            // The in-order queue has uploaded both points and permutation here.
+            if (gpuSceneBuffers.pointTraversalDataCount > 0) {
+                const auto scene = gpuSceneBuffers;
+                queue.parallel_for<class InitializeSurfelTraversalData>(
+                    sycl::range<1>(scene.pointTraversalDataCount), [=](sycl::id<1> index) {
+                        const auto primitiveIndex = scene.pointPermutation[index[0]];
+                        scene.pointTraversalData[index[0]] =
+                            makeSurfelTraversalData(scene.points[primitiveIndex], primitiveIndex);
+                    });
+            }
+            queue.wait_and_throw();
         }
 
         // ---------------------------------------------------------------------

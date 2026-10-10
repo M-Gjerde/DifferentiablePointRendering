@@ -770,6 +770,7 @@ namespace Pale {
         LocalSurfelLayerHit *localHits,
         uint32_t maxLocalHitCount,
         const GPUSceneBuffers &scene) {
+        tMinWorld = sycl::fmax(tMinWorld, rayWorld.minimumT);
         if (maxLocalHitCount == 0u) {
             return 0u;
         }
@@ -1979,7 +1980,7 @@ namespace Pale {
             bool acceptedHitInInstance = false;
             if (instance.geometryType == GeometryType::Mesh) {
                 acceptedHitInInstance = intersectBLASMesh(rayObject, instance.blasRangeIndex, localHit, scene,
-                                                          transform);
+                                                          transform, rayObject.minimumT);
             } else {
                 switch (rayIntersectMode) {
                     case SurfelIntersectMode::Transmit:
@@ -1987,11 +1988,24 @@ namespace Pale {
                             rayObject, instance.blasRangeIndex, localHit, scene);
                         break;
                     case SurfelIntersectMode::FirstHit:
-                        acceptedHitInInstance = intersectBLASPointCloudFirstHit(
-                            rayObject,
-                            instance.blasRangeIndex,
-                            localHit,
-                            scene);
+                        if (rayWorld.minimumT == 0.0f) {
+                            acceptedHitInInstance = intersectBLASPointCloudFirstHit(
+                                rayObject, instance.blasRangeIndex, localHit, scene);
+                        } else {
+                            // Filter in world-ray depth, using the same fixed
+                            // origin as preceding batches/slabs.
+                            LocalSurfelLayerHit hit{};
+                            acceptedHitInInstance = collectBLASPointCloudLocalLayer(
+                                rayWorld, rayObject, instance.blasRangeIndex, transform,
+                                rayWorld.minimumT, bestWorldTHit, &hit, 1u, scene) != 0u;
+                            if (acceptedHitInInstance) {
+                                localHit.t = hit.tWorld;
+                                localHit.worldHit = hit.hitPositionW;
+                                localHit.primitiveIndex = hit.primitiveIndex;
+                                localHit.alpha = hit.alphaGeom;
+                                localHit.transmissivity = 1.0f;
+                            }
+                        }
                         break;
                     default: ;
                 }
@@ -2002,7 +2016,7 @@ namespace Pale {
                 const float3 hitWorld = localHit.worldHit; // you already compute this in BLAS
                 const float3 toHitWorld = hitWorld - rayWorld.origin;
                 const float tWorld = dot(toHitWorld, rayWorld.direction);
-                if (tWorld > 0.0f && tWorld < bestWorldTHit) {
+                if (tWorld >= rayWorld.minimumT && tWorld > 0.0f && tWorld < bestWorldTHit) {
                     bestWorldTHit = tWorld;
                     foundAnySurfaceHit = true;
                     worldHitOut->hit = true;
@@ -2124,7 +2138,7 @@ namespace Pale {
                     break;
                 }
 
-                shadowRay.origin += shadowRay.direction * (furthestConsumedT + eps);
+                advanceRayPast(shadowRay, furthestConsumedT, eps);
                 if (hitCount < batchCapacity) {
                     break;
                 }
@@ -2255,9 +2269,7 @@ namespace Pale {
             }
 
             // Advance past every surfel already absorbed in this local layer.
-            shadowRay.origin +=
-                    shadowRay.direction *
-                    (furthestLayerT + eps);
+            advanceRayPast(shadowRay, furthestLayerT, eps);
         }
 
         return shadowTransmission;
