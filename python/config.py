@@ -72,7 +72,7 @@ class OptimizationConfig:
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.0005
+    learning_rate_position: float = 0.0002
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0020
     learning_rate_albedo: float = 0.002
@@ -86,7 +86,7 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 1.0
+    position_lr_scale_init: float = 3.0
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
@@ -140,7 +140,7 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 1.5
+    densification_max_mean_slab_members: float = 2.0
     densification_verbose: bool = False
 
     densification_grad_abs_min: float = 0.5e-3
