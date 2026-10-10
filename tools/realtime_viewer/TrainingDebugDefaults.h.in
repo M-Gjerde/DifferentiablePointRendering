@@ -1,0 +1,12 @@
+#pragma once
+
+// Generated from python/config.py by CMake. Reconfigure when defaults change.
+namespace viewer::defaults {
+inline constexpr float crowdThreshold = static_cast<float>(@densification_max_mean_slab_members@);
+inline constexpr float positionThreshold = static_cast<float>(@densification_grad_abs_min@);
+inline constexpr float radianceBiasStrength = static_cast<float>(@densification_radiance_bias_strength@);
+inline constexpr float radianceBiasMinWeight = static_cast<float>(@densification_radiance_bias_min_weight@);
+inline constexpr float radianceBiasMaxWeight = static_cast<float>(@densification_radiance_bias_max_weight@);
+inline constexpr float radianceFloor = static_cast<float>(@densification_radiance_floor@);
+inline constexpr const char* targetColorSpace = "@target_color_space@";
+}
