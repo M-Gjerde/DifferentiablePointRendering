@@ -13,6 +13,23 @@ set(BUILD_SHARED_LIBS OFF)
 get_filename_component(PALE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 set(PALE_ROOT "${PALE_ROOT}" CACHE PATH "DifferentiablePointRendering repository root")
 
+# Read literal training debug defaults without importing Python or its runtime
+# dependencies. Fail visibly if these fields cease to be literals.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PALE_ROOT}/python/config.py")
+file(READ "${PALE_ROOT}/python/config.py" PALE_TRAINING_CONFIG)
+foreach(field densification_max_mean_slab_members densification_grad_abs_min
+        densification_radiance_bias_strength densification_radiance_bias_min_weight
+        densification_radiance_bias_max_weight densification_radiance_floor)
+    string(REGEX MATCH "\n    ${field}: float = ([0-9.eE+-]+)[ \r\n#]" match "${PALE_TRAINING_CONFIG}")
+    if(NOT match)
+        message(FATAL_ERROR "Expected a numeric literal for ${field} in python/config.py")
+    endif()
+    set(${field} "${CMAKE_MATCH_1}")
+endforeach()
+string(REGEX MATCH "\n    target_color_space: str = \"([a-z]+)\"" match "${PALE_TRAINING_CONFIG}")
+set(target_color_space "${CMAKE_MATCH_1}")
+configure_file(TrainingDebugDefaults.h.in generated/TrainingDebugDefaults.h @ONLY)
+
 find_package(AdaptiveCpp REQUIRED)
 find_package(OpenEXR REQUIRED)
 find_package(OpenGL REQUIRED)
@@ -264,10 +281,12 @@ target_compile_definitions(PaleRealtimeViewer
         PALE_DEFAULT_ASSET_DIR=\"${PALE_ROOT}/Assets\")
 target_include_directories(PaleRealtimeViewer
         PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/generated"
         "${PALE_ROOT}/vendor/stb_image")
 target_link_libraries(PaleRealtimeViewer
         PRIVATE
         PaleLibRealtime
+        yaml-cpp
         imgui
         imguizmo
         OpenGL::GL)

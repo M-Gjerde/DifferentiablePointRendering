@@ -1125,14 +1125,36 @@ namespace Pale {
                                     localLayerDepthEpsilon,
                                     maxLocalSurfelHits,
                                     localLayerNormalCosineThreshold, settings.rendererDebugLocalLayerDepthMode);
-                        const float qNull = settings.sampling.qNull;
-                        const float qReflect = settings.sampling.qReflect;
+                        // One decision per slab, including all member opacities
+                        // and their radial profiles. Carry inverse selection PDFs
+                        // in pathThroughput (also used by camera-occluder VJPs).
+                        // These PDFs are sampling choices, not differentiated terms.
+                        float qNull = settings.sampling.qNull;
+                        float qReflect = settings.sampling.qReflect;
+                        const float selectionDraw = rng.nextFloat();
+                        bool takeNull = selectionDraw < qNull;
+                        if (settings.adjointOpacitySampling) {
+                            const float opacity = sycl::clamp(localLayer.opacity, 0.0f, 1.0f);
+                            const float transmission = sycl::clamp(localLayer.transmission, 0.0f, 1.0f);
+                            // Sample the smaller probability directly: computing
+                            // tiny opacity as 1 - transmission would round it to
+                            // zero. Likewise preserve tiny transmission near A=1.
+                            if (opacity <= transmission) {
+                                qReflect = opacity;
+                                qNull = 1.0f - opacity;
+                                takeNull = selectionDraw >= qReflect;
+                            } else {
+                                qNull = transmission;
+                                qReflect = 1.0f - transmission;
+                                takeNull = selectionDraw < qNull;
+                            }
+                        }
                         float3 sampledOutgoingDirectionWorld{0.0f};
                         float3 throughputMultiplier{0.0f};
                         float3 slabNormal{0.0f};
                         MeasurementGradientEvent measurementEvent{};
                         uint32_t slabRecordCount = 0;
-                        if (rng.nextFloat() < qNull) {
+                        if (takeNull) {
                             const float attenuation = localLayer.transmission;
                             currentRayState.ray.origin =
                                     currentRayState.ray.origin + currentRayState.ray.direction * (

@@ -832,6 +832,9 @@ namespace Pale {
         float qAbsorb = 1.0f - qNull - qReflect - qTransmit;
     };
 
+    // UINT32_MAX retains its existing meaning: no selected debug primitive.
+    inline constexpr uint32_t kDebugGradientAllSurfels = UINT32_MAX - 1u;
+
     struct alignas(16) PathTracerSettings {
         IntegratorKind integratorKind = IntegratorKind::photonMapping;
         uint32_t photonsPerLaunch = 1e6;
@@ -843,13 +846,16 @@ namespace Pale {
         uint32_t adjointSamplesPerPixel = 6;
         // Reuse only the deterministic initial camera slab across adjoint SPP.
         bool adjointPrimarySlabCache = true;
+        // Experimental adjoint-only importance sampling. PDFs are detached;
+        // zero-probability branches lose derivative support at opacity endpoints.
+        bool adjointOpacitySampling = false;
         uint32_t russianRouletteStart = 12; // Which bounce to start RR
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
         CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel2;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
-        uint32_t surfelIndexForDebugImages = 1;
+        uint32_t surfelIndexForDebugImages = 1; // or kDebugGradientAllSurfels
         float depthDistortionWeight = 0.0f;
         // Absolute pairwise camera-forward depth differences in scene units.
         bool depthDistortionWorldSpace = false;

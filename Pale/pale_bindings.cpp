@@ -314,6 +314,11 @@ public:
             m_settings.random.seed = get_i(settingsDict, "seed", m_settings.random.seed);
             m_settings.renderDebugGradientImages =
                 get_b(settingsDict, "debug_images", m_settings.renderDebugGradientImages);
+            m_settings.surfelIndexForDebugImages = get_b(settingsDict, "debug_all_surfels", false)
+                ? Pale::kDebugGradientAllSurfels
+                : get_i(settingsDict, "debug_surfel_index", m_settings.surfelIndexForDebugImages);
+            m_settings.adjointOpacitySampling =
+                get_b(settingsDict, "adjoint_opacity_sampling", m_settings.adjointOpacitySampling);
             m_settings.enableAdjointDirectLight =
                 get_b(settingsDict, "enable_adjoint_shadow_rays", m_settings.enableAdjointDirectLight);
             m_settings.numAdjointPathShadowRays =

@@ -34,6 +34,9 @@
 
 #include <sycl/sycl.hpp>
 #include <stb_image.h>
+#include <yaml-cpp/yaml.h>
+#include "TrainingDebugDefaults.h"
+#include "TargetLossProjection.h"
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/RenderPackage.h"
@@ -136,14 +139,17 @@ namespace {
         PositionPrimitiveScore,
         SurfelDensity,
         SurfaceOverlap,
+        CrowdPenalty,
+        TargetLoss,
         DensificationOrigin,
         PrimitiveAge,
         DepthPositionGradient,
         NormalPositionGradient,
         IntraSlabPositionGradient,
+        AdjointDerivative,
     };
 
-    constexpr std::array<ViewImageMode, 16> kViewImageModeCycleOrder = {
+    constexpr std::array<ViewImageMode, 19> kViewImageModeCycleOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -154,15 +160,18 @@ namespace {
         ViewImageMode::SurfaceOverlap,
         ViewImageMode::PositionPrimitiveScore,
         ViewImageMode::IntraSlabRayDepth,
+        ViewImageMode::CrowdPenalty,
+        ViewImageMode::TargetLoss,
         ViewImageMode::SurfelDensity,
         ViewImageMode::DensificationOrigin,
         ViewImageMode::PrimitiveAge,
         ViewImageMode::DepthPositionGradient,
         ViewImageMode::NormalPositionGradient,
         ViewImageMode::IntraSlabPositionGradient,
+        ViewImageMode::AdjointDerivative,
     };
 
-    constexpr std::array<const char*, 16> kViewImageModeLabels = {
+    constexpr std::array<const char*, 19> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -173,12 +182,15 @@ namespace {
         "8 Surface overlap (world space)",
         "9 Position primitive score (saved)",
         "0 Intra-slab depth (mean ray depth)",
+        "Crowd penalty (clone / split gate)",
+        "Target RGB loss (projected into 3D)",
         "Surfel density (projected centers)",
         "Densification split origin",
         "Primitive age",
         "Depth distortion |grad position|",
         "Normal consistency |grad position|",
         "Intra-slab consensus |grad position|",
+        "Adjoint radiance derivative (signed)",
     };
 
     [[nodiscard]] const char* viewImageModeLabel(ViewImageMode mode) {
@@ -227,6 +239,7 @@ namespace {
         viewer::SurfelDensity surfelDensity{64};
         bool surfaceOverlapValid = false;
         std::vector<float> surfaceOverlap;
+        std::vector<float> targetLoss;
         bool positionPrimitiveRadianceBiasAvailable = false;
         bool positionPrimitiveIndicesValid = false;
         bool densificationOriginValid = false;
@@ -274,6 +287,7 @@ namespace {
             surfelDensityValid = false;
             surfaceOverlapValid = false;
             surfaceOverlap.clear();
+            targetLoss.clear();
             positionPrimitiveRadianceBiasAvailable = false;
             positionPrimitiveIndicesValid = false;
             densificationOriginValid = false;
@@ -2144,6 +2158,44 @@ namespace {
         queue.wait();
     }
 
+    std::string toLower(std::string value) {
+        for (auto& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return value;
+    }
+
+    std::vector<float> loadDebugTarget(const std::filesystem::path& path,
+            const Pale::CameraGPU& camera, bool srgb) {
+        std::vector<float> rgba;
+        uint32_t width = 0, height = 0;
+        if (toLower(path.extension().string()) == ".exr") {
+            Pale::Utils::loadEXRAsRGBAFloat(path, rgba, width, height);
+        } else {
+            int w = 0, h = 0, channels = 0;
+            const auto filename = path.string();
+            auto copy = [&](auto* data, float scale) {
+                if (!data) throw std::runtime_error("Cannot load target " + filename + ": " + stbi_failure_reason());
+                rgba.resize(static_cast<std::size_t>(w) * h * 4);
+                for (std::size_t i = 0; i < rgba.size(); ++i) rgba[i] = float(data[i]) * scale;
+                stbi_image_free(data);
+                width = static_cast<uint32_t>(w);
+                height = static_cast<uint32_t>(h);
+            };
+            if (stbi_is_hdr(filename.c_str())) copy(stbi_loadf(filename.c_str(), &w, &h, &channels, 4), 1.0f);
+            else if (stbi_is_16_bit(filename.c_str())) copy(stbi_load_16(filename.c_str(), &w, &h, &channels, 4), 1.0f / 65535.0f);
+            else copy(stbi_load(filename.c_str(), &w, &h, &channels, 4), 1.0f / 255.0f);
+        }
+        if (width != camera.width || height != camera.height)
+            throw std::runtime_error("Target dimensions disagree with scene camera: " + path.string());
+        if (srgb) {
+            for (std::size_t i = 0; i < rgba.size(); ++i) {
+                if (i % 4 == 3) continue; // Training ignores alpha.
+                const float value = rgba[i];
+                rgba[i] = value <= 0.04045f ? value / 12.92f : std::pow((value + 0.055f) / 1.055f, 2.4f);
+            }
+        }
+        return rgba;
+    }
+
     Pale::PathTracerSettings makeDefaultSettings() {
         Pale::PathTracerSettings settings{};
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
@@ -2177,7 +2229,10 @@ namespace {
             mode != ViewImageMode::Rendered &&
             mode != ViewImageMode::SurfelDensity &&
             mode != ViewImageMode::SurfaceOverlap &&
-            mode != ViewImageMode::PositionPrimitiveScore;
+            mode != ViewImageMode::CrowdPenalty &&
+            mode != ViewImageMode::TargetLoss &&
+            mode != ViewImageMode::PositionPrimitiveScore &&
+            mode != ViewImageMode::AdjointDerivative;
         settings.computeDepthNormalDiagnostics =
             mode == ViewImageMode::DepthNormal ||
             mode == ViewImageMode::NormalPositionGradient;
@@ -2915,14 +2970,28 @@ int main(int argc, char** argv) {
         float surfaceOverlapPeak = 0.0f;
         std::size_t surfaceOverlapEligibleCount = 0u;
         // Training debug defaults mirror python/config.py (OptimizationConfig).
-        constexpr float kPositionDefaultThreshold = 5.0e-3f;
+        constexpr float kPositionDefaultThreshold = viewer::defaults::positionThreshold;
         float positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
         float positionWhatIfReferenceThreshold = 0.0f;
         std::filesystem::path positionWhatIfThresholdPointCloudPath;
-        float positionRadianceBiasStrength = 0.5f;
-        float positionRadianceBiasMinWeight = 0.2f;
-        float positionRadianceBiasMaxWeight = 1.5f;
-        constexpr float kPositionRadianceBiasFloor = 0.005f;
+        float positionRadianceBiasStrength = viewer::defaults::radianceBiasStrength;
+        float positionRadianceBiasMinWeight = viewer::defaults::radianceBiasMinWeight;
+        float positionRadianceBiasMaxWeight = viewer::defaults::radianceBiasMaxWeight;
+        constexpr float kPositionRadianceBiasFloor = viewer::defaults::radianceFloor;
+        float crowdThreshold = viewer::defaults::crowdThreshold;
+        std::array<char, 2048> targetDatasetBuffer{};
+        bool targetDatasetManual = false;
+        int targetColorSpace = std::string(viewer::defaults::targetColorSpace) == "srgb" ? 1 : 0;
+        bool targetLossDirty = true;
+        std::vector<viewer::ProjectedTargetLoss> targetLossViews;
+        std::vector<std::size_t> targetLossInstanceOffsets;
+        std::vector<float> targetLossMean, targetLossWorst;
+        int targetLossCamera = -1; // -1: all target cameras
+        int targetLossAggregation = 0;
+        float targetLossColorMaximum = 0.01f;
+        bool targetLossLogColors = true;
+        double targetLossComputeMs = 0;
+        std::string targetLossStatus = "Select Target RGB loss to compute the projection";
         int primitiveAgeColdAfterIterations = 1000;
         int selectedLightIndex = 0;
         bool showLightGizmo = true;
@@ -2950,6 +3019,18 @@ int main(int argc, char** argv) {
         bool viewerAdjointDirectLight = true;
         int viewerAdjointSamplesPerPixel = 1;
         int viewerAdjointBounces = 1;
+        bool viewerAdjointOpacitySampling = false;
+        bool viewerAdjointAllSurfels = true;
+        int viewerAdjointSurfelIndex = 1;
+        int viewerAdjointProperty = 8;
+        int viewerAdjointSeed = 42;
+        float viewerAdjointColorMaximum = 1.0f;
+        std::vector<float> viewerAdjointImage;
+        bool viewerAdjointImageValid = false;
+        constexpr const char* adjointProperties[] = {
+            "Position X", "Position Y", "Position Z",
+            "Local rotation X", "Local rotation Y", "Local rotation Z",
+            "Scale U", "Scale V", "Opacity", "Albedo R", "Beta"};
         double lastViewerAdjointMs = 0.0;
         float lastViewerAdjointLoss = 0.0f;
         std::string viewerAdjointStatus = "Adjoint profiling is off";
@@ -2980,6 +3061,7 @@ int main(int argc, char** argv) {
         }
         queue.memset(deviceProfilingCounters, 0, sizeof(Pale::RenderProfilingCounters)).wait();
         Pale::PointGradients viewerAdjointGradients{};
+        Pale::DebugImages viewerAdjointDebugImages{};
         Pale::PointGradients viewerRegularizerGradients{};
 
         if (!glfwInit()) {
@@ -3029,6 +3111,7 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_Init(glslVersion);
 
         auto rebuildSceneGpu = [&]() {
+            targetLossDirty = true;
             surfaceOverlapScoresValid = false;
             debugDisplayBuffers.surfaceOverlapValid = false;
             buildProducts = Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
@@ -3503,6 +3586,132 @@ int main(int argc, char** argv) {
             pointCloudStatus = meshStatus;
         };
 
+        auto computeTargetLoss = [&]() {
+            targetLossDirty = false;
+            targetLossViews.clear();
+            targetLossMean.clear();
+            targetLossWorst.clear();
+            const auto start = std::chrono::steady_clock::now();
+            try {
+                if (settings.sharedHeightEnabled ||
+                    settings.integratorKind != Pale::IntegratorKind::photonMapping ||
+                    settings.cameraGatherKernelKind != Pale::CameraGatherKernelKind::CameraGatherKernel2)
+                    throw std::runtime_error("Target projection requires photon mapping / CameraGatherKernel2 with Shared surface experiment off");
+                if (buildProducts.cameraGPUs.empty()) throw std::runtime_error("No scene cameras to match to target images");
+                if (!targetDatasetManual) {
+                    std::filesystem::path dataset;
+                    auto directory = currentPointCloudPath.parent_path();
+                    for (int level = 0; level < 3 && !directory.empty(); ++level, directory = directory.parent_path()) {
+                        const auto configPath = directory / "run_config.json";
+                        if (!std::filesystem::is_regular_file(configPath)) continue;
+                        const auto config = YAML::LoadFile(configPath.string());
+                        if (config["dataset_path"]) {
+                            dataset = config["dataset_path"].as<std::string>();
+                            if (dataset.is_relative()) {
+                                // Training normally resolves paths; also accept older configs.
+                                for (const auto& base : {repositoryRoot / "python", directory, repositoryRoot}) {
+                                    if (std::filesystem::is_directory(base / dataset)) { dataset = base / dataset; break; }
+                                }
+                            }
+                        }
+                        if (!dataset.empty()) copyPathToBuffer(dataset, targetDatasetBuffer);
+                        const auto optimization = config["optimization_config"];
+                        if (optimization && optimization["target_color_space"]) {
+                            const auto space = optimization["target_color_space"].as<std::string>();
+                            if (space != "linear" && space != "srgb")
+                                throw std::runtime_error("Saved target color space is auto; choose an explicit Linear or sRGB interpretation and Apply targets");
+                            targetColorSpace = space == "srgb" ? 1 : 0;
+                        }
+                        break;
+                    }
+                    if (dataset.empty()) {
+                        auto scenePath = currentScenePath;
+                        if (scenePath.is_relative()) scenePath = assetsDirectory / scenePath;
+                        dataset = scenePath.parent_path();
+                    }
+                    copyPathToBuffer(dataset, targetDatasetBuffer);
+                }
+                std::filesystem::path images = targetDatasetBuffer.data();
+                if (std::filesystem::is_directory(images / "images")) images /= "images";
+                if (!std::filesystem::is_directory(images)) throw std::runtime_error("Set the target dataset or images directory, then Apply targets");
+                const auto footprints = Pale::surfaceOverlapFootprints(buildProducts, targetLossInstanceOffsets);
+                const auto count = footprints.size();
+                if (count == 0) throw std::runtime_error("No surfels to project onto");
+                std::vector<viewer::LossInstanceRange> lossRanges(buildProducts.instances.size());
+                for (std::size_t i = 0; i < buildProducts.instances.size(); ++i) {
+                    const auto& instance = buildProducts.instances[i];
+                    if (instance.geometryType == Pale::GeometryType::PointCloud)
+                        lossRanges[i] = {targetLossInstanceOffsets[i], buildProducts.pointCloudRanges.at(instance.geometryIndex).firstPoint};
+                }
+                std::vector<double> totalLoss(count, 0), totalWeight(count, 0);
+                targetLossWorst.assign(count, std::numeric_limits<float>::quiet_NaN());
+                auto lossSettings = makeViewerDebugSettings(settings, ViewImageMode::Rendered);
+                Pale::PathTracer lossTracer(queue, lossSettings);
+                std::size_t missing = 0;
+                for (const auto& camera : buildProducts.cameraGPUs) {
+                    std::vector<std::filesystem::path> matches;
+                    for (const auto& entry : std::filesystem::directory_iterator(images)) {
+                        const auto suffix = toLower(entry.path().extension().string());
+                        if (entry.is_regular_file() && entry.path().stem() == camera.name &&
+                            (suffix == ".exr" || suffix == ".hdr" || suffix == ".png" || suffix == ".jpg" ||
+                             suffix == ".jpeg" || suffix == ".bmp" || suffix == ".tga" || suffix == ".tif" || suffix == ".tiff"))
+                            matches.push_back(entry.path());
+                    }
+                    if (matches.empty()) { ++missing; continue; }
+                    if (matches.size() != 1) throw std::runtime_error("Ambiguous target files for camera " + std::string(camera.name));
+                    const auto target = loadDebugTarget(matches.front(), camera, targetColorSpace == 1);
+                    auto lossBuild = buildProducts;
+                    lossBuild.cameraGPUs = {camera};
+                    lossTracer.setScene(sceneGpu, lossBuild);
+                    auto lossSensor = createSensor(queue, camera);
+                    std::vector<float> losses;
+                    try {
+                        clearSensor(queue, lossSensor);
+                        std::vector<Pale::SensorGPU> sensors{lossSensor};
+                        lossTracer.renderForward(sensors);
+                        losses = viewer::rgbHalfSquaredError(Pale::downloadSensorRGBARAW(queue, lossSensor), target);
+                    } catch (...) { queue.wait(); destroySensor(queue, lossSensor); throw; }
+                    destroySensor(queue, lossSensor);
+                    const auto projected = viewer::projectTargetLoss(queue, camera, sceneGpu, lossSettings,
+                        lossRanges, count, losses);
+                    viewer::ProjectedTargetLoss view;
+                    view.cameraName = camera.name;
+                    view.pixelCount = losses.size();
+                    view.mean.assign(count, std::numeric_limits<float>::quiet_NaN());
+                    for (std::size_t i = 0; i < count; ++i) {
+                        const auto sum = projected.sums[i];
+                        if (sum.y() <= 0) continue;
+                        view.mean[i] = sum.x() / sum.y();
+                        totalLoss[i] += double(sum.x()) / losses.size();
+                        totalWeight[i] += double(sum.y()) / losses.size();
+                        targetLossWorst[i] = std::isfinite(targetLossWorst[i])
+                            ? std::max(targetLossWorst[i], view.mean[i]) : view.mean[i];
+                    }
+                    for (std::size_t p = 0; p < losses.size(); ++p) {
+                        view.imageMean += double(losses[p]) / losses.size();
+                        if (projected.coverage[p] <= 0) {
+                            ++view.unassignedPixels;
+                            view.unassignedMean += double(losses[p]) / losses.size();
+                        }
+                    }
+                    targetLossViews.push_back(std::move(view));
+                }
+                if (targetLossViews.empty()) throw std::runtime_error("No target image filenames match the scene camera names in " + images.string());
+                targetLossMean.assign(count, std::numeric_limits<float>::quiet_NaN());
+                for (std::size_t i = 0; i < count; ++i)
+                    if (totalWeight[i] > 0) targetLossMean[i] = static_cast<float>(totalLoss[i] / totalWeight[i]);
+                targetLossCamera = std::clamp(targetLossCamera, -1, static_cast<int>(targetLossViews.size()) - 1);
+                targetLossStatus = "Projected " + std::to_string(targetLossViews.size()) + " target images; " +
+                    std::to_string(missing) + " scene cameras without targets. Uses current renderer settings.";
+            } catch (const std::exception& exception) {
+                targetLossViews.clear();
+                targetLossMean.clear();
+                targetLossWorst.clear();
+                targetLossStatus = exception.what();
+            }
+            targetLossComputeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        };
+
         auto ensureDebugDisplayBuffer = [&](ViewImageMode mode) -> bool {
             if (!hasSensor || displayedRenderWidth == 0u || displayedRenderHeight == 0u) {
                 return false;
@@ -3702,6 +3911,30 @@ int main(int argc, char** argv) {
             };
 
             switch (mode) {
+                case ViewImageMode::AdjointDerivative:
+                    return viewerAdjointImageValid && viewerAdjointImage.size() == pixelCount;
+                case ViewImageMode::TargetLoss: {
+                    ensurePositionPrimitiveIndices();
+                    auto& map = debugDisplayBuffers.targetLoss;
+                    map.assign(pixelCount, -1.0f);
+                    const auto& scores = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
+                        ? targetLossViews[targetLossCamera].mean
+                        : (targetLossAggregation == 0 ? targetLossMean : targetLossWorst);
+                    for (std::size_t p = 0; p < pixelCount; ++p) {
+                        const auto instanceIndex = debugDisplayBuffers.positionInstanceIndices[p];
+                        if (instanceIndex >= buildProducts.instances.size()) continue;
+                        const auto& instance = buildProducts.instances[instanceIndex];
+                        const auto& range = buildProducts.pointCloudRanges.at(instance.geometryIndex);
+                        const auto primitive = debugDisplayBuffers.positionPrimitiveIndices[p];
+                        if (primitive < range.firstPoint || primitive - range.firstPoint >= range.pointCount) continue;
+                        map[p] = -2.0f;
+                        if (instanceIndex >= targetLossInstanceOffsets.size()) continue;
+                        const auto index = targetLossInstanceOffsets[instanceIndex] + primitive - range.firstPoint;
+                        if (index < scores.size() && std::isfinite(scores[index])) map[p] = scores[index];
+                    }
+                    return true;
+                }
+                case ViewImageMode::CrowdPenalty:
                 case ViewImageMode::SurfaceOverlap: {
                     const auto inherited = Pale::surfaceOverlapSettings(settings);
                     std::vector<viewer::SurfaceOverlapView> views;
@@ -3745,7 +3978,11 @@ int main(int argc, char** argv) {
                             if (primitive < range.firstPoint || primitive - range.firstPoint >= range.pointCount) continue;
                             const auto index = surfaceOverlapInstanceOffsets[instanceIndex] + primitive - range.firstPoint;
                             const auto& score = surfaceOverlapScores.at(index);
-                            map[pixel] = surfaceOverlapMetric == kMeanSlabMembersMetric ? score.meanMembers
+                            if (mode == ViewImageMode::CrowdPenalty && !std::isfinite(score.meanMembers)) {
+                                map[pixel] = -2.0f;
+                                continue;
+                            }
+                            map[pixel] = mode == ViewImageMode::CrowdPenalty || surfaceOverlapMetric == kMeanSlabMembersMetric ? score.meanMembers
                                 : (surfaceOverlapMetric == kSlabOverflowMetric ? score.crowdedPercent : score.centerMembers);
                         }
                         debugDisplayBuffers.surfaceOverlapValid = true;
@@ -4076,10 +4313,37 @@ int main(int argc, char** argv) {
 
             if (viewImageMode != ViewImageMode::Rendered) {
                 if (!ensureDebugDisplayBuffer(viewImageMode)) {
+                    if (viewImageMode == ViewImageMode::AdjointDerivative) {
+                        // A disabled/failed derivative pass must not show an old map.
+                        texture.update(renderPixels, displayedRenderWidth, displayedRenderHeight);
+                        screenshotPixels = renderPixels;
+                    }
                     return;
                 }
 
                 switch (viewImageMode) {
+                    case ViewImageMode::CrowdPenalty:
+                        colorizeThresholdedPrimitiveScores(debugDisplayBuffers.surfaceOverlap,
+                            displayedRenderWidth, displayedRenderHeight, crowdThreshold, scalarColorMap, pixels, true);
+                        break;
+                    case ViewImageMode::TargetLoss: {
+                        auto values = debugDisplayBuffers.targetLoss;
+                        float maximum = targetLossColorMaximum;
+                        if (targetLossLogColors) {
+                            for (auto& value : values) if (value >= 0) value = std::log1p(value / maximum * 100.0f);
+                            maximum = std::log1p(100.0f);
+                        }
+                        colorizeScalarBufferFixedRange(values, displayedRenderWidth, displayedRenderHeight,
+                            0.0f, maximum, scalarColorMap, pixels);
+                        // Unknown surfels are gray; background stays black.
+                        for (std::size_t p = 0; p < values.size(); ++p) {
+                            if (values[p] == -1.0f || values[p] == -2.0f) {
+                                const uint8_t value = values[p] == -2.0f ? 128u : 0u;
+                                pixels[4*p] = pixels[4*p+1] = pixels[4*p+2] = value;
+                            }
+                        }
+                        break;
+                    }
                     case ViewImageMode::SurfaceOverlap:
                         colorizeScalarBufferFixedRange(
                             debugDisplayBuffers.surfaceOverlap, displayedRenderWidth, displayedRenderHeight,
@@ -4222,11 +4486,24 @@ int main(int argc, char** argv) {
                             scalarColorMap,
                             pixels);
                         break;
+                    case ViewImageMode::AdjointDerivative:
+                        pixels.resize(viewerAdjointImage.size() * 4u);
+                        for (std::size_t p = 0; p < viewerAdjointImage.size(); ++p) {
+                            const float g = viewerAdjointImage[p];
+                            const auto value = std::isfinite(g) ? static_cast<uint8_t>(255.0f * std::clamp(
+                                std::abs(g) / viewerAdjointColorMaximum, 0.0f, 1.0f)) : uint8_t{0};
+                            pixels[4*p] = std::isfinite(g) && g < 0.0f ? 255u - value : 255u;
+                            pixels[4*p+1] = std::isfinite(g) ? 255u - value : 0u;
+                            pixels[4*p+2] = std::isfinite(g) && g > 0.0f ? 255u - value : 255u;
+                            pixels[4*p+3] = 255u;
+                        }
+                        break;
                     case ViewImageMode::Rendered:
                         break;
                 }
-                screenshotPixels = viewer::transparentScreenshotPixels(
-                    pixels, renderPixels, displayedRenderWidth, displayedRenderHeight);
+                screenshotPixels = viewImageMode == ViewImageMode::AdjointDerivative ? pixels :
+                    viewer::transparentScreenshotPixels(
+                        pixels, renderPixels, displayedRenderWidth, displayedRenderHeight);
                 texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
                 return;
             }
@@ -4361,12 +4638,15 @@ int main(int argc, char** argv) {
         };
 
         auto runViewerAdjointPass = [&](std::vector<Pale::SensorGPU>& renderSensors) {
+            viewerAdjointImageValid = false;
             if (settings.sharedHeightEnabled) {
+                viewerAdjointImage.clear();
                 runAdjointNextRender = false;
                 viewerAdjointStatus = "Shared height is forward-only; adjoint disabled";
                 return;
             }
-            if (!runAdjointEveryRender && !runAdjointNextRender) {
+            const bool derivativeView = viewImageMode == ViewImageMode::AdjointDerivative;
+            if (!runAdjointEveryRender && !runAdjointNextRender && !derivativeView) {
                 return;
             }
             runAdjointNextRender = false;
@@ -4378,18 +4658,36 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
+            viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 256);
             viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
 
             const auto start = std::chrono::steady_clock::now();
             {
                 Pale::ScopedTimer timer("Viewer adjoint source setup", spdlog::level::debug);
-                prepareRealtimeViewerRgbLossAdjointSource(
-                    queue, sensor, lastViewerAdjointLoss);
+                if (derivativeView) {
+                    // d(sum of linear RGB)/dRGB = (1,1,1), with no pixel-count
+                    // normalization, exposure, tone mapping, or regularizer terms.
+                    queue.fill(sensor.framebuffer, Pale::float4{1.0f, 1.0f, 1.0f, 0.0f},
+                        static_cast<std::size_t>(sensor.width) * sensor.height).wait();
+                    lastViewerAdjointLoss = 0.0f;
+                } else {
+                    prepareRealtimeViewerRgbLossAdjointSource(
+                        queue, sensor, lastViewerAdjointLoss);
+                }
             }
             {
                 Pale::ScopedTimer timer("Viewer adjoint gradient buffer setup", spdlog::level::debug);
                 ensureViewerAdjointGradients();
+                if (derivativeView) {
+                    const auto pixelCount = static_cast<std::size_t>(sensor.width) * sensor.height;
+                    if (viewerAdjointDebugImages.numPixels != pixelCount) {
+                        Pale::freeDebugImagesForScene(queue, &viewerAdjointDebugImages, 1u);
+                    }
+                    auto debugBuildProducts = renderBuildProducts;
+                    debugBuildProducts.cameraGPUs = {sensor.camera};
+                    debugBuildProducts.cameraGPUs[0].useForAdjointPass = 1u;
+                    Pale::ensureDebugImagesForScene(queue, debugBuildProducts, &viewerAdjointDebugImages);
+                }
             }
 
             Pale::PathTracerSettings adjointSettings = settings;
@@ -4397,13 +4695,21 @@ int main(int argc, char** argv) {
             adjointSettings.adjointSamplesPerPixel =
                 static_cast<uint32_t>(viewerAdjointSamplesPerPixel);
             adjointSettings.enableAdjointDirectLight = viewerAdjointDirectLight;
+            adjointSettings.adjointOpacitySampling = viewerAdjointOpacitySampling;
+            adjointSettings.renderDebugGradientImages = derivativeView;
+            adjointSettings.surfelIndexForDebugImages = viewerAdjointAllSurfels
+                ? Pale::kDebugGradientAllSurfels
+                : static_cast<uint32_t>(std::clamp(viewerAdjointSurfelIndex,
+                    0, static_cast<int>(sceneGpu.pointCount) - 1));
+            adjointSettings.random.seed = static_cast<uint64_t>(viewerAdjointSeed);
             adjointSettings.numAdjointPathShadowRays =
                 std::max(adjointSettings.numAdjointPathShadowRays, 1u);
 
             tracer.getSettings() = adjointSettings;
             {
                 Pale::ScopedTimer timer("Viewer adjoint pass total", spdlog::level::debug);
-                tracer.renderBackward(renderSensors, viewerAdjointGradients, nullptr);
+                tracer.renderBackward(renderSensors, viewerAdjointGradients,
+                    derivativeView ? &viewerAdjointDebugImages : nullptr);
             }
             tracer.getSettings() = settings;
             queue.wait();
@@ -4411,12 +4717,26 @@ int main(int argc, char** argv) {
             const auto stop = std::chrono::steady_clock::now();
             lastViewerAdjointMs =
                 std::chrono::duration<double, std::milli>(stop - start).count();
-            viewerAdjointStatus =
-                "Last adjoint: " + std::to_string(lastViewerAdjointMs) +
-                " ms, loss " + std::to_string(lastViewerAdjointLoss);
+            if (derivativeView) {
+                const float* columns[] = {
+                    viewerAdjointDebugImages.framebufferPosX, viewerAdjointDebugImages.framebufferPosY,
+                    viewerAdjointDebugImages.framebufferPosZ, viewerAdjointDebugImages.framebufferRotX,
+                    viewerAdjointDebugImages.framebufferRotY, viewerAdjointDebugImages.framebufferRotZ,
+                    viewerAdjointDebugImages.framebufferScaleU, viewerAdjointDebugImages.framebufferScaleV,
+                    viewerAdjointDebugImages.framebufferOpacity, viewerAdjointDebugImages.framebufferAlbedo,
+                    viewerAdjointDebugImages.framebufferBeta};
+                viewerAdjointImage = Pale::downloadFloatBuffer(queue,
+                    columns[viewerAdjointProperty], viewerAdjointDebugImages.numPixels);
+                viewerAdjointImageValid = true;
+                viewerAdjointStatus = "Unit RGB source; samples averaged, fixed color scale";
+            } else {
+                viewerAdjointStatus = "Last adjoint: " + std::to_string(lastViewerAdjointMs) +
+                    " ms, loss " + std::to_string(lastViewerAdjointLoss);
+            }
         };
 
         auto renderNow = [&]() {
+            if (viewImageMode == ViewImageMode::TargetLoss && targetLossDirty) computeTargetLoss();
             renderWidth = std::clamp(renderWidth, 16u, 4096u);
             renderHeight = std::clamp(renderHeight, 16u, 4096u);
 
@@ -4478,8 +4798,9 @@ int main(int argc, char** argv) {
 
             Pale::PathTracerSettings activeTracerSettings =
                 makeViewerDebugSettings(settings, viewImageMode);
-            if (runAdjointEveryRender || runAdjointNextRender) {
-                viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
+            if (runAdjointEveryRender || runAdjointNextRender ||
+                viewImageMode == ViewImageMode::AdjointDerivative) {
+                viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 256);
                 viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
                 activeTracerSettings.maxAdjointBounces =
                     static_cast<uint32_t>(viewerAdjointBounces);
@@ -4594,6 +4915,10 @@ int main(int argc, char** argv) {
             // Avoid replaying stale movement over several expensive render frames.
             io.ConfigInputTrickleEventQueue = !walkNavigationActive;
             ImGui::NewFrame();
+            // Snapshot the actual object representation to detect every settings
+            // control without coupling cache invalidation to individual widgets.
+            std::array<unsigned char, sizeof(settings)> settingsBeforeUi;
+            std::memcpy(settingsBeforeUi.data(), &settings, sizeof(settings));
 
             bool navigationInputCaptured = walkNavigationActive;
             const bool navigationShortcutAllowed =
@@ -4956,6 +5281,69 @@ int main(int argc, char** argv) {
                 ImGui::EndCombo();
             }
             ImGui::TextDisabled("1-9, 0 direct   +/- cycle display modes");
+            if (viewImageMode == ViewImageMode::AdjointDerivative) {
+                bool changed = ImGui::Combo("Derivative property", &viewerAdjointProperty,
+                    adjointProperties, static_cast<int>(std::size(adjointProperties)));
+                changed |= ImGui::Checkbox("All surfels (common change)", &viewerAdjointAllSurfels);
+                if (!viewerAdjointAllSurfels) {
+                    changed |= ImGui::InputInt("Global surfel index", &viewerAdjointSurfelIndex);
+                    viewerAdjointSurfelIndex = std::clamp(viewerAdjointSurfelIndex, 0,
+                        std::max(0, static_cast<int>(sceneGpu.pointCount) - 1));
+                    std::optional<uint32_t> pickedGlobalIndex;
+                    if (const auto handle = firstPointCloudHandle(scene);
+                        handle && selectedSurfelEditorIndex >= 0) {
+                        const auto found = buildProducts.pointCloudIndexById.find(*handle);
+                        if (found != buildProducts.pointCloudIndexById.end()) {
+                            const auto& range = buildProducts.pointCloudRanges.at(found->second);
+                            if (static_cast<uint32_t>(selectedSurfelEditorIndex) < range.pointCount)
+                                pickedGlobalIndex = range.firstPoint + selectedSurfelEditorIndex;
+                        }
+                    }
+                    ImGui::BeginDisabled(!pickedGlobalIndex);
+                    if (ImGui::Button("Use picked surfel") && pickedGlobalIndex) {
+                        viewerAdjointSurfelIndex = static_cast<int>(*pickedGlobalIndex);
+                        changed = true;
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::TextDisabled("Click the viewport to pick, then use the picked surfel");
+                }
+                changed |= ImGui::SliderInt("Derivative adjoint SPP", &viewerAdjointSamplesPerPixel,
+                    1, 256, "%d", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+                changed |= ImGui::Checkbox("Opacity-based scattering", &viewerAdjointOpacitySampling);
+                if (viewerAdjointOpacitySampling) {
+                    ImGui::TextWrapped("Experimental: qNull = slab transmission, qReflect = 1 - qNull. "
+                        "Zero-opacity slabs lose reflection derivatives; opaque slabs lose transmission derivatives.");
+                } else {
+                    ImGui::Text("Fixed: qNull %.3f, qReflect %.3f",
+                        settings.sampling.qNull, settings.sampling.qReflect);
+                }
+                changed |= ImGui::InputInt("Adjoint seed", &viewerAdjointSeed);
+                viewerAdjointSeed = std::max(0, viewerAdjointSeed);
+                if (ImGui::Button("Resample adjoint")) {
+                    viewerAdjointSeed = (viewerAdjointSeed + 1u) % 2147483647u;
+                    changed = true;
+                }
+                if (changed) renderRequested = true;
+                if (ImGui::DragFloat("Full color at |derivative|", &viewerAdjointColorMaximum,
+                    0.001f, 1.0e-10f, 1.0e10f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
+                    viewerAdjointColorMaximum = std::max(1.0e-10f, viewerAdjointColorMaximum);
+                    updateDisplayTexture();
+                }
+                if (ImGui::Button("Fit derivative colors") && viewerAdjointImageValid) {
+                    viewerAdjointColorMaximum = 1.0e-10f;
+                    for (float g : viewerAdjointImage) if (std::isfinite(g))
+                        viewerAdjointColorMaximum = std::max(viewerAdjointColorMaximum, std::abs(g));
+                    updateDisplayTexture();
+                }
+                ImGui::TextWrapped("Red: increasing this property increases linear R+G+B. "
+                    "Blue: decreases it. White: zero. Colors stay fixed across SPP and seed changes.");
+                ImGui::TextWrapped("All surfels sums the derivative for the same property change everywhere. "
+                    "Rotation uses local tangent-frame radians; albedo changes the red channel only.");
+                ImGui::Text("Adjoint: %.3f ms", lastViewerAdjointMs);
+                ImGui::TextWrapped("%s", viewerAdjointStatus.c_str());
+                if (settings.rendererDebugShareLocalLayerDirectLighting)
+                    ImGui::TextWrapped("Shared lighting is enabled: this displays its existing detached-lighting VJP.");
+            }
             if (ImGui::CollapsingHeader("Median depth settings")) {
                 if (ImGui::SliderFloat("Median depth threshold", &settings.medianDepthThreshold,
                                        0.001f, 0.999f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
@@ -4989,6 +5377,8 @@ int main(int argc, char** argv) {
                 viewImageMode == ViewImageMode::PositionPrimitiveScore ||
                 viewImageMode == ViewImageMode::SurfelDensity ||
                 viewImageMode == ViewImageMode::SurfaceOverlap ||
+                viewImageMode == ViewImageMode::CrowdPenalty ||
+                viewImageMode == ViewImageMode::TargetLoss ||
                 viewImageMode == ViewImageMode::DepthPositionGradient ||
                 viewImageMode == ViewImageMode::NormalPositionGradient ||
                 viewImageMode == ViewImageMode::IntraSlabPositionGradient) {
@@ -5003,9 +5393,26 @@ int main(int argc, char** argv) {
                     updateDisplayTexture();
                 }
             }
-            if (viewImageMode == ViewImageMode::SurfaceOverlap) {
+            if (viewImageMode == ViewImageMode::SurfaceOverlap || viewImageMode == ViewImageMode::CrowdPenalty) {
                 const char* metrics[] = {"Mean slab members", "Slab overflow footprint (%)", "Center slab members"};
-                bool refreshMap = ImGui::Combo("Overlap metric", &surfaceOverlapMetric, metrics, IM_ARRAYSIZE(metrics));
+                bool refreshMap = false;
+                if (viewImageMode == ViewImageMode::SurfaceOverlap)
+                    refreshMap = ImGui::Combo("Overlap metric", &surfaceOverlapMetric, metrics, IM_ARRAYSIZE(metrics));
+                else {
+                    refreshMap |= ImGui::DragFloat("Crowd gate (mean members)", &crowdThreshold,
+                        0.05f, 0.0f, 128.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::Button("Use config default##crowd")) {
+                        crowdThreshold = viewer::defaults::crowdThreshold;
+                        refreshMap = true;
+                    }
+                    const auto blocked = std::count_if(surfaceOverlapScores.begin(), surfaceOverlapScores.end(),
+                        [&](const auto& score) { return viewer::crowdBlocks(score.meanMembers, crowdThreshold); });
+                    ImGui::Text("Blocked by crowd gate: %zu / %zu observed surfels", std::size_t(blocked), surfaceOverlapEligibleCount);
+                    ImGui::TextWrapped(crowdThreshold > 0
+                        ? "Heatmap: mean membership / gate. Magenta: at or above the gate, so cloning and splitting are blocked."
+                        : "Crowd gate disabled (0). Colors show mean membership; no surfels are blocked.");
+                    ImGui::TextWrapped("This is a hard gate, not a gradual loss. Below the gate, saved gradient, size and budget rules still decide cloning. Gray: unobserved (allowed through the gate).");
+                }
                 refreshMap |= ImGui::Checkbox("Normal-distance overlap", &settings.surfaceOverlapNormalDistance);
                 if (ImGui::DragFloat("Overlap distance tolerance", &settings.surfaceOverlapDepthTolerance,
                         0.0001f, 1.0e-5f, 10.0f, "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
@@ -5021,14 +5428,14 @@ int main(int argc, char** argv) {
                     normalCosine, glm::degrees(std::acos(normalCosine)));
                 ImGui::Text("Overflow: more than %u total members (including anchor)", memberLimit);
                 ImGui::TextDisabled("Overlap distance is independent of Surfel traversal. Alpha filtering is disabled.");
-                if (surfaceOverlapMetric != kSlabOverflowMetric) {
+                if (viewImageMode == ViewImageMode::SurfaceOverlap && surfaceOverlapMetric != kSlabOverflowMetric) {
                     refreshMap |= ImGui::SliderFloat("Overlap color maximum (members)",
                         &surfaceOverlapColorMaximum, 1.0f, 128.0f, "%.1f");
                     surfaceOverlapColorMaximum = std::max(surfaceOverlapColorMaximum, 1.0f);
                 }
                 if (refreshMap) {
                     debugDisplayBuffers.surfaceOverlapValid = false;
-                    updateDisplayTexture();
+                    renderRequested = true;
                 }
                 ImGui::Text("Observed surfels: %zu   peak mean slab members: %.2f",
                     surfaceOverlapEligibleCount, surfaceOverlapPeak);
@@ -5043,6 +5450,74 @@ int main(int argc, char** argv) {
                     : "Uses saved scene cameras; orbiting the viewer only changes which surfel scores are displayed.");
                 ImGui::TextWrapped("Potential membership only: hidden surfaces are included; occlusion, transmission and ray-event limits "
                     "are not applied. Black means no observed surfel. Training uses the same scoring rule with its own overlap settings; viewer changes are preview-only.");
+            }
+            if (viewImageMode == ViewImageMode::TargetLoss) {
+                ImGui::InputText("Target dataset / images", targetDatasetBuffer.data(), targetDatasetBuffer.size());
+                ImGui::Combo("Target color space", &targetColorSpace, "Linear\0sRGB\0");
+                if (ImGui::Button("Apply targets")) {
+                    targetDatasetManual = true;
+                    targetLossDirty = true;
+                    renderRequested = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Discover from loaded run")) {
+                    targetDatasetManual = false;
+                    targetLossDirty = true;
+                    renderRequested = true;
+                }
+                if (ImGui::Button("Reproject target loss")) {
+                    targetLossDirty = true;
+                    renderRequested = true;
+                }
+                const char* cameraLabel = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
+                    ? targetLossViews[targetLossCamera].cameraName.c_str() : "All target images";
+                bool recolor = false;
+                if (ImGui::BeginCombo("Loss source camera", cameraLabel)) {
+                    if (ImGui::Selectable("All target images", targetLossCamera == -1)) { targetLossCamera = -1; recolor = true; }
+                    for (std::size_t i = 0; i < targetLossViews.size(); ++i) {
+                        if (ImGui::Selectable(targetLossViews[i].cameraName.c_str(), targetLossCamera == int(i))) {
+                            targetLossCamera = int(i);
+                            recolor = true;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (targetLossCamera == -1)
+                    recolor |= ImGui::Combo("Across cameras", &targetLossAggregation, "Visibility-weighted mean\0Worst camera mean\0");
+                recolor |= ImGui::DragFloat("Loss color maximum", &targetLossColorMaximum, 0.0001f,
+                    1.0e-8f, 1.0e8f, "%.6g", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+                recolor |= ImGui::Checkbox("Logarithmic loss colors", &targetLossLogColors);
+                if (ImGui::Button("Fit loss colors to peak")) {
+                    const auto& scores = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
+                        ? targetLossViews[targetLossCamera].mean : (targetLossAggregation == 0 ? targetLossMean : targetLossWorst);
+                    targetLossColorMaximum = 1.0e-8f;
+                    for (float value : scores) if (std::isfinite(value)) targetLossColorMaximum = std::max(targetLossColorMaximum, value);
+                    recolor = true;
+                }
+                if (recolor) updateDisplayTexture();
+                double loss = 0, unassigned = 0;
+                std::size_t pixelsWithoutSurfels = 0, sourcePixels = 0, sourceViews = 0;
+                for (std::size_t i = 0; i < targetLossViews.size(); ++i) {
+                    if (targetLossCamera >= 0 && int(i) != targetLossCamera) continue;
+                    const auto& view = targetLossViews[i];
+                    loss += view.imageMean;
+                    unassigned += view.unassignedMean;
+                    pixelsWithoutSurfels += view.unassignedPixels;
+                    sourcePixels += view.pixelCount;
+                    ++sourceViews;
+                }
+                if (sourceViews) {
+                    ImGui::Text("Image half-MSE: %.6g   unassigned: %.6g", loss / sourceViews, unassigned / sourceViews);
+                    ImGui::Text("Pixels without a surfel contribution: %zu / %zu", pixelsWithoutSurfels, sourcePixels);
+                }
+                ImGui::TextWrapped("%s", targetLossStatus.c_str());
+                ImGui::Text("Last projection: %.1f ms", targetLossComputeMs);
+                ImGui::TextWrapped("Linear RGB half-squared error, weighted by slab opacity and transmission onto each surfel. "
+                    "Gray: no target observation. Black: background. Colors remain fixed while orbiting.");
+                ImGui::TextWrapped("Completely missing geometry has no surfel to color; its image loss is included in unassigned above. "
+                    "This is image-error attribution, not a geometry gradient or a geometric regularizer.");
+                ImGui::TextWrapped("Projection refreshes after geometry or renderer changes. Exposure and display gamma do not affect the linear loss. "
+                    "Targets must match scene camera names and resolution; alpha is ignored, as in training.");
             }
             if (viewImageMode == ViewImageMode::SurfelDensity) {
                 if (ImGui::SliderInt("Density grid (cells per axis)", &densityGridSize, 8, 256)) {
@@ -5581,22 +6056,23 @@ int main(int argc, char** argv) {
                         renderRequested = true;
                     }
 
-                    if (ImGui::DragInt("Adjoint SPP", &viewerAdjointSamplesPerPixel, 0.1f, 1, 64)) {
-                        viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 64);
+                    if (ImGui::SliderInt("Adjoint SPP", &viewerAdjointSamplesPerPixel, 1, 256,
+                                         "%d", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp)) {
+                        viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 256);
                         tracerDirty = true;
-                        if (runAdjointEveryRender) {
+                        if (runAdjointEveryRender || viewImageMode == ViewImageMode::AdjointDerivative) {
                             renderRequested = true;
                         }
                     }
                     if (ImGui::DragInt("Adjoint bounces", &viewerAdjointBounces, 0.1f, 1, 8)) {
                         viewerAdjointBounces = std::clamp(viewerAdjointBounces, 1, 8);
                         tracerDirty = true;
-                        if (runAdjointEveryRender) {
+                        if (runAdjointEveryRender || viewImageMode == ViewImageMode::AdjointDerivative) {
                             renderRequested = true;
                         }
                     }
                     if (ImGui::Checkbox("Adjoint direct light", &viewerAdjointDirectLight) &&
-                        runAdjointEveryRender) {
+                        (runAdjointEveryRender || viewImageMode == ViewImageMode::AdjointDerivative)) {
                         tracerDirty = true;
                         renderRequested = true;
                     }
@@ -6247,6 +6723,10 @@ int main(int argc, char** argv) {
             }
 
             ImGui::EndDisabled();
+            if (std::memcmp(settingsBeforeUi.data(), &settings, sizeof(settings)) != 0) {
+                targetLossDirty = true;
+                if (viewImageMode == ViewImageMode::TargetLoss) renderRequested = true;
+            }
             ImGui::Render();
             int displayW = 0;
             int displayH = 0;
@@ -6272,6 +6752,7 @@ int main(int argc, char** argv) {
             deviceProfilingCounters = nullptr;
         }
         Pale::freeGradientsForScene(queue, viewerAdjointGradients);
+        Pale::freeDebugImagesForScene(queue, &viewerAdjointDebugImages, 1u);
         freeViewerRegularizerGradients();
         texture.destroy();
 

@@ -168,11 +168,73 @@ gradient allocation. Dominant primitive IDs are computed only for views that
 need them. Explicit **Adjoint profiling → Every render** remains an opt-in
 background profiling operation.
 
-The debug controls mirror the current defaults in `python/config.py`: position
-threshold `0.005`, radiance-bias strength `0.5`, weight limits `[0.2, 1.5]`, and
-radiance floor `0.005`. Position previews start at this threshold when loading a
+The debug controls are generated from `python/config.py` at build time: position
+threshold `0.0005`, radiance-bias strength `0.8`, weight limits `[0.25, 1.5]`,
+radiance floor `0.001`, and crowd gate `3.0` with the current defaults.
+CMake regenerates these values when the config changes. Position previews start at this threshold when loading a
 snapshot; **Use saved** selects its recorded threshold and **Use config default**
-restores `0.005`.
+restores the config value.
+
+### Crowd penalty in 3D
+
+Select **Display → Crowd penalty (clone / split gate)**. Each primitive is colored
+by its full-footprint mean slab membership divided by the selected crowd gate.
+Magenta means membership is **at or above** the gate: training would block both
+cloning and position splitting for that parent. This is a hard eligibility gate,
+not an additive loss or a continuous reduction of the cloning signal. Below the
+gate, the gradient, size and budget checks still apply. Gray means unobserved;
+training allows these parents through this gate. Black is background.
+
+**Crowd gate (mean members)** previews other thresholds; `0` disables blocking.
+**Use config default** restores the build's `densification_max_mean_slab_members`.
+The overlap distance and normal controls are shared with **Surface overlap**.
+The calculation includes the anchor, excludes lights, and uses 64 footprint
+samples per saved scene camera. The score stays attached to each primitive while
+orbiting. These controls preview the gate without modifying the training config.
+
+### Target image loss in 3D
+
+Select **Display → Target RGB loss (projected into 3D)**. The viewer discovers the
+dataset and explicit target color space from the loaded snapshot's
+`run_config.json`, or looks for `images/` beside the scene XML. You can enter a
+dataset or images directory and choose **Linear** or **sRGB**, then **Apply targets**.
+Image stems must match scene camera names exactly, and dimensions must match.
+EXR, HDR, PNG (including 16-bit), JPEG, BMP and TGA are supported. Unsupported
+images, duplicate names and mismatched dimensions produce a visible error.
+Runs saved with automatic color interpretation require an explicit choice here;
+the viewer does not perform ICC profile conversion.
+
+Each matching camera is rendered at its native resolution using the current
+viewer renderer settings. The error is the training RGB objective
+`0.5 * mean_rgb((render - target)^2)` in linear light, before exposure or output
+gamma; alpha is ignored. Camera rays distribute that error with the renderer's
+slab weights and accumulated transmission, including its batched traversal,
+normal/depth filters, member and event limits. Each surfel stores weighted mean
+error over its visible pixels. Hidden surfels receive no contribution through
+opaque geometry. Placed instances have separate scores.
+
+Choose **All target images** for the visibility-weighted mean or the worst
+camera's mean, or select one camera under **Loss source camera**. The all-camera
+mean normalizes each image by its pixel count, matching training's image mean.
+Gray means there is no target observation; zero measured loss uses the lowest
+colormap color. Colors remain fixed while orbiting. **Loss color maximum**,
+**Logarithmic loss colors**, and **Fit loss colors to peak** control the scale.
+
+The first projection renders all matching targets and may take a while. It is
+cached until geometry or renderer settings change; **Reproject target loss**
+refreshes targets edited on disk. Switching back to **Rendered** stops diagnostic
+work. This view requires photon mapping with **CameraGatherKernel2** and the
+shared surface experiment disabled. It uses current geometry and lighting, so
+matching the saved training renderer settings matters when comparing losses.
+
+This is image-error attribution, not a geometric loss or a position gradient.
+Completely missing surfaces cannot be colored in 3D: the panel reports the loss
+and number of pixels that have no surfel contribution (including empty rays,
+mesh-only hits and fully transparent footprints). The image mean still includes
+those pixels. Missing target cameras are counted explicitly. Viewport colors
+use the frontmost geometric surfel, as in the position-score and overlap views.
+
+Regression checks: `python3 -m unittest discover -s python/test -p test_target_loss_projection.py`.
 
 ### Depth-distortion previews
 
@@ -187,7 +249,7 @@ frame, so equal colors across frames do not imply equal loss values.
 
 ### Surface overlap and slab capacity
 
-Press **0** for **Surface overlap (world space)**. **Normal-distance overlap** is
+Press **8** for **Surface overlap (world space)**. **Normal-distance overlap** is
 enabled by default. It counts intersections within **Overlap distance tolerance**
 along the anchor surfel's normal, both in front and behind. The default tolerance
 is `0.005` scene units. Disable the checkbox to compare symmetric camera-ray
@@ -217,8 +279,8 @@ transmission, candidate-batch limits, and ray-event limits are not applied.
 An unobserved surfel has no score. Changing the view or its color maximum does
 not alter training or split selection.
 
-Training uses the same mean-members calculation, with a default gate of `2`.
-Set `--densification-max-mean-slab-members 3` for a looser threshold, or `0`
+Training uses the same mean-members calculation, with a current default gate of `3`.
+Set `--densification-max-mean-slab-members 2` for a stricter threshold, or `0`
 to disable this gate. A value of 3 includes the parent: roughly two
 other members per sample on average. The score is a mean across footprint
 locations and in-frame scene-camera rays, not a count of distinct neighbors that
@@ -343,3 +405,43 @@ in the current build (122.1 MiB at 500×500), reported by
 `get_backward_allocation_stats()["primary_slab_cache_bytes"]`. Set the native
 constructor setting to false to compare against recomputation. Unsupported
 paths retain recomputation automatically.
+
+### Adjoint radiance derivative / sampling variance
+
+Select **Adjoint radiance derivative (signed)** under **Display**. This runs the
+existing backward pass with source `(1,1,1)` at every pixel of the current view
+camera. Each pixel shows `d(R+G+B)/d(property)` in linear radiance, without
+photometric loss, pixel-count normalization, tone mapping or regularizers.
+Red is positive, blue negative, white zero, and magenta non-finite.
+
+Choose position, local rotation (radians), scale, opacity, albedo R, or beta.
+**All surfels (common change)** sums the pixel derivatives for the same scalar
+perturbation on all surfels; disabling it selects a global GPU surfel index. You can also click the viewport
+and press **Use picked surfel**.
+This is a camera-pixel Jacobian image, including shadow and camera occlusion
+contributions, rather than a projection of each visible surfel's total gradient.
+The current shared-lighting and traversal settings still apply.
+
+**Derivative adjoint SPP** ranges from 1 to 256 and averages the samples. The seed
+stays fixed when SPP changes; **Resample adjoint** increments it. Repeating a
+fixed configuration reproduces its samples, up to floating-point atomic order.
+**Full color at |derivative|** stays fixed across renders; **Fit derivative
+colors** explicitly sets it to the current peak. Hold this scale, geometry,
+camera, and seed fixed when comparing SPP. The ordinary screenshot button saves
+the signed map, including derivatives on pixels with zero rendered opacity.
+
+**Opacity-based scattering** is an experimental adjoint-only sampling mode:
+`qNull = product(1 - effectiveAlpha)` across the slab and
+`qReflect = 1 - qNull`. Effective alpha includes each member's radial profile.
+Selected branches use the matching inverse probability; sampling PDFs are
+held constant in the VJP. Fixed probabilities remain the default. In the
+interior, changing these probabilities changes variance, not expected derivative
+scale. Near zero or one, inverse probabilities can give high variance. At the
+endpoints, the unsampled branch loses derivative support: fully transparent
+slabs cannot provide reflection derivatives, and fully opaque slabs cannot
+provide camera-transmission derivatives. A transparent *member* of a partially
+opaque slab can still receive gradients. No probability floor is silently added.
+
+Python diagnostics expose the same options as `debug_images=True`,
+`debug_all_surfels=True` (or `debug_surfel_index=N`), and
+`adjoint_opacity_sampling=True`. These settings do not change forward sampling.

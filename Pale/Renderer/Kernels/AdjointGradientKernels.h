@@ -50,7 +50,8 @@ namespace Pale {
             return;
         }
 
-        if (gradientRecord.primitiveIndex != selectedPrimitiveIndex) {
+        if (selectedPrimitiveIndex != kDebugGradientAllSurfels &&
+            gradientRecord.primitiveIndex != selectedPrimitiveIndex) {
             return;
         }
 
