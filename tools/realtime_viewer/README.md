@@ -476,10 +476,10 @@ viewer, retain fixed sampling unless they explicitly enable the option.
 The enabled sampler makes one decision for the complete local slab, using its
 combined opacity, including each member's radial footprint. With
 `adjoint_opacity_uniform_mix = m`, reflection has probability
-`(1 - m) * slab_opacity + m / 2`; transmission uses the complement. The default
+`(1 - m) * slab_opacity + m / 2`; transmission uses the complement. The option
 `m = 0.2` keeps both probabilities at least 0.1, retaining opacity derivatives at
-fully transparent or opaque surfaces. `m = 0.0` reproduces pure opacity sampling,
-which can lose derivative support at those endpoints. `m = 1.0` reproduces fixed
+fully transparent or opaque surfaces. Training currently uses `m = 0.0` for pure
+opacity sampling, which can lose derivative support at those endpoints. `m = 1.0` reproduces fixed
 0.5/0.5 sampling, including the same seeded choices.
 
 Probabilities are detached sampling choices; the estimator retains their inverse

@@ -76,7 +76,7 @@ class OptimizationConfig:
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0020
     learning_rate_albedo: float = 0.002
-    learning_rate_opacity: float = 0.0015
+    learning_rate_opacity: float = 0.001
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -86,16 +86,16 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 3.0
-    position_lr_scale_final: float = 0.5
+    position_lr_scale_init: float = 10.0
+    position_lr_scale_final: float = 0.3
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.00075
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_start_iteration: int = 1000
+    depth_distort_start_iteration: int = 2000
     normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
@@ -140,14 +140,14 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 2.0
+    densification_max_mean_slab_members: float = 1.5
     densification_verbose: bool = False
 
     densification_grad_abs_min: float = 0.5e-3
     densification_grad_abs_min_final: float = 0.5e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
-    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
+    densification_split_scale_factor: float = 1.1 # 1.6 matches 3DGS split procedure.
     densification_split_offset_scale: float = 0.1
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
