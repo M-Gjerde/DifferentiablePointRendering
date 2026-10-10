@@ -48,6 +48,43 @@ def make_zero_loss_values() -> dict[str, float]:
     return {loss_key: 0.0 for loss_key in LOSS_VALUE_KEYS}
 
 
+@torch.no_grad()
+def compute_opacity_prior(
+        opacities: torch.Tensor,
+        trainable_surfel_mask: torch.Tensor,
+        weight: float,
+) -> tuple[float, np.ndarray | None]:
+    """Return raw mean-square loss and weighted physical-opacity gradient.
+
+    This scene-level prior is applied once, after camera gradient scaling.
+    Frozen/emissive surfels are excluded from both the loss and normalization.
+    """
+    if not np.isfinite(weight) or weight < 0.0:
+        raise ValueError("opacity_prior_weight must be finite and non-negative")
+    if weight == 0.0:
+        return 0.0, None
+    values = opacities.detach().reshape(-1)
+    mask = trainable_surfel_mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+    if mask.shape != values.shape:
+        raise ValueError("Opacity prior mask/parameter shape mismatch")
+    gradient = torch.zeros_like(values)
+    count = int(mask.sum().item())
+    raw_loss = 0.0
+    if count:
+        residual = values[mask] - 1.0
+        raw_loss = float(residual.square().mean().item())
+        gradient[mask] = (2.0 * weight / count) * residual
+    return raw_loss, gradient.reshape(opacities.shape).cpu().numpy()
+
+
+def add_opacity_prior_loss(loss_state: dict[str, Any], raw_loss: float, weight: float) -> None:
+    """Add the current scene prior after averaging/caching camera-only losses."""
+    weighted_loss = weight * raw_loss
+    loss_state["total_opacity_prior_loss_raw"] = raw_loss
+    loss_state["total_opacity_prior_loss_weighted"] = weighted_loss
+    loss_state["total_loss_value"] += weighted_loss
+
+
 def make_averaged_loss_state_from_camera_cache(
         latest_loss_values_by_camera: dict[str, dict[str, float]],
         expected_camera_ids: list[str],
@@ -685,6 +722,7 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
     intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
+    opacity_prior_weighted = float(loss_state.get("total_opacity_prior_loss_weighted", 0.0))
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
@@ -692,7 +730,7 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     after_intra_slab = after_normal + intra_slab_weighted
     regularizer_total = (
         depth_weighted + normal_weighted +
-        intra_slab_weighted
+        intra_slab_weighted + opacity_prior_weighted
     )
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
@@ -708,6 +746,8 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
         f"(+{normal_weighted:.3e})\n"
         f"  {'+ intra-slab depth':<28} {after_intra_slab:>12.3e}  "
         f"(+{intra_slab_weighted:.3e})\n"
+        f"  {'+ opacity prior':<28} {after_intra_slab + opacity_prior_weighted:>12.3e}  "
+        f"(+{opacity_prior_weighted:.3e})\n"
         f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
         f"  {'total':<28} {total_loss:>12.3e}"
     )
@@ -777,6 +817,7 @@ def format_training_iteration_log(
         f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
         f" intra_slab_raw={loss_state['total_intra_slab_depth_loss_raw']:.3e}"
         f" intra_slab_w={loss_state['total_intra_slab_depth_loss_weighted']:.3e}"
+        f" opacity_prior_w={loss_state.get('total_opacity_prior_loss_weighted', 0.0):.3e}"
         f" total={loss_state['total_loss_value']:.3e}\n"
         f"  grad_rms:"
         f" pos={grad_pos_rms:.2e}"
@@ -1469,6 +1510,8 @@ def print_loss_summary(
         intra_slab_depth_loss_raw: float,
         intra_slab_depth_loss_weighted: float,
         total_loss: float,
+        opacity_prior_loss_raw: float = 0.0,
+        opacity_prior_loss_weighted: float = 0.0,
 ) -> None:
     print_status(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
     print_status(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
@@ -1477,6 +1520,8 @@ def print_loss_summary(
     print_status(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
     print_status(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
     print_status(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
+    print_status(f"{prefix} opacity prior loss (raw)               : {opacity_prior_loss_raw:.6e}")
+    print_status(f"{prefix} opacity prior loss (weighted)          : {opacity_prior_loss_weighted:.6e}")
     print_status(f"{prefix} total loss                             : {total_loss:.6e}")
 
 

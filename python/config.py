@@ -20,10 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
-    adjoint_opacity_sampling: bool = True
-    # qReflect = mix/2 + (1-mix)*slabOpacity. Mix 0.2 gives a 0.1 probability floor.
-    adjoint_opacity_uniform_mix: float = 0.0  # 0: pure opacity; 1: uniform 0.5/0.5.
+    adjoint_passes: int = 10
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
@@ -59,7 +56,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 20_000
+    iterations: int = 30_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -83,21 +80,24 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 1.75
+    position_lr_scale_init: float = 2.0
     position_lr_scale_final: float = 0.4
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18_000
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.0008
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_start_iteration: int = 2500
-    normal_consistency_weight: float = 10.0e-4
-    normal_consistency_start_iteration: int = 3500
+    depth_distort_start_iteration: int = 2000
+    normal_consistency_weight: float = 1.0e-3
+    normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
 
     intra_slab_depth_weight: float = 0.0e-5
+
+    # Parameter prior: weight * mean((1 - opacity)^2) over non-emissive surfels.
+    opacity_prior_weight: float = 0.0  # Disabled; independent of camera batch scaling.
 
     # Rendering model
     adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
@@ -112,7 +112,7 @@ class OptimizationConfig:
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
-    min_surfel_opacity: float = 0.3  # Strict opacity < threshold; 0 disables opacity pruning.
+    min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -134,7 +134,7 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 2.0
+    densification_max_mean_slab_members: float = 3.0
     densification_verbose: bool = False
 
     densification_grad_abs_min: float = 0.5e-3
@@ -507,6 +507,7 @@ def parse_args() -> OptimizationConfig:
         "normal_consistency_weight",
         "depth_distort_weight",
         "intra_slab_depth_weight",
+        "opacity_prior_weight",
     )
     _add_boolean_argument(
         objective,
@@ -727,6 +728,8 @@ def parse_args() -> OptimizationConfig:
         parser.error("--local-layer-depth-epsilon must be finite and greater than 1e-6")
     if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
+    if not math.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
+        parser.error("--opacity-prior-weight must be finite and non-negative")
     if config.topology_freeze_last_iterations < 0:
         parser.error("--topology-freeze-last-iterations must be non-negative")
 

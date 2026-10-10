@@ -355,6 +355,7 @@ def filter_metrics_rows(dataframe: pd.DataFrame) -> pd.DataFrame:
         "loss_total_mean",
         "loss_rgb_mean",
         "loss_rgb_l2_mean",
+        "loss_opacity_prior_weighted",
     )
 
     if any(column_name in dataframe.columns for column_name in averaged_loss_columns):
@@ -925,8 +926,7 @@ def draw_metrics_figure(
                 "loss_intra_slab_depth_weighted_mean",
                 "loss_intra_slab_depth_weighted_sum",
             ),
-            (
-            ),
+            ("loss_opacity_prior_weighted",),
             (
                 "loss_bsdf_decay_weighted_mean",
                 "loss_bsdf_decay_weighted_sum",
@@ -1050,6 +1050,11 @@ def draw_metrics_figure(
         ),
         "loss_intra_slab_depth_weighted_mean": dict(
             color="tab:cyan",
+            linewidth=1.8,
+            alpha=0.95,
+        ),
+        "loss_opacity_prior_weighted": dict(
+            color="tab:purple",
             linewidth=1.8,
             alpha=0.95,
         ),

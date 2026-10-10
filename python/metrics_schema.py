@@ -18,6 +18,8 @@ METRICS_COLUMNS = (
     "loss_normal_consistency_weighted_mean",
     "loss_intra_slab_depth_raw_mean",
     "loss_intra_slab_depth_weighted_mean",
+    "loss_opacity_prior_raw",
+    "loss_opacity_prior_weighted",
     "loss_total_mean",
     "num_points",
     "densification_new_points",

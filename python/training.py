@@ -459,6 +459,7 @@ def make_device_training_step_options(
             float(config.learning_rate_beta),
         ),
         "camera_batch_scale": camera_batch_scale,
+        "opacity_prior_weight": float(config.opacity_prior_weight),
         "return_gradient_stats": return_gradient_stats,
         "accumulate_densification_stats": accumulate_densification_stats,
         "densification_downweight_normal_gradients": bool(config.densification_downweight_normal_gradients),
@@ -643,6 +644,8 @@ def compute_iteration_gradients(
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
+    if not np.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
+        raise ValueError("opacity_prior_weight must be finite and non-negative")
     if not np.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         raise ValueError(f"min_surfel_opacity must be finite and in [0, 1], got {config.min_surfel_opacity}")
     if config.topology_freeze_last_iterations < 0:
@@ -681,6 +684,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e} "
         f"start_iter={normal_consistency_start_iteration}, "
         f"intra_slab_depth={use_intra_slab_depth} weight={intra_slab_depth_weight:.3e}, "
+        f"opacity_prior_weight={config.opacity_prior_weight:.3e}, "
     )
     if (int(config.inactive_transport_prune_cycles) > 0 and
             not hasattr(renderer, "get_primal_activity_stats")):
@@ -773,6 +777,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     del initial_images
 
+    initial_prior_raw, _ = helpers.compute_opacity_prior(
+        opacities, trainable_surfel_mask, config.opacity_prior_weight,
+    )
+    initial_prior_weighted = config.opacity_prior_weight * initial_prior_raw
+    initial_loss_tuple = (
+        *initial_loss_tuple[:-1], initial_loss_tuple[-1] + initial_prior_weighted,
+        initial_prior_raw, initial_prior_weighted,
+    )
     helpers.print_loss_summary("Initial", *initial_loss_tuple)
 
     densification_interval = int(config.densification_interval)
@@ -1119,6 +1131,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         latest_loss_values_by_camera=latest_loss_values_by_camera,
                         expected_camera_ids=list(training_camera_ids),
                     )
+                    # Native loss is measured before the update, like RGB loss.
+                    if config.opacity_prior_weight > 0.0 and "opacity_prior_loss_raw" not in adjoint_images:
+                        raise RuntimeError("Opacity prior requires rebuilding the pale module")
+                    prior_raw = float(adjoint_images.get("opacity_prior_loss_raw", 0.0))
+                    helpers.add_opacity_prior_loss(loss_state, prior_raw, config.opacity_prior_weight)
+                    helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
 
                     if topology_updates_enabled and inactive_transport_prune_cycles > 0:
                         active_during_camera_cycle_np |= active_surfel_mask_from_primal_transport(
@@ -1628,6 +1646,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["total_normal_loss_weighted"],
                             averaged_loss_state["total_intra_slab_depth_loss_raw"],
                             averaged_loss_state["total_intra_slab_depth_loss_weighted"],
+                            averaged_loss_state["total_opacity_prior_loss_raw"],
+                            averaged_loss_state["total_opacity_prior_loss_weighted"],
                             averaged_loss_state["total_loss_value"],
                             num_points,
                             densification_new_points,
@@ -1789,6 +1809,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         photo_gradients,
                         surface_regularizer_gradients,
                     )
+
+                # A parameter prior is independent of camera count and is not a
+                # densification signal. Add it after camera scaling, before Adam.
+                prior_raw, prior_gradient = helpers.compute_opacity_prior(
+                    opacities, trainable_surfel_mask, config.opacity_prior_weight,
+                )
+                if prior_gradient is not None:
+                    total_gradients["opacity"] = total_gradients["opacity"] + prior_gradient.reshape(
+                        total_gradients["opacity"].shape)
+                helpers.add_opacity_prior_loss(loss_state, prior_raw, config.opacity_prior_weight)
+                helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
 
                 (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
                  grad_betas_np,) = helpers.extract_total_gradient_arrays(total_gradients)
@@ -2263,6 +2294,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_normal_loss_weighted"],
                         averaged_loss_state["total_intra_slab_depth_loss_raw"],
                         averaged_loss_state["total_intra_slab_depth_loss_weighted"],
+                        averaged_loss_state["total_opacity_prior_loss_raw"],
+                        averaged_loss_state["total_opacity_prior_loss_weighted"],
                         averaged_loss_state["total_loss_value"],
                         num_points,
                         densification_new_points,
@@ -2452,6 +2485,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_total_loss += intra_slab_depth_cam_weighted
 
 
+    final_prior_raw, _ = helpers.compute_opacity_prior(
+        opacities, trainable_surfel_mask, config.opacity_prior_weight,
+    )
+    final_prior_weighted = config.opacity_prior_weight * final_prior_raw
+    final_total_loss += final_prior_weighted
     helpers.print_loss_summary("Initial", *initial_loss_tuple)
     helpers.print_loss_summary(
         "Final",
@@ -2463,6 +2501,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_intra_slab_depth_loss_raw,
         final_intra_slab_depth_loss_weighted,
         final_total_loss,
+        final_prior_raw,
+        final_prior_weighted,
     )
     refresh_current_densification_snapshot(helpers.scheduled_densification_grad_abs_min(
         initial_threshold=densification_grad_abs_min,
