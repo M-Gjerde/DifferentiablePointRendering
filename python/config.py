@@ -56,7 +56,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 20_000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -69,8 +69,8 @@ class OptimizationConfig:
     learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0020
-    learning_rate_albedo: float = 0.001
-    learning_rate_opacity: float = 0.003
+    learning_rate_albedo: float = 0.004
+    learning_rate_opacity: float = 0.002
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -87,9 +87,9 @@ class OptimizationConfig:
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0008
+    depth_distort_weight: float = 0.001
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_start_iteration: int = 2000
+    depth_distort_start_iteration: int = 1500
     normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
@@ -134,7 +134,7 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 3.0
+    densification_max_mean_slab_members: float = 2.0
     densification_verbose: bool = False
 
     densification_grad_abs_min: float = 0.5e-3
