@@ -93,7 +93,7 @@ class OptimizationConfig:
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0008 
+    depth_distort_weight: float = 0.00025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 2000
     normal_consistency_weight: float = 1.0e-3
@@ -143,8 +143,8 @@ class OptimizationConfig:
     densification_max_mean_slab_members: float = 1.5
     densification_verbose: bool = False
 
-    densification_grad_abs_min: float = 0.5e-3
-    densification_grad_abs_min_final: float = 0.5e-3
+    densification_grad_abs_min: float = 0.25e-3
+    densification_grad_abs_min_final: float = 0.25e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
