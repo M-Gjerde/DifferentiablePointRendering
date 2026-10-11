@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 16
+    adjoint_passes: int = 10
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -62,7 +62,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 20_000
+    iterations: int = 30000 
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -72,11 +72,11 @@ class OptimizationConfig:
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.0002
+    learning_rate_position: float = 0.0005 
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0020
-    learning_rate_albedo: float = 0.002
-    learning_rate_opacity: float = 0.001
+    learning_rate_albedo: float = 0.001 
+    learning_rate_opacity: float = 0.003 
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -86,14 +86,14 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 5.0
+    position_lr_scale_init: float = 1.5
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 15_000
+    lr_decay_max_steps: int = 18000 
 
 
     # Objective: geometric regularizers
-    depth_distort_weight: float = 0.0025
+    depth_distort_weight: float = 0.0008 
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 2000
     normal_consistency_weight: float = 1.0e-3
@@ -118,7 +118,7 @@ class OptimizationConfig:
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
-    min_surfel_opacity: float = 0.4  # Strict opacity < threshold; 0 disables opacity pruning.
+    min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -147,13 +147,13 @@ class OptimizationConfig:
     densification_grad_abs_min_final: float = 0.5e-3
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
-    densification_split_scale_factor: float = 1.1 # 1.6 matches 3DGS split procedure.
-    densification_split_offset_scale: float = 0.1
+    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
+    densification_split_offset_scale: float = 0.2 
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
     densification_radiance_bias_strength: float = 0.8
     densification_radiance_bias_min_weight: float = 0.25
-    densification_radiance_bias_max_weight: float = 1.5
+    densification_radiance_bias_max_weight: float = 1.65
 
     rebuild_bvh_interval: int = densification_interval
     # Mesh extraction and evaluation
