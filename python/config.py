@@ -62,7 +62,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 30000 
+    iterations: int = 20000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -74,7 +74,7 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.0005 
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0020
+    learning_rate_scale: float = 0.0030
     learning_rate_albedo: float = 0.001 
     learning_rate_opacity: float = 0.003 
     learning_rate_beta: float = 0.0005
@@ -89,10 +89,7 @@ class OptimizationConfig:
     position_lr_scale_init: float = 1.5
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 18000 
-
-
-    # Objective: geometric regularizers
+    lr_decay_max_steps: int = 18000  # Objective: geometric regularizers
     depth_distort_weight: float = 0.00025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_start_iteration: int = 2000
@@ -143,8 +140,8 @@ class OptimizationConfig:
     densification_max_mean_slab_members: float = 1.5
     densification_verbose: bool = False
 
-    densification_grad_abs_min: float = 0.25e-3
-    densification_grad_abs_min_final: float = 0.25e-3
+    densification_grad_abs_min: float = 0.00025
+    densification_grad_abs_min_final: float = 0.00025
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
