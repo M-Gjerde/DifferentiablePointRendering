@@ -489,3 +489,37 @@ The enabled mode ignores fixed `adjoint_q_null` / `adjoint_q_reflect` values.
 Python callers can also switch modes on an existing renderer through
 `set_traversal_sampling_options({"adjoint_opacity_sampling": True,
 "adjoint_opacity_uniform_mix": 0.2})`.
+
+## Transport contribution inspection
+
+Press **R** to load an optimization snapshot, then check **Contribution scores**
+in **Render & display** (also available in the Display menu). The first analysis
+renders every saved scene camera at its native resolution using the native
+camera/shadow activity counters. Results are cached while orbiting. In **Display
+diagnostics**, choose a camera, or **All training cameras (one cycle)**, and choose
+combined, camera-only, or shadow-only support. Held-out cameras are available
+individually but excluded from the training aggregate.
+
+**Passing score** defaults to 10. Pink surfels have scores strictly below the
+threshold; green surfels pass. Changing the threshold or score source recolors
+the cached data immediately. **X-ray affected centers** draws pink markers even
+behind opaque blockers; click one to inspect its per-camera camera/shadow scores.
+Markers for the selected editable surfel have a white ring. At most 20,000
+on-screen markers are drawn; **Select next affected surfel** also reaches entries
+beyond this display limit. Geometry from other point clouds is scored and drawn,
+but picking follows the viewer's existing first editable point-cloud convention.
+
+By default analysis reads traversal, lighting-sharing and sampling settings from
+`run_config.json` beside the loaded snapshot (or a parent directory). Disable
+**Use saved run settings** to analyze current viewer settings instead. **Recompute
+contributions** refreshes the analysis; geometry and renderer-setting changes
+invalidate it automatically. This is a preview: it does not change opacity,
+training configuration, or delete points.
+
+Camera support sums incoming transmission times local-layer member opacity
+weight. Shadow support sums receiver weight times incoming shadow transmission
+times blocker opacity. The combined training-camera aggregate uses the same score
+rule as inactive-transport pruning. It recomputes the current snapshot, rather
+than recovering historical training-cycle values: geometry changed during that
+cycle, and sampled shadow rays may differ. These scores measure direct camera and
+shadow support, not indirect-light importance or exact loss change on deletion.

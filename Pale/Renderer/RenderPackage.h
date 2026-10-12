@@ -76,12 +76,16 @@ namespace Pale {
     };
 
     // Deterministic forward-transport liveness used by topology pruning.
-    // These counters are structural statistics, not adjoints. They are reset
+    // These counts and scores are structural statistics, not adjoints. They are reset
     // before each forward render and accumulated atomically by camera/slab and
     // point-light shadow traversal.
     struct PrimalActivityStats {
         uint32_t *cameraSurfaceHitCount = nullptr;
         uint32_t *shadowOccluderHitCount = nullptr;
+        // Camera: incoming transmission * symmetric slab member weight.
+        // Shadow: receiver camera weight * incoming shadow transmission * opacity.
+        float *cameraSurfaceScore = nullptr;
+        float *shadowOccluderScore = nullptr;
         size_t numPoints{0};
     };
 

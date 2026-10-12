@@ -359,7 +359,7 @@ namespace Pale {
 
     // Maximum expected per-ray surfel intersections.
     // Must be compile-time constant for stack arrays in SYCL device code.
-    constexpr uint32_t kMaxSplatEventsPerRay = 10;
+    constexpr uint32_t kMaxSplatEventsPerRay = 16;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
     constexpr uint32_t kMaxPointHitBatch = 8;
     constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;

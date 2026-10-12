@@ -37,6 +37,7 @@
 #include <yaml-cpp/yaml.h>
 #include "TrainingDebugDefaults.h"
 #include "TargetLossProjection.h"
+#include "TransportScores.h"
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/RenderPackage.h"
@@ -164,9 +165,10 @@ namespace {
         NormalPositionGradient,
         IntraSlabPositionGradient,
         AdjointDerivative,
+        TransportScore,
     };
 
-    constexpr std::array<ViewImageMode, 19> kViewImageModeCycleOrder = {
+    constexpr std::array<ViewImageMode, 20> kViewImageModeCycleOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -186,9 +188,10 @@ namespace {
         ViewImageMode::NormalPositionGradient,
         ViewImageMode::IntraSlabPositionGradient,
         ViewImageMode::AdjointDerivative,
+        ViewImageMode::TransportScore,
     };
 
-    constexpr std::array<const char*, 19> kViewImageModeLabels = {
+    constexpr std::array<const char*, 20> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -208,6 +211,7 @@ namespace {
         "Normal consistency |grad position|",
         "Intra-slab consensus |grad position|",
         "Adjoint radiance derivative (signed)",
+        "Transport contribution score",
     };
 
     [[nodiscard]] const char* viewImageModeLabel(ViewImageMode mode) {
@@ -2275,6 +2279,7 @@ namespace {
             mode != ViewImageMode::SurfaceOverlap &&
             mode != ViewImageMode::CrowdPenalty &&
             mode != ViewImageMode::TargetLoss &&
+            mode != ViewImageMode::TransportScore &&
             mode != ViewImageMode::PositionPrimitiveScore &&
             mode != ViewImageMode::AdjointDerivative;
         settings.computeDepthNormalDiagnostics =
@@ -3013,7 +3018,7 @@ int main(int argc, char** argv) {
         constexpr int kMeanSlabMembersMetric = 0;
         constexpr int kSlabOverflowMetric = 1;
         int surfaceOverlapMetric = kMeanSlabMembersMetric;
-        float surfaceOverlapColorMaximum = 8.0f;
+        float surfaceOverlapColorMaximum = 4.0f;
         double surfaceOverlapComputeMs = 0.0;
         float surfaceOverlapPeak = 0.0f;
         std::size_t surfaceOverlapEligibleCount = 0u;
@@ -3030,6 +3035,25 @@ int main(int argc, char** argv) {
         std::array<char, 2048> targetDatasetBuffer{};
         bool targetDatasetManual = false;
         int targetColorSpace = std::string(viewer::defaults::targetColorSpace) == "srgb" ? 1 : 0;
+        bool transportDirty = true;
+        bool transportUseSavedSettings = true;
+        bool transportXray = true;
+        float transportThreshold = viewer::defaults::transportMinScore;
+        int transportSource = -1; // -1 training cameras; otherwise one saved camera
+        int transportComponent = 0; // combined, camera, shadow
+        std::vector<viewer::TransportCameraScores> transportViews;
+        std::vector<double> transportScores;
+        std::vector<std::size_t> transportAffected;
+        std::string transportStatus = "Enable contribution scores to analyze the loaded scene cameras.";
+        struct TransportMarker { glm::vec3 center; std::size_t primitive; int editableIndex; };
+        std::vector<TransportMarker> transportMarkers;
+        auto refreshTransportSelection = [&]() {
+            transportScores = viewer::selectTransportScores(transportViews, transportSource, transportComponent);
+            transportAffected.clear();
+            for (std::size_t i = 0; i < transportScores.size(); ++i)
+                if (!buildProducts.points[i].isEmissive() && transportScores[i] < transportThreshold)
+                    transportAffected.push_back(i);
+        };
         bool targetLossDirty = true;
         std::vector<viewer::ProjectedTargetLoss> targetLossViews;
         std::vector<std::size_t> targetLossInstanceOffsets;
@@ -3212,6 +3236,11 @@ int main(int argc, char** argv) {
         ImGui_ImplOpenGL3_Init(glslVersion);
 
         auto rebuildSceneGpu = [&]() {
+            transportDirty = true;
+            transportViews.clear();
+            transportScores.clear();
+            transportAffected.clear();
+            transportMarkers.clear();
             targetLossDirty = true;
             surfaceOverlapScoresValid = false;
             debugDisplayBuffers.surfaceOverlapValid = false;
@@ -3813,6 +3842,117 @@ int main(int argc, char** argv) {
             targetLossComputeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         };
 
+        auto computeTransportScores = [&]() {
+            transportDirty = false;
+            transportViews.clear();
+            transportScores.clear();
+            transportAffected.clear();
+            transportMarkers.clear();
+            const auto start = std::chrono::steady_clock::now();
+            try {
+                if (buildProducts.cameraGPUs.empty()) throw std::runtime_error("No saved scene cameras; load an optimization snapshot with R first.");
+                auto scoreSettings = makeViewerDebugSettings(settings, ViewImageMode::Rendered);
+                if (transportUseSavedSettings) {
+                    YAML::Node saved;
+                    auto directory = currentPointCloudPath.parent_path();
+                    for (int level = 0; level < 3 && !directory.empty(); ++level, directory = directory.parent_path()) {
+                        const auto path = directory / "run_config.json";
+                        if (std::filesystem::is_regular_file(path)) { saved = YAML::LoadFile(path.string())["renderer_settings"]; break; }
+                    }
+                    if (!saved || !saved.IsMap()) throw std::runtime_error("No saved renderer settings found. Load a run with R, or disable Use saved run settings.");
+                    // Start from the same native defaults as the Python renderer.
+                    scoreSettings = makeViewerDebugSettings(Pale::PathTracerSettings{}, ViewImageMode::Rendered);
+                    scoreSettings.pointGeometrySupportRadius = 0.1f;
+                    scoreSettings.pointGeometryReconstructionLength = 0.0f;
+                    scoreSettings.pointGeometryRayOffsetMultiplier = 1.0f;
+                    scoreSettings.pointGeometryMinimumContributors = 1u;
+                    scoreSettings.pointGeometryCoverageScale = 1.01f;
+#define LOAD_SCORE_SETTING(key, member, type) if (saved[key]) scoreSettings.member = saved[key].as<type>()
+                    LOAD_SCORE_SETTING("local_layer_depth_epsilon", rendererDebugLocalLayerDepthEpsilon, float);
+                    LOAD_SCORE_SETTING("local_layer_normal_cosine_threshold", rendererDebugLocalLayerNormalCosineThreshold, float);
+                    LOAD_SCORE_SETTING("max_splat_events_per_ray", rendererDebugMaxSplatEventsPerRay, int);
+                    LOAD_SCORE_SETTING("max_local_surfel_hits", rendererDebugMaxLocalSurfelHits, int);
+                    LOAD_SCORE_SETTING("point_hit_batch_size", rendererDebugPointHitBatchSize, int);
+                    LOAD_SCORE_SETTING("point_hit_batch_lookahead", rendererDebugPointHitBatchLookahead, bool);
+                    LOAD_SCORE_SETTING("share_local_layer_direct_lighting", rendererDebugShareLocalLayerDirectLighting, bool);
+                    LOAD_SCORE_SETTING("primal_shadow_rays", numShadowRays, uint32_t);
+                    LOAD_SCORE_SETTING("seed", random.seed, uint32_t);
+                    // PythonRenderer currently uses the native one-pass default;
+                    // its gather_passes dictionary entry is not applied.
+#undef LOAD_SCORE_SETTING
+                    if (saved["local_layer_depth_mode"]) {
+                        const auto mode = saved["local_layer_depth_mode"].as<std::string>();
+                        if (mode == "normal_distance") scoreSettings.rendererDebugLocalLayerDepthMode = Pale::LocalLayerDepthMode::NormalDistance;
+                        else if (mode == "symmetric_ray_depth") scoreSettings.rendererDebugLocalLayerDepthMode = Pale::LocalLayerDepthMode::SymmetricRayDepth;
+                        else throw std::runtime_error("Unsupported saved local layer depth mode");
+                    }
+                }
+                if (scoreSettings.sharedHeightEnabled) throw std::runtime_error("Contribution analysis requires Shared surface experiment off.");
+                scoreSettings.integratorKind = Pale::IntegratorKind::photonMapping;
+                scoreSettings.cameraGatherKernelKind = Pale::CameraGatherKernelKind::CameraGatherKernel2;
+                scoreSettings.photonsPerLaunch = 1;
+                scoreSettings.maxBounces = 0;
+                scoreSettings.numForwardPasses = 0;
+
+                Pale::PathTracer scoreTracer(queue, scoreSettings);
+                auto activity = Pale::makePrimalActivityStatsForScene(queue, buildProducts);
+                scoreTracer.setPrimalActivityStats(&activity);
+                try {
+                    for (const auto& camera : buildProducts.cameraGPUs) {
+                        auto scoreBuild = buildProducts;
+                        scoreBuild.cameraGPUs = {camera};
+                        auto scoreScene = sceneGpu;
+                        scoreScene.profileCounters = nullptr;
+                        scoreTracer.setScene(scoreScene, scoreBuild);
+                        auto scoreSensor = createSensor(queue, camera);
+                        viewer::TransportCameraScores view;
+                        view.name = camera.name;
+                        view.training = camera.useForAdjointPass;
+                        view.camera.resize(activity.numPoints);
+                        view.shadow.resize(activity.numPoints);
+                        try {
+                            clearSensor(queue, scoreSensor);
+                            std::vector<Pale::SensorGPU> sensors{scoreSensor};
+                            scoreTracer.renderForward(sensors);
+                            if (activity.numPoints) {
+                                queue.memcpy(view.camera.data(), activity.cameraSurfaceScore, activity.numPoints * sizeof(float)).wait_and_throw();
+                                queue.memcpy(view.shadow.data(), activity.shadowOccluderScore, activity.numPoints * sizeof(float)).wait_and_throw();
+                            }
+                        } catch (...) { queue.wait(); destroySensor(queue, scoreSensor); throw; }
+                        destroySensor(queue, scoreSensor);
+                        transportViews.push_back(std::move(view));
+                    }
+                } catch (...) {
+                    queue.wait(); scoreTracer.setPrimalActivityStats(nullptr);
+                    Pale::freePrimalActivityStats(queue, activity); throw;
+                }
+                scoreTracer.setPrimalActivityStats(nullptr);
+                Pale::freePrimalActivityStats(queue, activity);
+                transportSource = std::clamp(transportSource, -1, int(transportViews.size()) - 1);
+                refreshTransportSelection();
+                std::vector<std::size_t> offsets;
+                const auto footprints = Pale::surfaceOverlapFootprints(buildProducts, offsets);
+                const auto editableHandle = firstPointCloudHandle(scene);
+                const auto editable = editableHandle ? buildProducts.pointCloudIndexById.find(*editableHandle) : buildProducts.pointCloudIndexById.end();
+                for (std::size_t instanceIndex = 0; instanceIndex < buildProducts.instances.size(); ++instanceIndex) {
+                    const auto& instance = buildProducts.instances[instanceIndex];
+                    if (instance.geometryType != Pale::GeometryType::PointCloud) continue;
+                    const auto& range = buildProducts.pointCloudRanges.at(instance.geometryIndex);
+                    for (std::size_t i = 0; i < range.pointCount; ++i) {
+                        const auto primitive = range.firstPoint + i;
+                        if (!buildProducts.points[primitive].isEmissive())
+                            transportMarkers.push_back({footprints[offsets[instanceIndex] + i].center, primitive, editable != buildProducts.pointCloudIndexById.end() && editable->second == instance.geometryIndex ? static_cast<int>(i) : -1});
+                    }
+                }
+                const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                transportStatus = "Computed " + std::to_string(transportViews.size()) + " cameras at native resolution in " +
+                    std::to_string(seconds) + " s. " + (transportUseSavedSettings ? "Saved run traversal settings." : "Current viewer traversal settings.");
+            } catch (const std::exception& error) {
+                transportViews.clear(); transportScores.clear(); transportAffected.clear(); transportMarkers.clear();
+                transportStatus = error.what();
+            }
+        };
+
         auto ensureDebugDisplayBuffer = [&](ViewImageMode mode) -> bool {
             if (!hasSensor || displayedRenderWidth == 0u || displayedRenderHeight == 0u) {
                 return false;
@@ -4014,6 +4154,9 @@ int main(int argc, char** argv) {
             switch (mode) {
                 case ViewImageMode::AdjointDerivative:
                     return viewerAdjointImageValid && viewerAdjointImage.size() == pixelCount;
+                case ViewImageMode::TransportScore:
+                    ensurePositionPrimitiveIndices();
+                    return true;
                 case ViewImageMode::TargetLoss: {
                     ensurePositionPrimitiveIndices();
                     auto& map = debugDisplayBuffers.targetLoss;
@@ -4423,6 +4566,20 @@ int main(int argc, char** argv) {
                 }
 
                 switch (viewImageMode) {
+                    case ViewImageMode::TransportScore: {
+                        const auto& indices = debugDisplayBuffers.positionPrimitiveIndices;
+                        pixels.assign(indices.size() * 4u, 0u);
+                        for (std::size_t p = 0; p < indices.size(); ++p) {
+                            pixels[4*p+3] = 255;
+                            const auto index = indices[p];
+                            if (index >= transportScores.size() || buildProducts.points[index].isEmissive()) continue;
+                            const bool affected = transportScores[index] < transportThreshold;
+                            pixels[4*p] = affected ? 255 : 45;
+                            pixels[4*p+1] = affected ? 45 : 150;
+                            pixels[4*p+2] = affected ? 140 : 100;
+                        }
+                        break;
+                    }
                     case ViewImageMode::CrowdPenalty:
                         colorizeThresholdedPrimitiveScores(debugDisplayBuffers.surfaceOverlap,
                             displayedRenderWidth, displayedRenderHeight, crowdThreshold, scalarColorMap, pixels, true);
@@ -4837,6 +4994,7 @@ int main(int argc, char** argv) {
         };
 
         auto renderNow = [&]() {
+            if (viewImageMode == ViewImageMode::TransportScore && transportDirty) computeTransportScores();
             if (viewImageMode == ViewImageMode::TargetLoss && targetLossDirty) computeTargetLoss();
             renderWidth = std::clamp(renderWidth, 16u, 4096u);
             renderHeight = std::clamp(renderHeight, 16u, 4096u);
@@ -5294,6 +5452,9 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndCombo();
                 }
+                bool showTransport = viewImageMode == ViewImageMode::TransportScore;
+                if (ImGui::Checkbox("Contribution scores", &showTransport))
+                    setViewImageMode(showTransport ? ViewImageMode::TransportScore : ViewImageMode::Rendered);
                 if (viewImageMode != ViewImageMode::Rendered) {
                     ImGui::TextDisabled("Options below in Display diagnostics");
                 }
@@ -6164,6 +6325,74 @@ int main(int argc, char** argv) {
                     ImGui::TextWrapped("Potential membership only: hidden surfaces are included; occlusion, transmission and ray-event limits "
                         "are not applied. Black means no observed surfel. Training uses the same scoring rule with its own overlap settings; viewer changes are preview-only.");
                 }
+                if (viewImageMode == ViewImageMode::TransportScore) {
+                    if (ImGui::Checkbox("Use saved run settings", &transportUseSavedSettings)) {
+                        transportDirty = true; renderRequested = true;
+                    }
+                    if (ImGui::Button("Recompute contributions")) { transportDirty = true; renderRequested = true; }
+                    ImGui::TextWrapped("%s", transportStatus.c_str());
+                    bool recolor = ImGui::Combo("Score component", &transportComponent, "Camera + shadow\0Camera only\0Shadow only\0");
+                    const char* sourceLabel = transportSource < 0 || transportSource >= int(transportViews.size()) ? "All training cameras (one cycle)" : transportViews[transportSource].name.c_str();
+                    if (ImGui::BeginCombo("Score source", sourceLabel)) {
+                        if (ImGui::Selectable("All training cameras (one cycle)", transportSource < 0)) { transportSource = -1; recolor = true; }
+                        for (std::size_t i = 0; i < transportViews.size(); ++i) {
+                            ImGui::PushID(static_cast<int>(i));
+                            const auto label = transportViews[i].name + (transportViews[i].training ? " [training]" : " [held out]");
+                            if (ImGui::Selectable(label.c_str(), transportSource == int(i))) { transportSource = int(i); recolor = true; }
+                            ImGui::PopID();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    recolor |= ImGui::DragFloat("Passing score", &transportThreshold, 0.1f, 0.001f, 1e9f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::Button("Reset passing score to 10")) { transportThreshold = 10.0f; recolor = true; }
+                    if (recolor) { refreshTransportSelection(); updateDisplayTexture(); }
+                    ImGui::Checkbox("X-ray affected centers", &transportXray);
+                    ImGui::Text("Below threshold: %zu surfels", transportAffected.size());
+                    const auto trainingCameras = std::count_if(transportViews.begin(), transportViews.end(),
+                        [](const auto& view) { return view.training; });
+                    ImGui::Text("Training cameras: %zu / %zu", static_cast<std::size_t>(trainingCameras), transportViews.size());
+                    if (!transportViews.empty() && trainingCameras == 0)
+                        ImGui::TextWrapped("No cameras are marked for training: the training total is zero. Select an individual camera to inspect its contributions.");
+                    ImGui::TextWrapped("Pink: score < threshold. Green: score >= threshold. Camera + shadow summed over training cameras matches the pruning score. Preview only; no surfels are removed.");
+                    ImGui::TextWrapped("Scores use incoming transmission and effective opacity. Hidden surfels can have zero support. X-ray shows up to 20,000 affected centers, including occluded ones; click a marker to inspect it.");
+                    if (ImGui::Button("Select next affected surfel")) {
+                        const auto handle = firstPointCloudHandle(scene);
+                        const auto found = handle ? buildProducts.pointCloudIndexById.find(*handle) : buildProducts.pointCloudIndexById.end();
+                        if (found != buildProducts.pointCloudIndexById.end()) {
+                            const auto& range = buildProducts.pointCloudRanges.at(found->second);
+                            int first = -1, next = -1;
+                            for (const auto primitive : transportAffected) {
+                                if (primitive < range.firstPoint || primitive - range.firstPoint >= range.pointCount) continue;
+                                const int local = static_cast<int>(primitive - range.firstPoint);
+                                if (first < 0) first = local;
+                                if (local > selectedSurfelEditorIndex) { next = local; break; }
+                            }
+                            selectedSurfelEditorIndex = next >= 0 ? next : first;
+                        }
+                    }
+                    if (selectedSurfelEditorIndex >= 0) {
+                        const auto id = static_cast<std::size_t>(selectedSurfelEditorIndex);
+                        // Optimization snapshots contain one editable point cloud; the score buffers use global point indices.
+                        const auto handle = firstPointCloudHandle(scene);
+                        const auto found = handle ? buildProducts.pointCloudIndexById.find(*handle) : buildProducts.pointCloudIndexById.end();
+                        if (found != buildProducts.pointCloudIndexById.end()) {
+                            const auto& range = buildProducts.pointCloudRanges.at(found->second);
+                            const auto primitive = range.firstPoint + id;
+                            if (id < range.pointCount && primitive < transportScores.size()) {
+                                ImGui::Text("Selected surfel %d: %.6g", selectedSurfelEditorIndex, transportScores[primitive]);
+                                if (ImGui::BeginTable("Contribution breakdown", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY, ImVec2(0, 160))) {
+                                    ImGui::TableSetupColumn("Camera"); ImGui::TableSetupColumn("Camera score"); ImGui::TableSetupColumn("Shadow score"); ImGui::TableHeadersRow();
+                                    for (const auto& view : transportViews) {
+                                        ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextUnformatted(view.name.c_str());
+                                        ImGui::TableNextColumn(); ImGui::Text("%.6g", view.camera[primitive]);
+                                        ImGui::TableNextColumn(); ImGui::Text("%.6g", view.shadow[primitive]);
+                                    }
+                                    ImGui::EndTable();
+                                }
+                            }
+                        }
+                    }
+                }
                 if (viewImageMode == ViewImageMode::TargetLoss) {
                     ImGui::InputText("Target dataset / images", targetDatasetBuffer.data(), targetDatasetBuffer.size());
                     ImGui::Combo("Target color space", &targetColorSpace, "Linear\0sRGB\0");
@@ -6689,6 +6918,31 @@ int main(int argc, char** argv) {
                 const bool imageHovered = ImGui::IsItemHovered();
                 const ImVec2 imageMin = ImGui::GetItemRectMin();
 
+                std::optional<int> transportMarkerPick;
+                if (viewImageMode == ViewImageMode::TransportScore && transportXray && !transportScores.empty()) {
+                    const auto cameraView = Pale::surfaceOverlapView(displayedCamera);
+                    auto* draw = ImGui::GetWindowDrawList();
+                    draw->PushClipRect(imageMin, ImVec2(imageMin.x + imageSize.x, imageMin.y + imageSize.y), true);
+                    const auto mouse = ImGui::GetMousePos();
+                    float nearest = 36.0f;
+                    std::size_t shown = 0;
+                    for (const auto& marker : transportMarkers) {
+                        if (marker.primitive >= transportScores.size() || transportScores[marker.primitive] >= transportThreshold) continue;
+                        const auto center = cameraView.worldToCamera * glm::vec4(marker.center, 1);
+                        if (center.z >= 0) continue;
+                        const float u = (cameraView.cx + cameraView.fx * center.x / -center.z) / cameraView.width;
+                        const float v = (cameraView.cy - cameraView.fy * center.y / -center.z) / cameraView.height;
+                        if (!(u >= 0 && u < 1 && v >= 0 && v < 1)) continue;
+                        if (++shown > 20000) break;
+                        const ImVec2 screen(imageMin.x + u * imageSize.x, imageMin.y + v * imageSize.y);
+                        draw->AddCircleFilled(screen, 2.5f, IM_COL32(255, 45, 140, 200));
+                        if (marker.editableIndex >= 0 && marker.editableIndex == selectedSurfelEditorIndex)
+                            draw->AddCircle(screen, 6.0f, IM_COL32(255, 255, 255, 255), 12, 2.0f);
+                        const float distance = (screen.x - mouse.x) * (screen.x - mouse.x) + (screen.y - mouse.y) * (screen.y - mouse.y);
+                        if (imageHovered && marker.editableIndex >= 0 && distance < nearest) { nearest = distance; transportMarkerPick = marker.editableIndex; }
+                    }
+                    draw->PopClipRect();
+                }
                 bool viewportGizmoHovered = false;
                 bool viewportGizmoUsing = false;
                 if (!navigationInputCaptured && showLightGizmo && selectedLight && cameraSource == CameraSource::Viewport) {
@@ -6829,7 +7083,7 @@ int main(int argc, char** argv) {
 	                        const auto pickRay = viewer::makePickRay(
 	                            displayedCamera, {mouse.x, mouse.y},
 	                            {imageMin.x, imageMin.y}, {imageSize.x, imageSize.y});
-	                        const std::optional<int> pickedSurfelIndex = pickRay
+	                        const std::optional<int> pickedSurfelIndex = transportMarkerPick ? transportMarkerPick : pickRay
 	                            ? pickEditableSurfel(scene, assetAccessor, *pickRay) : std::nullopt;
 		                        if (pickedSurfelIndex) {
 		                            selectedSurfelEditorIndex = *pickedSurfelIndex;
@@ -6895,6 +7149,8 @@ int main(int argc, char** argv) {
             ImGui::EndDisabled();
             if (std::memcmp(settingsBeforeUi.data(), &settings, sizeof(settings)) != 0) {
                 targetLossDirty = true;
+                transportDirty = true;
+                if (viewImageMode == ViewImageMode::TransportScore) renderRequested = true;
                 if (viewImageMode == ViewImageMode::TargetLoss) renderRequested = true;
             }
             ImGui::Render();

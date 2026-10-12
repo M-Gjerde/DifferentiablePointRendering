@@ -2,6 +2,7 @@
 
 // Generated from python/config.py by CMake. Reconfigure when defaults change.
 namespace viewer::defaults {
+inline constexpr float transportMinScore = static_cast<float>(@inactive_transport_min_score@);
 inline constexpr float crowdThreshold = static_cast<float>(@densification_max_mean_slab_members@);
 inline constexpr float positionThreshold = static_cast<float>(@densification_grad_abs_min@);
 inline constexpr float radianceBiasStrength = static_cast<float>(@densification_radiance_bias_strength@);

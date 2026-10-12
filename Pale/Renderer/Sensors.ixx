@@ -410,9 +410,14 @@ export namespace Pale {
 
         out.cameraSurfaceHitCount = sycl::malloc_device<uint32_t>(out.numPoints, queue);
         out.shadowOccluderHitCount = sycl::malloc_device<uint32_t>(out.numPoints, queue);
-        if (!out.cameraSurfaceHitCount || !out.shadowOccluderHitCount) {
+        out.cameraSurfaceScore = sycl::malloc_device<float>(out.numPoints, queue);
+        out.shadowOccluderScore = sycl::malloc_device<float>(out.numPoints, queue);
+        if (!out.cameraSurfaceHitCount || !out.shadowOccluderHitCount ||
+            !out.cameraSurfaceScore || !out.shadowOccluderScore) {
             if (out.cameraSurfaceHitCount) sycl::free(out.cameraSurfaceHitCount, queue);
             if (out.shadowOccluderHitCount) sycl::free(out.shadowOccluderHitCount, queue);
+            if (out.cameraSurfaceScore) sycl::free(out.cameraSurfaceScore, queue);
+            if (out.shadowOccluderScore) sycl::free(out.shadowOccluderScore, queue);
             out = {};
             throw std::runtime_error(
                 "makePrimalActivityStatsForScene: failed to allocate buffers");
@@ -420,6 +425,8 @@ export namespace Pale {
 
         queue.fill(out.cameraSurfaceHitCount, 0u, out.numPoints);
         queue.fill(out.shadowOccluderHitCount, 0u, out.numPoints);
+        queue.fill(out.cameraSurfaceScore, 0.0f, out.numPoints);
+        queue.fill(out.shadowOccluderScore, 0.0f, out.numPoints);
         queue.wait();
         return out;
     }
@@ -430,6 +437,8 @@ export namespace Pale {
         if (stats.numPoints == 0u) return;
         queue.fill(stats.cameraSurfaceHitCount, 0u, stats.numPoints);
         queue.fill(stats.shadowOccluderHitCount, 0u, stats.numPoints);
+        queue.fill(stats.cameraSurfaceScore, 0.0f, stats.numPoints);
+        queue.fill(stats.shadowOccluderScore, 0.0f, stats.numPoints);
         queue.wait();
     }
 
@@ -441,6 +450,12 @@ export namespace Pale {
         }
         if (stats.shadowOccluderHitCount) {
             sycl::free(stats.shadowOccluderHitCount, queue);
+        }
+        if (stats.cameraSurfaceScore) {
+            sycl::free(stats.cameraSurfaceScore, queue);
+        }
+        if (stats.shadowOccluderScore) {
+            sycl::free(stats.shadowOccluderScore, queue);
         }
         stats = {};
         queue.wait();

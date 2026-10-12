@@ -3947,11 +3947,15 @@ public:
         const std::size_t pointCount = primalActivityStats.numPoints;
         py::array_t<std::uint32_t> cameraSurfaceHitCount(pointCount);
         py::array_t<std::uint32_t> shadowOccluderHitCount(pointCount);
+        py::array_t<float> cameraSurfaceScore(pointCount);
+        py::array_t<float> shadowOccluderScore(pointCount);
 
         if (pointCount > 0u)
         {
             if (!primalActivityStats.cameraSurfaceHitCount ||
-                !primalActivityStats.shadowOccluderHitCount)
+                !primalActivityStats.shadowOccluderHitCount ||
+                !primalActivityStats.cameraSurfaceScore ||
+                !primalActivityStats.shadowOccluderScore)
             {
                 throw std::runtime_error(
                     "get_primal_activity_stats: buffers are incomplete");
@@ -3967,6 +3971,14 @@ public:
                     shadowOccluderHitCount.mutable_data(),
                     primalActivityStats.shadowOccluderHitCount,
                     pointCount * sizeof(std::uint32_t));
+                syclQueue.memcpy(
+                    cameraSurfaceScore.mutable_data(),
+                    primalActivityStats.cameraSurfaceScore,
+                    pointCount * sizeof(float));
+                syclQueue.memcpy(
+                    shadowOccluderScore.mutable_data(),
+                    primalActivityStats.shadowOccluderScore,
+                    pointCount * sizeof(float));
                 syclQueue.wait_and_throw();
             }
         }
@@ -3974,6 +3986,8 @@ public:
         py::dict result;
         result["camera_surface_hit_count"] = std::move(cameraSurfaceHitCount);
         result["shadow_occluder_hit_count"] = std::move(shadowOccluderHitCount);
+        result["camera_surface_score"] = std::move(cameraSurfaceScore);
+        result["shadow_occluder_score"] = std::move(shadowOccluderScore);
         return result;
     }
 

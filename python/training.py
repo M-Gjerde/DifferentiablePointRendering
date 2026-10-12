@@ -57,6 +57,9 @@ def extract_mesh_from_point_cloud(
         "--num-cluster",
         str(int(config.mesh_extraction_num_cluster)),
     ]
+    command.append("--median-depth-retain-last-hit"
+                   if config.mesh_extraction_median_depth_retain_last_hit
+                   else "--no-median-depth-retain-last-hit")
     command.append("--export-gltf" if export_gltf else "--no-export-gltf")
     if export_gltf:
         command.extend(["--texture-size", str(int(config.mesh_albedo_texture_size))])
@@ -473,35 +476,36 @@ def make_device_training_step_options(
     }
 
 
-def active_surfel_mask_from_primal_transport(
+def surfel_scores_from_primal_transport(
         primal_activity_stats: dict[str, Any],
         point_count: int,
 ) -> np.ndarray:
-    camera_surface_hit_count_np = primal_activity_stats.get(
-        "camera_surface_hit_count", None
-    )
-    shadow_occluder_hit_count_np = primal_activity_stats.get(
-        "shadow_occluder_hit_count", None
-    )
-    if camera_surface_hit_count_np is None or shadow_occluder_hit_count_np is None:
+    """Combine transmission-weighted camera and shadow support for one render.
+
+    Accumulate these scores over a complete camera cycle before thresholding.
+    Counts remain diagnostic only: a nearly occluded hit must not earn a full point.
+    """
+    camera_score = primal_activity_stats.get("camera_surface_score")
+    shadow_score = primal_activity_stats.get("shadow_occluder_score")
+    if camera_score is None or shadow_score is None:
         raise RuntimeError(
-            "Inactive-surfel pruning requires "
-            "renderer.get_primal_activity_stats() to return camera-surface and "
-            "shadow-occluder hit counts."
+            "Inactive-surfel pruning requires camera_surface_score and "
+            "shadow_occluder_score from get_primal_activity_stats(). "
+            "Rebuild the pale module for transmission-weighted activity scores."
         )
 
-    camera_surface_hit_count_np = np.asarray(camera_surface_hit_count_np).reshape(-1)
-    shadow_occluder_hit_count_np = np.asarray(shadow_occluder_hit_count_np).reshape(-1)
-    if (camera_surface_hit_count_np.shape[0] != point_count or
-            shadow_occluder_hit_count_np.shape[0] != point_count):
+    camera_score = np.asarray(camera_score, dtype=np.float64).reshape(-1)
+    shadow_score = np.asarray(shadow_score, dtype=np.float64).reshape(-1)
+    if camera_score.size != point_count or shadow_score.size != point_count:
         raise RuntimeError(
             "Primal-activity shape mismatch: "
-            f"expected {point_count}, got camera={camera_surface_hit_count_np.shape[0]}, "
-            f"shadow={shadow_occluder_hit_count_np.shape[0]}"
+            f"expected {point_count}, got camera={camera_score.size}, "
+            f"shadow={shadow_score.size}"
         )
-
-    return ((camera_surface_hit_count_np > 0) |
-            (shadow_occluder_hit_count_np > 0))
+    if (not np.all(np.isfinite(camera_score)) or not np.all(np.isfinite(shadow_score)) or
+            np.any(camera_score < 0.0) or np.any(shadow_score < 0.0)):
+        raise RuntimeError("Primal-activity scores must be finite and non-negative")
+    return camera_score + shadow_score
 
 
 def compute_iteration_gradients(
@@ -806,6 +810,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
 
     inactive_transport_prune_cycles = int(config.inactive_transport_prune_cycles)
+    inactive_transport_min_score = float(config.inactive_transport_min_score)
+    if not np.isfinite(inactive_transport_min_score) or inactive_transport_min_score <= 0.0:
+        raise ValueError("inactive_transport_min_score must be finite and positive")
+    if inactive_transport_prune_cycles > 0:
+        print_status(
+            f"Transport pruning: score < {inactive_transport_min_score:g} for "
+            f"{inactive_transport_prune_cycles} complete camera cycle(s); "
+            "score sums transmission-weighted camera and shadow contributions."
+        )
     densification_verbose = bool(config.densification_verbose)
     densification_grad_abs_min = float(config.densification_grad_abs_min)
     densification_grad_abs_min_final = float(config.densification_grad_abs_min_final)
@@ -935,7 +948,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             densify_radiance_rms_accum_np, densify_position_grad_denom_np,
         )
 
-    active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool)
+    transport_score_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=np.float64)
     inactive_transport_cycle_count_np = np.zeros((positions.shape[0],), dtype=np.uint32, )
     loaded_densification_origin_np = np.asarray(
         initial_params.get(
@@ -1139,7 +1152,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
 
                     if topology_updates_enabled and inactive_transport_prune_cycles > 0:
-                        active_during_camera_cycle_np |= active_surfel_mask_from_primal_transport(
+                        transport_score_during_camera_cycle_np += surfel_scores_from_primal_transport(
                             renderer.get_primal_activity_stats(),
                             point_count=int(positions.shape[0]),
                         )
@@ -1241,8 +1254,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if should_check_inactive_prune:
                         trainable_surfel_mask_np = (
                             trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
-                        active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
-                        inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
+                        supported_this_cycle_np = transport_score_during_camera_cycle_np >= inactive_transport_min_score
+                        active_this_cycle_np = trainable_surfel_mask_np & supported_this_cycle_np
+                        inactive_this_cycle_np = trainable_surfel_mask_np & ~supported_this_cycle_np
                         inactive_transport_cycle_count_np[active_this_cycle_np] = 0
                         inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
                             inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
@@ -1313,7 +1327,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     f"scale={len(scale_prune_set)}, "
                                     f"opacity={len(opacity_prune_set)} (opacity < {config.min_surfel_opacity:g}), "
                                     f"inactive_transport={len(inactive_cycle_prune_set)} "
-                                    f"(threshold={inactive_transport_prune_cycles} cycles)"
+                                    f"(score < {inactive_transport_min_score:g}, {inactive_transport_prune_cycles} cycles)"
                                 )
 
                             keep_mask_np[indices_to_remove] = False
@@ -1322,7 +1336,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                             densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
                             densify_radiance_rms_accum_np = densify_radiance_rms_accum_np[keep_mask_np]
-                            active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
+                            transport_score_during_camera_cycle_np = transport_score_during_camera_cycle_np[keep_mask_np]
                             inactive_transport_cycle_count_np = inactive_transport_cycle_count_np[keep_mask_np]
                             densification_origin_np = densification_origin_np[keep_mask_np]
                             primitive_birth_iteration_np = primitive_birth_iteration_np[keep_mask_np]
@@ -1352,8 +1366,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 densify_radiance_rms_accum_np = np.concatenate(
                                     [densify_radiance_rms_accum_np, np.zeros((n_new, 1), dtype=np.float32)],
                                     axis=0)
-                                active_during_camera_cycle_np = np.concatenate(
-                                    [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
+                                # New surfels have not had a complete camera cycle yet.
+                                transport_score_during_camera_cycle_np = np.concatenate(
+                                    [transport_score_during_camera_cycle_np,
+                                     np.full((n_new,), inactive_transport_min_score, dtype=np.float64)], axis=0)
                                 inactive_transport_cycle_count_np = np.concatenate(
                                     [inactive_transport_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0)
                                 densification_origin_np = np.concatenate(
@@ -1458,7 +1474,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
                     if camera_cycle_complete:
-                        active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
+                        transport_score_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=np.float64)
                         visited_training_camera_ids_this_cycle.clear()
 
                     if density_window_downloaded:
@@ -1772,9 +1788,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 photo_gradient_surfel_stats = iteration_gradients.photo_gradient_surfel_stats
 
                 if topology_updates_enabled and inactive_transport_prune_cycles > 0:
-                    # Liveness comes from deterministic camera/slab and point-light
-                    # shadow traversal, never from stochastic adjoint event selection.
-                    active_during_camera_cycle_np |= active_surfel_mask_from_primal_transport(
+                    # Support comes from transmission-weighted forward camera/slab and
+                    # shadow contributions, never from stochastic adjoint event selection.
+                    transport_score_during_camera_cycle_np += surfel_scores_from_primal_transport(
                         renderer.get_primal_activity_stats(),
                         point_count=int(positions.shape[0]),
                     )
@@ -1959,12 +1975,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 ):
                     trainable_surfel_mask_np = (
                         trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1))
-                    active_this_cycle_np = (trainable_surfel_mask_np & active_during_camera_cycle_np)
-                    inactive_this_cycle_np = (trainable_surfel_mask_np & ~active_during_camera_cycle_np)
-                    # Any forward camera/slab or shadow activity in this
-                    # complete camera cycle keeps the surfel alive.
+                    supported_this_cycle_np = transport_score_during_camera_cycle_np >= inactive_transport_min_score
+                    active_this_cycle_np = trainable_surfel_mask_np & supported_this_cycle_np
+                    inactive_this_cycle_np = trainable_surfel_mask_np & ~supported_this_cycle_np
+                    # Camera and shadow contributions jointly meet the score threshold
+                    # over the entire cycle, including contributions from different cameras.
                     inactive_transport_cycle_count_np[active_this_cycle_np] = 0
-                    # Count consecutive cycles with no forward transport activity.
+                    # Count consecutive cycles below the minimum support score.
                     # Saturate at the threshold; larger values are irrelevant.
                     inactive_transport_cycle_count_np[inactive_this_cycle_np] = np.minimum(
                         inactive_transport_cycle_count_np[inactive_this_cycle_np] + 1,
@@ -2012,7 +2029,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 f"scale={len(scale_prune_set)}, "
                                 f"opacity={len(opacity_prune_set)} (opacity < {config.min_surfel_opacity:g}), "
                                 f"inactive_transport={len(inactive_cycle_prune_set)} "
-                                f"(threshold={inactive_transport_prune_cycles} cycles)"
+                                f"(score < {inactive_transport_min_score:g}, {inactive_transport_prune_cycles} cycles)"
                             )
 
                         keep_mask_np[indices_to_remove] = False
@@ -2021,7 +2038,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densify_position_grad_denom_np = densify_position_grad_denom_np[keep_mask_np]
                         densify_position_grad_vector_accum_np = densify_position_grad_vector_accum_np[keep_mask_np]
                         densify_radiance_rms_accum_np = densify_radiance_rms_accum_np[keep_mask_np]
-                        active_during_camera_cycle_np = active_during_camera_cycle_np[keep_mask_np]
+                        transport_score_during_camera_cycle_np = transport_score_during_camera_cycle_np[keep_mask_np]
                         inactive_transport_cycle_count_np = (inactive_transport_cycle_count_np[keep_mask_np])
                         densification_origin_np = densification_origin_np[keep_mask_np]
                         primitive_birth_iteration_np = primitive_birth_iteration_np[keep_mask_np]
@@ -2049,8 +2066,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 [densify_position_grad_vector_accum_np, np.zeros((n_new, 3), dtype=np.float32)], axis=0)
                             densify_radiance_rms_accum_np = np.concatenate(
                                 [densify_radiance_rms_accum_np, np.zeros((n_new, 1), dtype=np.float32)], axis=0)
-                            active_during_camera_cycle_np = np.concatenate(
-                                [active_during_camera_cycle_np, np.ones((n_new,), dtype=bool), ], axis=0)
+                            # New surfels have not had a complete camera cycle yet.
+                            transport_score_during_camera_cycle_np = np.concatenate(
+                                [transport_score_during_camera_cycle_np,
+                                 np.full((n_new,), inactive_transport_min_score, dtype=np.float64)], axis=0)
                             inactive_transport_cycle_count_np = np.concatenate(
                                 [inactive_transport_cycle_count_np, np.zeros((n_new,), dtype=np.uint32), ], axis=0, )
                             densification_origin_np = np.concatenate(
@@ -2133,7 +2152,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     #print(f"Frozen emissive surfels: {frozen_surfel_count} / {int(trainable_surfel_mask.numel())}")
 
                 if camera_cycle_complete:
-                    active_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=bool, )
+                    transport_score_during_camera_cycle_np = np.zeros((positions.shape[0],), dtype=np.float64)
                     visited_training_camera_ids_this_cycle.clear()
 
                 (

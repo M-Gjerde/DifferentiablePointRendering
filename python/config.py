@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 10
+    adjoint_passes: int = 6
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -120,8 +120,10 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
-    # Consecutive full camera cycles with no forward camera/slab or shadow activity.
+    # Prune after this many consecutive full training-camera cycles below the
+    # support threshold; 0 disables transport pruning. Respects topology freeze.
     inactive_transport_prune_cycles: int = 1
+    inactive_transport_min_score: float = 25.0
 
     # Densification: schedule
     densification_interval: int = 200
@@ -137,11 +139,11 @@ class OptimizationConfig:
     densification_tangent_only: bool = True # Only displace along tangent
     densification_max_new_fraction: float = 1.0
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
-    densification_max_mean_slab_members: float = 1.5
+    densification_max_mean_slab_members: float = 4.0
     densification_verbose: bool = False
 
-    densification_grad_abs_min: float = 0.00025
-    densification_grad_abs_min_final: float = 0.00025
+    densification_grad_abs_min: float = 0.0005
+    densification_grad_abs_min_final: float = 0.0005
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
@@ -156,6 +158,7 @@ class OptimizationConfig:
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
+    mesh_extraction_median_depth_retain_last_hit: bool = False
     mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 0  # Keep all components with at least 50 triangles.
     mesh_albedo_texture_size: int = 1024
@@ -650,6 +653,7 @@ def parse_args() -> OptimizationConfig:
         pruning,
         float,
         "min_surfel_area",
+        "inactive_transport_min_score",
     )
 
     output = parser.add_argument_group("output and monitoring")
@@ -683,6 +687,8 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
+    _add_boolean_argument(mesh, "--mesh-extraction-median-depth-retain-last-hit",
+                          help="Keep last-hit depths below the opacity threshold during mesh extraction.")
     _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
                       "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
     _add_boolean_argument(
@@ -733,6 +739,8 @@ def parse_args() -> OptimizationConfig:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
     if not math.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
         parser.error("--opacity-prior-weight must be finite and non-negative")
+    if not math.isfinite(config.inactive_transport_min_score) or config.inactive_transport_min_score <= 0:
+        parser.error("--inactive-transport-min-score must be finite and positive")
     if config.topology_freeze_last_iterations < 0:
         parser.error("--topology-freeze-last-iterations must be non-negative")
 

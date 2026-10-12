@@ -15,6 +15,7 @@ from tsdf_settings import (
     print_tsdf_settings, resolve_tsdf_settings, validate_options,
 )
 
+
 def parse_vector3(value: str) -> np.ndarray:
     values = [float(part.strip()) for part in value.split(",")]
     if len(values) != 3:
@@ -121,6 +122,7 @@ def load_scene_xml_cameras(scene_xml: Path) -> dict[str, Open3DCamera]:
 
     return cameras
 
+
 def infer_cameras_xml(args: argparse.Namespace, run_config: dict) -> Path:
     assets_root = Path(run_config["assets_root"]).expanduser().resolve()
     scene_xml = Path(run_config["scene_xml"]).expanduser()
@@ -132,6 +134,7 @@ def infer_cameras_xml(args: argparse.Namespace, run_config: dict) -> Path:
         raise FileNotFoundError(f"Could not find scene XML: {scene_xml}")
 
     return scene_xml.resolve()
+
 
 @dataclass(frozen=True)
 class Open3DCamera:
@@ -225,7 +228,8 @@ def format_suffix_value(value: float) -> str:
     return f"{value:.9g}".replace("-", "m").replace(".", "p")
 
 
-def write_points_with_property_overrides(points_path: Path, output_path: Path, property_values: dict[str, float]) -> Path:
+def write_points_with_property_overrides(points_path: Path, output_path: Path,
+                                         property_values: dict[str, float]) -> Path:
     points_path = points_path.resolve()
     output_path = output_path.resolve()
 
@@ -277,7 +281,8 @@ def write_points_with_property_overrides(points_path: Path, output_path: Path, p
     if len(body_lines) < vertex_count:
         raise ValueError(f"{points_path} has fewer vertex rows than declared in the header.")
 
-    missing_property_names = [property_name for property_name in property_values if property_name not in vertex_property_names]
+    missing_property_names = [property_name for property_name in property_values if
+                              property_name not in vertex_property_names]
     if missing_property_names:
         raise ValueError(f"{points_path} does not contain vertex properties: {', '.join(missing_property_names)}")
 
@@ -379,7 +384,8 @@ def validate_quaternion_surfel_ply(points_path: Path) -> None:
             + ". Expected x y z rot_w rot_x rot_y rot_z su sv albedo_r albedo_g albedo_b opacity beta shape power."
         )
 
-def load_renderer(run_dir: Path, points_path: Path):
+
+def load_renderer(run_dir: Path, points_path: Path, *, median_depth_retain_last_hit: bool = False):
     import pale
     config_path = run_dir / "run_config.json"
     if not config_path.is_file():
@@ -390,7 +396,9 @@ def load_renderer(run_dir: Path, points_path: Path):
 
     assets_root = Path(run_config["assets_root"]).resolve()
     scene_xml = run_config["scene_xml"]
-    renderer_settings = run_config["renderer_settings"]
+    renderer_settings = dict(run_config["renderer_settings"])
+    # Extraction has its own policy; keep saved training/normal-map settings intact.
+    renderer_settings["median_depth_retain_last_hit"] = median_depth_retain_last_hit
     pointcloud_path = path_relative_to_assets(points_path, assets_root)
 
     return pale.Renderer(
@@ -447,12 +455,12 @@ def depth_to_visualization(depth: np.ndarray) -> np.ndarray:
 
 
 def save_extraction_render_images(
-    output_dir: Path,
-    camera_name: str,
-    color: np.ndarray,
-    depth: np.ndarray,
-    depth_key: str,
-    name_suffix: str,
+        output_dir: Path,
+        camera_name: str,
+        color: np.ndarray,
+        depth: np.ndarray,
+        depth_key: str,
+        name_suffix: str,
 ) -> None:
     suffix = f"{name_suffix}_" if name_suffix else ""
     color_path = output_dir / f"render_{suffix}{camera_name}.png"
@@ -465,11 +473,11 @@ def save_extraction_render_images(
 
 class PaleExtractor:
     def __init__(
-        self,
-        renderer,
-        cameras: dict[str, Open3DCamera],
-        camera_names: list[str],
-        depth_key: str,
+            self,
+            renderer,
+            cameras: dict[str, Open3DCamera],
+            camera_names: list[str],
+            depth_key: str,
     ):
         self.renderer = renderer
         self.cameras = cameras
@@ -492,16 +500,17 @@ class PaleExtractor:
             depth = as_numpy(camera_output[self.depth_key])
             if depth.shape != (camera.height, camera.width):
                 raise RuntimeError(f'{camera_name}: depth/camera size mismatch: {depth.shape}')
-            frames.append(DepthFrame(camera_name, depth, camera.fx, camera.fy, camera.cx, camera.cy, camera.world_to_camera))
+            frames.append(
+                DepthFrame(camera_name, depth, camera.fx, camera.fy, camera.cx, camera.cy, camera.world_to_camera))
         return frames
 
     def extract_mesh_bounded(
-        self,
-        voxel_size: float,
-        sdf_trunc: float,
-        depth_trunc: float,
-        render_output_dir: Path | None = None,
-        render_name_suffix: str = "",
+            self,
+            voxel_size: float,
+            sdf_trunc: float,
+            depth_trunc: float,
+            render_output_dir: Path | None = None,
+            render_name_suffix: str = "",
     ) -> o3d.geometry.TriangleMesh:
         if self.forward_out is None:
             raise RuntimeError("Call reconstruction() before extract_mesh_bounded().")
@@ -579,7 +588,8 @@ class PaleExtractor:
 
 
 def parse_args(argv=None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="PALE TSDF extraction with depth-driven scale selection for objects and scenes")
+    parser = argparse.ArgumentParser(
+        description="PALE TSDF extraction with depth-driven scale selection for objects and scenes")
 
     parser.add_argument(
         "--run-dir",
@@ -639,6 +649,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Bake/export an existing mesh instead of rerunning TSDF extraction.")
 
     parser.add_argument("--depth-key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
+    parser.add_argument("--median-depth-retain-last-hit", action=argparse.BooleanOptionalAction, default=True,
+                        help="Retain the last valid hit when opacity never reaches the median depth threshold.")
     parser.add_argument(
         "--force-opacity-one",
         "--force_opacity_1",
@@ -719,7 +731,8 @@ if __name__ == "__main__":
             )
         raise SystemExit(0)
 
-    renderer, run_config = load_renderer(run_dir, points_path)
+    renderer, run_config = load_renderer(
+        run_dir, points_path, median_depth_retain_last_hit=args.median_depth_retain_last_hit)
 
     cameras_path = infer_cameras_xml(args, run_config)
     cameras = load_scene_xml_cameras(cameras_path)
@@ -729,7 +742,7 @@ if __name__ == "__main__":
 
     print(f"Extracting mesh from {run_dir}")
     print(f"Using point cloud {points_path}")
-    #print(f"Using cameras {args.cameras_xml}")
+    # print(f"Using cameras {args.cameras_xml}")
     print(f"Rendering {len(camera_names)} cameras")
 
     pale_extractor = PaleExtractor(
@@ -770,6 +783,7 @@ if __name__ == "__main__":
             raise RuntimeError(f'Could not save {mesh_post_path}')
         print(f"mesh post processed saved at {mesh_post_path}")
         metadata = {'renderer': 'pale', 'points': str(points_path.resolve()), 'depth_key': args.depth_key,
+                    'median_depth_retain_last_hit': args.median_depth_retain_last_hit,
                     'tsdf': tsdf, 'num_cluster': args.num_cluster,
                     'min_cluster_triangles': args.min_cluster_triangles,
                     'raw_triangles': len(mesh.triangles), 'post_triangles': len(mesh_post.triangles)}

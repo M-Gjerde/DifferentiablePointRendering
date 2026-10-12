@@ -352,8 +352,8 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
 
             // A camera ray deterministically reached this physical slab before
             // opacity termination. Mark every member of the exact slab used by
-            // rendering; this liveness statistic is independent of adjoint
-            // qNull/qReflect sampling and of the loss value.
+            // rendering. Score its actual symmetric compositing weight as well;
+            // neither statistic depends on adjoint sampling or the loss value.
             if (primalActivityStats.cameraSurfaceHitCount != nullptr &&
                 primalActivityStats.numPoints == scene.pointCount) {
                 for (uint32_t localHitIndex = 0u;
@@ -364,6 +364,11 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                     if (primitiveIndex < primalActivityStats.numPoints) {
                         incrementPrimalActivityCounter(
                             primalActivityStats.cameraSurfaceHitCount[primitiveIndex]);
+                        if (primalActivityStats.cameraSurfaceScore != nullptr) {
+                            accumulatePrimalActivityScore(
+                                primalActivityStats.cameraSurfaceScore[primitiveIndex],
+                                renderingTransmittance * localLayer.weight[localHitIndex]);
+                        }
                     }
                 }
             }
@@ -471,7 +476,9 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                         surfel.alpha_r * surfel.albedo,
                         localLayer.directLightEpsilon[localHitIndex],
                         primalActivityStats.shadowOccluderHitCount,
-                        primalActivityStats.numPoints);
+                        primalActivityStats.numPoints,
+                        primalActivityStats.shadowOccluderScore,
+                        compositeWeight);
                 }
                 accumulatedRadianceRGB += compositeWeight * (emittedRadiance + indirectRadiance + directRadiance);
             }
@@ -503,6 +510,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                 const float3 lightDirection = toLight / distance;
                 float surfaceCosines[kMaxLocalSurfelHits]{};
                 bool hasLightFacingMember = false;
+                float shadowReceiverWeight = 0.0f;
                 for (uint32_t localHitIndex = 0u; localHitIndex < localLayer.hitCount; ++localHitIndex) {
                     if (localLayer.weight[localHitIndex] <= 0.0f) continue;
                     const Point &surfel = scene.points[localLayer.hits[localHitIndex].primitiveIndex];
@@ -511,6 +519,9 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                     const float surfaceCosine = sycl::fmax(0.0f, dot(normalW, lightDirection));
                     surfaceCosines[localHitIndex] = surfaceCosine;
                     hasLightFacingMember |= surfaceCosine > 0.0f;
+                    if (surfaceCosine > 0.0f) {
+                        shadowReceiverWeight += renderingTransmittance * localLayer.weight[localHitIndex];
+                    }
                 }
                 // Members can have different normals; reject only if none can receive this light.
                 if (!hasLightFacingMember) {
@@ -525,7 +536,9 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                         lightPositionW,
                         sharedDirectLightEpsilon,
                         primalActivityStats.shadowOccluderHitCount,
-                        primalActivityStats.numPoints);
+                        primalActivityStats.numPoints,
+                        primalActivityStats.shadowOccluderScore,
+                        shadowReceiverWeight);
                 if (shadowTransmission <= 0.0f) {
                     continue;
                 }

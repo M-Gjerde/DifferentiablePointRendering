@@ -35,6 +35,16 @@ namespace Pale {
         atomicCounter.fetch_add(1u);
     }
 
+    SYCL_EXTERNAL inline void accumulatePrimalActivityScore(float &score, float contribution) {
+        if (!(contribution > 0.0f) || !sycl::isfinite(contribution)) return;
+        sycl::atomic_ref<
+            float,
+            sycl::memory_order::relaxed,
+            sycl::memory_scope::device,
+            sycl::access::address_space::global_space> atomicScore(score);
+        atomicScore.fetch_add(contribution);
+    }
+
     SYCL_EXTERNAL inline void flushMeshBvhProfile(
         const GPUSceneBuffers &scene,
         uint64_t nodeTests,
@@ -2052,7 +2062,9 @@ namespace Pale {
         const float3 &lightPositionW,
         const float eps,
         uint32_t *shadowOccluderHitCount = nullptr,
-        size_t shadowActivityPointCount = 0u) {
+        size_t shadowActivityPointCount = 0u,
+        float *shadowOccluderScore = nullptr,
+        float shadowReceiverWeight = 1.0f) {
         const uint32_t maxSplatEventsPerRay =
                 rendererDebugMaxSplatEventsPerRay(settings);
         const uint32_t maxLocalSurfelHits =
@@ -2122,6 +2134,17 @@ namespace Pale {
                         surfel.opacity * pointHit.alphaGeom,
                         0.0f,
                         1.0f - 1.0e-6f);
+
+                    if (shadowOccluderScore != nullptr &&
+                        pointHit.primitiveIndex < shadowActivityPointCount) {
+                        // Score physical opacity without the numerical transmission
+                        // floor: a fully effective opaque hit earns exactly one.
+                        const float scoreAlpha = sycl::clamp(
+                            surfel.opacity * pointHit.alphaGeom, 0.0f, 1.0f);
+                        accumulatePrimalActivityScore(
+                            shadowOccluderScore[pointHit.primitiveIndex],
+                            shadowReceiverWeight * shadowTransmission * scoreAlpha);
+                    }
 
                     if (alphaEff > 0.0f) {
                         shadowTransmission *= sycl::fmax(0.0f, 1.0f - alphaEff);
@@ -2254,6 +2277,16 @@ namespace Pale {
                     continue;
                 }
 
+                if (shadowOccluderScore != nullptr &&
+                    localHit.primitiveIndex < shadowActivityPointCount) {
+                    const float scoreAlpha = sycl::clamp(
+                        surfel.opacity * localHit.alphaGeom, 0.0f, 1.0f);
+                    accumulatePrimalActivityScore(
+                        shadowOccluderScore[localHit.primitiveIndex],
+                        shadowReceiverWeight * shadowTransmission *
+                            sycl::exp(-combinedOpticalDepth) * scoreAlpha);
+                }
+
                 combinedOpticalDepth +=
                         -sycl::log(1.0f - alphaEff);
             }
@@ -2351,7 +2384,9 @@ namespace Pale {
         const float3 &diffuseAlbedo,
         const float eps = RayEpsilon,
         uint32_t *shadowOccluderHitCount = nullptr,
-        size_t shadowActivityPointCount = 0u) {
+        size_t shadowActivityPointCount = 0u,
+        float *shadowOccluderScore = nullptr,
+        float shadowReceiverWeight = 1.0f) {
         float3 accumulatedRadiance(0.0f);
 
         const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
@@ -2396,7 +2431,9 @@ namespace Pale {
                         lightPositionW,
                         eps,
                         shadowOccluderHitCount,
-                        shadowActivityPointCount);
+                        shadowActivityPointCount,
+                        shadowOccluderScore,
+                        shadowReceiverWeight);
 
 
             if (shadowTransmission <= 0.0f) {
