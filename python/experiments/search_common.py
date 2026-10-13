@@ -96,6 +96,7 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "min_surfel_area": "--min-surfel-area",
     "rebuild_bvh_interval": "--rebuild-bvh-interval",
     "inactive_transport_prune_cycles": "--inactive-transport-prune-cycles",
+    "inactive_transport_min_score": "--inactive-transport-min-score",
     "use_device_training_step": (
         "--device-training-step",
         "--no-device-training-step",

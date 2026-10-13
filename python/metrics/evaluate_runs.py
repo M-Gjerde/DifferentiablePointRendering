@@ -62,6 +62,7 @@ RUN_CONFIG_PARAMETERS = [
     "densification_downweight_normal_gradients",
     "densification_tangent_only",
     "inactive_transport_prune_cycles",
+    "inactive_transport_min_score",
     "min_surfel_area",
     "ground_truth",
     "geometry_samples",

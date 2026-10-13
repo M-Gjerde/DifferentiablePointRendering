@@ -3165,7 +3165,7 @@ namespace Pale {
                             surfel.tanU, surfel.tanV, depthGradient.tangentU, depthGradient.tangentV);
                         atomicAddFloat3(depthGradients.gradRotation[hit.primitiveIndex], depthRotationGradient);
                         atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex], float2{depthGradient.scaleU, depthGradient.scaleV});
-                        atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
+                        //atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
                         //atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
 
                     }

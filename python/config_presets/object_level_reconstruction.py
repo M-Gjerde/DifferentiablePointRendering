@@ -149,12 +149,17 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
+    # Consecutive full training-camera cycles below the threshold; 0 disables.
     inactive_transport_prune_cycles: int = 1
+    # Combined transmission-weighted camera + shadow support per cycle.
+    # Score >= threshold passes. Viewer threshold edits are preview-only.
+    inactive_transport_min_score: float = 10.0
     rebuild_bvh_interval: int = densification_interval
 
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
+    mesh_extraction_median_depth_retain_last_hit: bool = False
     mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 0  # Keep all components with at least 50 triangles.
     mesh_albedo_texture_size: int = 1024
@@ -583,6 +588,7 @@ def parse_args() -> OptimizationConfig:
         pruning,
         float,
         "min_surfel_area",
+        "inactive_transport_min_score",
     )
 
     output = parser.add_argument_group("output and monitoring")
@@ -616,6 +622,8 @@ def parse_args() -> OptimizationConfig:
         help="Save a mesh checkpoint every N iterations. Use 0 to disable intermediate mesh checkpoints.",
     )
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
+    _add_boolean_argument(mesh, "--mesh-extraction-median-depth-retain-last-hit",
+                          help="Keep last-hit depths below the opacity threshold during mesh extraction.")
     _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
                       "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
     _add_boolean_argument(
@@ -658,6 +666,8 @@ def parse_args() -> OptimizationConfig:
     configure_checkpoint(config, cli_overrides)
     if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
+    if not math.isfinite(config.inactive_transport_min_score) or config.inactive_transport_min_score <= 0:
+        parser.error("--inactive-transport-min-score must be finite and positive")
     if config.topology_freeze_last_iterations < 0:
         parser.error("--topology-freeze-last-iterations must be non-negative")
 

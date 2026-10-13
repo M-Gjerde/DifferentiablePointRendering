@@ -20,6 +20,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
 CONFIG_PATH = PROJECT_ROOT / "config.py"
+ABLATION_NAME = "controlled pruning"
 DEFAULT_DATASETS = ("teapot", "dragon", "plant", "horse", "workbench")
 RUNTIME_DEFINITION = (
     "Complete main.py subprocess wall-clock seconds, including interpreter startup, "
@@ -30,8 +31,8 @@ RUNTIME_DEFINITION = (
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Train our method sequentially on teapot, dragon, plant, and horse "
-            "using config.py with intra-slab regularization disabled."
+            "Train our method sequentially on teapot, dragon, plant, horse, and workbench "
+            "using the current config.py for the controlled pruning ablation."
         )
     )
     parser.add_argument(
@@ -41,10 +42,16 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="Folder containing <dataset>_pbdr directories.",
     )
     parser.add_argument(
+        "--ground-truth-root",
+        type=Path,
+        default=Path("~/phd/models/gt"),
+        help="Folder containing <dataset>.ply ground-truth models for Chamfer evaluation.",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("OptimizationOutput/object_suite") / ("no_intra_slab_" + datetime.now().strftime("%Y%m%d_%H%M%S")),
-        help="Suite output folder (default: a fresh timestamped no_intra_slab folder).",
+        default=Path("OptimizationOutput/object_suite") / ("controlled_pruning_" + datetime.now().strftime("%Y%m%d_%H%M%S")),
+        help="Suite output folder (default: a fresh timestamped controlled_pruning folder).",
     )
     parser.add_argument("--view-count", type=int,
                         help="Optional legacy naming: <dataset>_<view-count>_pbdr.")
@@ -173,6 +180,7 @@ def write_summaries(
         output_root / "summary.json",
         {
             "method": "DifferentiablePointRendering",
+            "ablation": ABLATION_NAME,
             "runtime_definition": RUNTIME_DEFINITION,
             "config_sha256": expected_config_digest,
             "expected_scene_count": len(scenes),
@@ -250,15 +258,16 @@ def ensure_scene_output_is_safe(run_dir: Path, overwrite: bool) -> None:
         )
 
 
-def build_command(dataset_path: Path, run_dir: Path) -> list[str]:
+def build_command(dataset_path: Path, run_dir: Path, ground_truth: Path) -> list[str]:
     return [sys.executable, "-u", str(MAIN_SCRIPT),
             "-s", str(dataset_path), "-o", str(run_dir),
-            "--intra-slab-depth-weight", "0", "--no-metrics", "--no-image-preview"]
+            "--ground-truth", str(ground_truth)]
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
     dataset_root = args.dataset_root.expanduser().resolve()
+    ground_truth_root = args.ground_truth_root.expanduser().resolve()
     output_root = args.output_root.expanduser()
     if not output_root.is_absolute():
         output_root = (PROJECT_ROOT / output_root).resolve()
@@ -275,6 +284,9 @@ def main(argv=None) -> int:
             raise ValueError(f"Expected a scene name, got {dataset!r}")
         scene_name = dataset if args.view_count is None else f"{dataset}_{args.view_count}"
         dataset_path = dataset_root / f"{scene_name}_pbdr"
+        ground_truth = ground_truth_root / f"{dataset}.ply"
+        if not ground_truth.is_file() or ground_truth.stat().st_size == 0:
+            missing_inputs.append(str(ground_truth))
         for filename in ("scene.xml", "points.ply"):
             path = dataset_path / filename
             if not path.is_file() or path.stat().st_size == 0:
@@ -305,8 +317,8 @@ def main(argv=None) -> int:
             "point_count": None,
             "output_dir": str(run_dir),
             "dataset_path": str(dataset_path),
-            "intra_slab_depth_weight": 0.0,
-            "command": build_command(dataset_path, run_dir),
+            "ground_truth": str(ground_truth),
+            "command": build_command(dataset_path, run_dir, ground_truth),
         }
         print(f"Train {scene_name}: {shlex.join(scenes[scene_name]['command'])}", flush=True)
 
