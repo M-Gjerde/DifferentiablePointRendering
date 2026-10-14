@@ -894,6 +894,7 @@ namespace Pale {
         float depthDistortionWeight = 0.0f;
         // Absolute pairwise camera-forward depth differences in scene units.
         bool depthDistortionWorldSpace = false;
+        bool depthDistortionSquared = false; // World-space only; NDC always uses squared differences.
         float normalConsistencyWeight = 0.0f;
         float intraSlabDepthRegularizerWeight = 0.0f;
         // Training retains surface outputs by default; RGB-only viewers can skip them.

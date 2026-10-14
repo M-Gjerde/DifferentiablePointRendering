@@ -3034,7 +3034,7 @@ namespace Pale {
                 // Depth distortion:
                 //
                 //   Gamma = sum_{i<j} w_i w_j penalty(m_i-m_j)
-                //   World mode: absolute camera-forward depth differences.
+                //   World mode: absolute or squared camera-forward depth differences.
                 //   NDC mode: squared differences, as in 2DGS.
                 //
                 // Normal:
@@ -3073,14 +3073,14 @@ namespace Pale {
                             const SurfaceRegularizerHitRecord &upperHit = hitIsUpper ? hit : hits[otherIndex];
                             const float ndcDepthDelta = upperHit.ndcDepth - lowerHit.ndcDepth;
                             const float absoluteDepthDelta = sycl::fabs(ndcDepthDelta);
-                            const float pairPenalty = settings.depthDistortionWorldSpace
+                            const float pairPenalty = settings.depthDistortionWorldSpace && !settings.depthDistortionSquared
                                 ? absoluteDepthDelta : ndcDepthDelta * ndcDepthDelta;
                             // Choose the zero subgradient at coincident depths.
                             const float depthDeltaSign = ndcDepthDelta > 0.0f ? 1.0f :
                                 (ndcDepthDelta < 0.0f ? -1.0f : 0.0f);
                             const float depthPairWeight =
                                     lowerHit.compositeWeight * upperHit.compositeWeight * depthDistortionAdjoint *
-                                    (settings.depthDistortionWorldSpace ? 1.0f : 2.0f * absoluteDepthDelta);
+                                    (settings.depthDistortionWorldSpace && !settings.depthDistortionSquared ? 1.0f : 2.0f * absoluteDepthDelta);
 
                             if (hitIsUpper) {
                                 barDepthDepth += depthPairWeight * depthDeltaSign * depthToNdcDerivative;

@@ -185,13 +185,16 @@ isolation, and verifies that albedo compensation is replaced.
 
 ### Depth distortion
 
-`depth_distort_world_space=True` uses absolute camera-forward depth differences
-in scene units: `sum_{i<j} w_i*w_j*abs(z_i-z_j)`. Setting it to `False` uses
+`depth_distort_world_space=True` uses camera-forward depth differences
+(absolute by default; squared with `depth_distort_squared=True`)
+in scene units: `sum_{i<j} w_i*w_j*abs(z_i-z_j)` or
+`sum_{i<j} w_i*w_j*(z_i-z_j)**2`. Setting world-space to `False` uses
 squared NDC inverse-depth differences. Match the mode and retune
 `depth_distort_weight` when switching between these losses.
 
-The world-space depth derivative uses the sign of each pair's difference, with
-a zero subgradient at coincident depths. Backward differentiates compositing
+The absolute world-space depth derivative uses the sign of each pair's difference,
+with a zero subgradient at coincident depths. The squared derivative uses twice
+the signed difference. Backward differentiates compositing
 weights for position, rotation, scale, opacity, and beta, including the effect
 of each alpha on the transmittance of later hits.
 

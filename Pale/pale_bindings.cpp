@@ -340,6 +340,8 @@ public:
                 get_f(settingsDict, "depth_distort_weight", m_settings.depthDistortionWeight);
             m_settings.depthDistortionWorldSpace =
                 get_b(settingsDict, "depth_distort_world_space", m_settings.depthDistortionWorldSpace);
+            m_settings.depthDistortionSquared =
+                get_b(settingsDict, "depth_distort_squared", m_settings.depthDistortionSquared);
             m_settings.normalConsistencyWeight =
                 get_f(settingsDict, "normal_consistency_weight", m_settings.normalConsistencyWeight);
             m_settings.normalFromDepthUseMeanDepth =

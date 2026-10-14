@@ -150,7 +150,8 @@ namespace {
         MeanDepth,
         MedianDepth,
         VisibleNormal,
-        DepthNormal,
+        MedianDepthNormal,
+        MeanDepthNormal,
         DepthDistortion,
         IntraSlabDepth,
         IntraSlabRayDepth,
@@ -168,14 +169,14 @@ namespace {
         TransportScore,
     };
 
-    constexpr std::array<ViewImageMode, 20> kViewImageModeCycleOrder = {
+    constexpr std::array<ViewImageMode, 21> kViewImageModeCycleOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
         ViewImageMode::MeanDepth,
         ViewImageMode::VisibleNormal,
-        ViewImageMode::DepthNormal,
-        ViewImageMode::IntraSlabDepth,
+        ViewImageMode::MeanDepthNormal,
+        ViewImageMode::MedianDepthNormal,
         ViewImageMode::SurfaceOverlap,
         ViewImageMode::PositionPrimitiveScore,
         ViewImageMode::IntraSlabRayDepth,
@@ -189,16 +190,17 @@ namespace {
         ViewImageMode::IntraSlabPositionGradient,
         ViewImageMode::AdjointDerivative,
         ViewImageMode::TransportScore,
+        ViewImageMode::IntraSlabDepth,
     };
 
-    constexpr std::array<const char*, 20> kViewImageModeLabels = {
+    constexpr std::array<const char*, 21> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
         "4 Mean depth",
         "5 Visible normal",
-        "6 Depth normal",
-        "7 Intra-slab depth (plane distance)",
+        "6 Mean depth normal",
+        "7 Median depth normal",
         "8 Surface overlap (world space)",
         "9 Position primitive score (saved)",
         "0 Intra-slab depth (mean ray depth)",
@@ -212,6 +214,7 @@ namespace {
         "Intra-slab consensus |grad position|",
         "Adjoint radiance derivative (signed)",
         "Transport contribution score",
+        "Intra-slab depth (plane distance)",
     };
 
     [[nodiscard]] const char* viewImageModeLabel(ViewImageMode mode) {
@@ -2283,8 +2286,12 @@ namespace {
             mode != ViewImageMode::PositionPrimitiveScore &&
             mode != ViewImageMode::AdjointDerivative;
         settings.computeDepthNormalDiagnostics =
-            mode == ViewImageMode::DepthNormal ||
+            mode == ViewImageMode::MedianDepthNormal ||
+            mode == ViewImageMode::MeanDepthNormal ||
             mode == ViewImageMode::NormalPositionGradient;
+        if (mode == ViewImageMode::MedianDepthNormal || mode == ViewImageMode::MeanDepthNormal) {
+            settings.normalFromDepthUseMeanDepth = mode == ViewImageMode::MeanDepthNormal;
+        }
         settings.computeVisiblePrimitiveDiagnostics =
             requiresVisibleSlabSearch(mode);
         // The legacy gather kernel requests depth normals through this weight.
@@ -4286,7 +4293,8 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.visibleNormalValid = true;
                     }
                     return true;
-                case ViewImageMode::DepthNormal:
+                case ViewImageMode::MedianDepthNormal:
+                case ViewImageMode::MeanDepthNormal:
                     if (!debugDisplayBuffers.depthNormalValid) {
                         debugDisplayBuffers.depthNormal =
                             Pale::downloadFloat4Buffer(queue, sensor.normalFromDepthBuffer, pixelCount);
@@ -4658,7 +4666,8 @@ int main(int argc, char** argv) {
                             displayedRenderHeight,
                             pixels);
                         break;
-                    case ViewImageMode::DepthNormal:
+                    case ViewImageMode::MedianDepthNormal:
+                    case ViewImageMode::MeanDepthNormal:
                         colorizeNormalBuffer(
                             debugDisplayBuffers.depthNormal,
                             displayedRenderWidth,
@@ -6153,10 +6162,11 @@ int main(int argc, char** argv) {
                     viewImageMode == ViewImageMode::DepthPositionGradient) {
                     ImGui::TextWrapped("Preview uses unit loss weight; colors rescale to each frame.");
                 }
-                int distortionDepthMode = settings.depthDistortionWorldSpace ? 0 : 1;
-                const char* distortionDepthModes[] = {"World distance", "Normalized depth"};
-                if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 2)) {
-                    settings.depthDistortionWorldSpace = distortionDepthMode == 0;
+                int distortionDepthMode = settings.depthDistortionWorldSpace ? (settings.depthDistortionSquared ? 1 : 0) : 2;
+                const char* distortionDepthModes[] = {"World distance (absolute)", "World distance (squared)", "Normalized depth (squared)"};
+                if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 3)) {
+                    settings.depthDistortionWorldSpace = distortionDepthMode != 2;
+                    settings.depthDistortionSquared = distortionDepthMode == 1;
                     renderRequested = true;
                 }
 

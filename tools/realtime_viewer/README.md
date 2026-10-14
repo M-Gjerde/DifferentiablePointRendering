@@ -146,8 +146,8 @@ the mean ray-depth alternative is a diagnostic preview only.
 ### Diagnostic shortcuts
 
 Number keys select the first ten display modes: **1** Rendered, **2** Median depth,
-**3** Depth distortion, **4** Mean depth, **5** Visible normal, **6** Depth normal,
-**7** Intra-slab plane distance, **8** Surface overlap, **9** Position primitive
+**3** Depth distortion, **4** Mean depth, **5** Visible normal, **6** Mean depth normal,
+**7** Median depth normal, **8** Surface overlap, **9** Position primitive
 score, and **0** Intra-slab mean ray depth. Other diagnostics remain available
 in **Display** and the **+/-** cycle.
 
@@ -252,11 +252,21 @@ use the frontmost geometric surfel, as in the position-score and overlap views.
 
 Regression checks: `python3 -m unittest discover -s python/test -p test_target_loss_projection.py`.
 
+### Depth-derived normal previews
+
+Press **6** or choose **6 Mean depth normal** from the view selector to see normals
+reconstructed from the mean depth map. Press **7** or choose **7 Median depth normal**
+for normals reconstructed from the median depth map. Both use the renderer's
+depth-to-normal calculation and the same normal colors. Switching views recomputes the selected map.
+
 ### Depth-distortion previews
 
-Choose **World distance** for absolute camera-forward depth differences or
-**Normalized depth** for squared NDC differences. Match the training run's
-`depth_distort_world_space` setting. Both the loss image and position-gradient
+Under **Diagnostics → Display diagnostics → Depth distortion**, choose
+**World distance (absolute)**, **World distance (squared)**, or **Normalized depth (squared)**.
+World modes use camera-forward depth in scene units. Match the training run's
+`depth_distort_world_space` and `depth_distort_squared` settings.
+Enable squared world-space training with `--depth-distort-world-space --depth-distort-squared`;
+absolute remains the default. Retune `--depth-distort-weight` when switching. Both the loss image and position-gradient
 preview use the selected mode.
 
 The loss image shows raw per-pixel distortion; the position-gradient image uses

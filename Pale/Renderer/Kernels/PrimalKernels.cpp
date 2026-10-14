@@ -320,7 +320,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                 for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                     const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                     distortion += previousDepthDistortionWeights[previousIndex] * compositeWeight *
-                                  (settings.depthDistortionWorldSpace
+                                  (settings.depthDistortionWorldSpace && !settings.depthDistortionSquared
                                       ? sycl::fabs(depthDifference)
                                       : depthDifference * depthDifference);
                 }
@@ -1102,7 +1102,7 @@ void launchCameraGatherKernel(RenderPackage &pkg, uint32_t cameraIndex, uint32_t
                 for (uint32_t previousIndex = 0u; previousIndex < previousDepthDistortionHitCount; ++previousIndex) {
                     const float depthDifference = ndcDepth - previousDepthDistortionNdcDepths[previousIndex];
                     distortion += previousDepthDistortionWeights[previousIndex] * wi *
-                                  (settings.depthDistortionWorldSpace
+                                  (settings.depthDistortionWorldSpace && !settings.depthDistortionSquared
                                       ? sycl::fabs(depthDifference)
                                       : depthDifference * depthDifference);
                 }
@@ -1392,14 +1392,18 @@ void launchPointSampledPathTracingCameraKernel(
                         medianFound = accumulatedCompositeWeight + compositeWeight >= settings.medianDepthThreshold;
                     }
                     accumulatedCompositeWeight += compositeWeight;
-                    const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
-                    distortion += compositeWeight * (
-                        normalizedDepth * normalizedDepth * prefixWeight +
-                        prefixWeightDepthSquared -
-                        2.0f * normalizedDepth * prefixWeightDepth);
-                    prefixWeight += compositeWeight;
-                    prefixWeightDepth += compositeWeight * normalizedDepth;
-                    prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
+                    if (depthDistortionDepthAccepted(depth, settings.depthDistortionWorldSpace)) {
+                        const float normalizedDepth = depthDistortionCoordinate(depth, settings.depthDistortionWorldSpace);
+                        // Traversal visits intersections in increasing camera-forward depth.
+                        const float pairSum = settings.depthDistortionWorldSpace && !settings.depthDistortionSquared
+                            ? normalizedDepth * prefixWeight - prefixWeightDepth
+                            : normalizedDepth * normalizedDepth * prefixWeight +
+                              prefixWeightDepthSquared - 2.0f * normalizedDepth * prefixWeightDepth;
+                        distortion += compositeWeight * pairSum;
+                        prefixWeight += compositeWeight;
+                        prefixWeightDepth += compositeWeight * normalizedDepth;
+                        prefixWeightDepthSquared += compositeWeight * normalizedDepth * normalizedDepth;
+                    }
                     transmittance *= 1.0f - alphaEff;
                     if (transmittance <= 1.0e-4f || alphaEff >= 1.0f) {
                         break;

@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 12
+    adjoint_passes: int = 64
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -37,6 +37,7 @@ class RendererSettingsConfig:
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
             "depth_distort_world_space": config.depth_distort_world_space,
+            "depth_distort_squared": config.depth_distort_squared,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
@@ -86,15 +87,16 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 2.0
+    position_lr_scale_init: float = 1.5
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18000  # Objective: geometric regularizers
 
     depth_distort_weight: float = 0.00075
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
     depth_distort_start_iteration: int = 2000
-    normal_consistency_weight: float = 7.0e-4
+    normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
 
@@ -124,11 +126,11 @@ class OptimizationConfig:
     # Prune after this many consecutive full training-camera cycles below the
     # support threshold; 0 disables transport pruning. Respects topology freeze.
     inactive_transport_prune_cycles: int = 1
-    inactive_transport_min_score: float = 10.0
+    inactive_transport_min_score: float = 5.0
 
     # Densification: schedule
     densification_interval: int = 200
-    densify_after: int = 500
+    densify_after: int = 0
     densification_stats_skip_interval_start: bool = True
 
     # Densification: gradient signal
@@ -151,7 +153,7 @@ class OptimizationConfig:
     densification_split_offset_scale: float = 0.2 
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
-    densification_radiance_bias_strength: float = 0.8
+    densification_radiance_bias_strength: float = 0.0
     densification_radiance_bias_min_weight: float = 0.25
     densification_radiance_bias_max_weight: float = 1.65
 
@@ -519,7 +521,11 @@ def parse_args() -> OptimizationConfig:
     _add_boolean_argument(
         objective,
         "--depth-distort-world-space",
-        help="Use absolute camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
+        help="Use camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
+    )
+    _add_boolean_argument(
+        objective, "--depth-distort-squared",
+        help="Square world-space depth differences (NDC always uses squared differences).",
     )
     objective.add_argument("--depth-distort-start-iteration", type=int)
     objective.add_argument("--normal-consistency-start-iteration", type=int)

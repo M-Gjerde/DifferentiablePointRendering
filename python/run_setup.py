@@ -109,6 +109,7 @@ def print_run_configuration(
         ("lr_decay_timeline", f"start={config.lr_decay_start_iteration}, steps={config.lr_decay_max_steps}"),
         ("depth_distort_weight", config.depth_distort_weight),
         ("depth_distort_world_space", config.depth_distort_world_space),
+        ("depth_distort_squared", config.depth_distort_squared),
         ("densification_interval", config.densification_interval),
         ("densification_relative_error", config.densification_relative_error),
         ("densification_radiance_floor", config.densification_radiance_floor),

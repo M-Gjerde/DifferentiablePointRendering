@@ -28,6 +28,7 @@ class RendererSettingsConfig:
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
             "depth_distort_world_space": config.depth_distort_world_space,
+            "depth_distort_squared": config.depth_distort_squared,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
@@ -83,7 +84,8 @@ class OptimizationConfig:
 
     # Objective: geometric regularizers
     depth_distort_weight: float = 0.0005
-    depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_world_space: bool = True  # Camera-forward depth in scene units; False uses squared NDC.
+    depth_distort_squared: bool = False  # Square world-space differences; False uses absolute differences.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 0.005
     intra_slab_depth_weight: float = 1.0e-5
@@ -462,7 +464,11 @@ def parse_args() -> OptimizationConfig:
     _add_boolean_argument(
         objective,
         "--depth-distort-world-space",
-        help="Use absolute camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
+        help="Use camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
+    )
+    _add_boolean_argument(
+        objective, "--depth-distort-squared",
+        help="Square world-space depth differences (NDC always uses squared differences).",
     )
     objective.add_argument("--depth-distort-start-iteration", type=int)
     _add_boolean_argument(
