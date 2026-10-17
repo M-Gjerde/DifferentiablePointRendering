@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,7 @@ import training_helpers as helpers
 from config import OptimizationConfig, RendererSettingsConfig
 from geometry_metrics import GeometryMetricsTrail
 from metrics_schema import METRICS_COLUMNS, MetricsCSVWriter
+from densification_diagnostics import DensificationDiagnostics
 from terminal_output import print_status, supports_color
 from training_progress import make_training_progress_postfix
 
@@ -432,11 +434,14 @@ def make_device_training_step_options(
         include_depth_distortion: bool = False,
         include_normal_consistency: bool = False,
         include_intra_slab_depth: bool = False,
+        surfel_area_reference_length: float = 1.0,
+        iteration: int = 0,
 ) -> dict[str, Any]:
     return {
         "optimizer": config.optimizer_type,
         "skip_zero_gradient_surfels": bool(config.skip_zero_gradient_surfels),
         "use_log_scale": bool(config.use_log_scale),
+        "cap_scale_at_activation": helpers.scale_ceiling_active(config, iteration),
         "learning_rate_position": active_learning_rates.get(
             "position",
             float(config.learning_rate_position),
@@ -463,6 +468,8 @@ def make_device_training_step_options(
         ),
         "camera_batch_scale": camera_batch_scale,
         "opacity_prior_weight": float(config.opacity_prior_weight),
+        "surfel_area_weight": helpers.scheduled_surfel_area_weight(config, iteration),
+        "surfel_area_reference_length": surfel_area_reference_length,
         "return_gradient_stats": return_gradient_stats,
         "accumulate_densification_stats": accumulate_densification_stats,
         "densification_downweight_normal_gradients": bool(config.densification_downweight_normal_gradients),
@@ -650,10 +657,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
     if not np.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
         raise ValueError("opacity_prior_weight must be finite and non-negative")
+    if not np.isfinite(config.surfel_area_weight) or config.surfel_area_weight < 0.0:
+        raise ValueError("surfel_area_weight must be finite and non-negative")
+    initial_area_weight = helpers.scheduled_surfel_area_weight(config, max(0, int(config.resume_iteration_offset)))
     if not np.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         raise ValueError(f"min_surfel_opacity must be finite and in [0, 1], got {config.min_surfel_opacity}")
     if config.topology_freeze_last_iterations < 0:
         raise ValueError("topology_freeze_last_iterations must be non-negative")
+    if config.cap_scale_after_topology_freeze and config.topology_freeze_last_iterations <= 0:
+        raise ValueError("Scale ceiling requires a final topology freeze")
+    freeze_step = int(config.iterations) + max(0, int(config.resume_iteration_offset)) - config.topology_freeze_last_iterations
+    if config.cap_scale_after_topology_freeze and config.resume_iteration_offset > freeze_step:
+        raise ValueError("Cannot recover original scale ceilings from a PLY resumed after topology freeze")
     target_images, training_camera_ids, all_camera_ids = helpers.load_target_images(
         renderer,
         Path(config.dataset_path),
@@ -729,6 +744,26 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
+    area_reference_length = 1.0
+    if config.surfel_area_weight > 0:
+        from extract_mesh import load_scene_xml_cameras
+        cameras = load_scene_xml_cameras(Path(config.scene_xml))
+        camera_origins = [np.linalg.inv(cameras[name].world_to_camera)[:3, 3]
+                          for name in training_camera_ids]
+        area_reference_length = helpers.surfel_area_reference_length(
+            positions.detach().cpu().numpy(), trainable_surfel_mask.cpu().numpy(), camera_origins)
+        (config.output_dir/'surfel_area_normalization.json').write_text(json.dumps({
+            'reference_length': area_reference_length,
+            'weight': config.surfel_area_weight,
+            'start_fraction': config.surfel_area_start_fraction,
+            'ramp_fraction': config.surfel_area_ramp_fraction,
+            'schedule_total_iterations': max(0, int(config.resume_iteration_offset)) + config.iterations,
+            'definition': 'RMS training camera distance to initial trainable centroid; fixed for this run',
+            'objective': 'weight * sum(opacity * pi * su * sv) / reference_length**2',
+            'training_cameras': list(training_camera_ids),
+        }, indent=2))
+        print_status(f"Surfel area weight={config.surfel_area_weight:.3e}, reference length={area_reference_length:.6g}")
+
     geometry_metrics = (
         GeometryMetricsTrail(config.output_dir)
         if config.ground_truth is not None
@@ -785,13 +820,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         opacities, trainable_surfel_mask, config.opacity_prior_weight,
     )
     initial_prior_weighted = config.opacity_prior_weight * initial_prior_raw
+    initial_area_raw, _, _ = helpers.compute_surfel_area_prior(
+        scales, opacities, trainable_surfel_mask, initial_area_weight, area_reference_length)
+    initial_area_weighted = initial_area_weight * initial_area_raw
     initial_loss_tuple = (
-        *initial_loss_tuple[:-1], initial_loss_tuple[-1] + initial_prior_weighted,
+        *initial_loss_tuple[:-1], initial_loss_tuple[-1] + initial_prior_weighted + initial_area_weighted,
         initial_prior_raw, initial_prior_weighted,
+        initial_area_raw, initial_area_weighted,
     )
     helpers.print_loss_summary("Initial", *initial_loss_tuple)
 
     densification_interval = int(config.densification_interval)
+    scale_ceiling = optimizers.FrozenScaleCeiling()
     topology_stop_after_iteration = final_global_iteration - int(config.topology_freeze_last_iterations)
     prune_interval = int(config.prune_interval)
     densify_after = config.densify_after if config.densify_after >= 0 else densification_interval
@@ -863,6 +903,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 "Rebuild and load the updated C++ binding."
             )
     if use_device_training_step:
+        if config.cap_scale_after_topology_freeze and "scale_ceiling" not in renderer.capture_device_adam_state():
+            raise RuntimeError("Scale ceilings require rebuilding the pale module")
         supports_optional_log_scale = getattr(renderer, "supports_optional_log_scale", None)
         if not callable(supports_optional_log_scale) or not supports_optional_log_scale():
             raise RuntimeError(
@@ -1019,6 +1061,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             / f"iter_{global_iteration:05d}_before_topology_update.ply"
         )
         points_path.parent.mkdir(parents=True, exist_ok=True)
+        if density_diagnostics:
+            density_diagnostics.snapshot_ids(global_iteration, 'mesh_input')
         io_utils.save_gaussians_to_ply(
             points_path, *point_parameters,
             densification_origins=densification_origin_np,
@@ -1032,10 +1076,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_mesh_future = mesh_checkpoint_worker.submit_final(points_path)
         return points_path
 
+    density_diagnostics = None
+    if config.densification_diagnostics:
+        if not use_device_training_step or not config.one_camera_per_iteration:
+            raise ValueError("Density diagnostics require native one-camera training")
+        density_diagnostics = DensificationDiagnostics(
+            config.output_dir, training_camera_ids, int(positions.shape[0]),
+            config.densification_diagnostics_below_z,
+            start_iteration=resume_iteration_offset,
+        )
     with open(metrics_csv_path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file)
-        helpers.write_metrics_header(csv_writer)
-        metrics_writer = MetricsCSVWriter(csv_writer, METRICS_COLUMNS)
+        metrics_columns = (*METRICS_COLUMNS, *(density_diagnostics.columns if density_diagnostics else ()))
+        csv_writer.writerow(metrics_columns)
+        metrics_writer = MetricsCSVWriter(csv_writer, metrics_columns)
         progress_bar = tqdm(
             range(1, config.iterations + 1),
             desc="Optimizing",
@@ -1049,10 +1103,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         try:
             for iteration in progress_bar:
                 iteration_start = time.perf_counter()
+                if density_diagnostics:
+                    density_diagnostics.begin_iteration()
                 global_iteration = resume_iteration_offset + iteration
                 topology_updates_enabled = helpers.topology_updates_allowed(
                     global_iteration, final_global_iteration, int(config.topology_freeze_last_iterations),
                 )
+                active_scale_ceiling = helpers.scale_ceiling_active(config, global_iteration)
                 pre_topology_mesh_points_path = None
                 mesh_checkpoint_is_due = (
                     mesh_extraction_interval > 0
@@ -1084,6 +1141,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     iteration=global_iteration,
                     start_iteration=normal_consistency_start_iteration,
                 )
+                active_area_weight = helpers.scheduled_surfel_area_weight(config, global_iteration)
                 use_normal_consistency_gradients = active_normal_consistency_weight != 0.0
                 active_densification_grad_abs_min = helpers.scheduled_densification_grad_abs_min(
                     initial_threshold=densification_grad_abs_min,
@@ -1118,6 +1176,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_learning_rates=active_learning_rates,
                         camera_batch_scale=camera_batch_scale,
                         accumulate_densification_stats=accumulate_density,
+                        surfel_area_reference_length=area_reference_length,
+                        iteration=global_iteration,
                     )
                     device_step_options.update({
                         "depth_distortion_weight": active_depth_distortion_weight,
@@ -1129,9 +1189,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     })
                     # RGB backward records density statistics in the generating
                     # tangent frame before regularizers and Adam change geometry.
+                    density_before = (
+                        renderer.get_densification_stats()
+                        if density_diagnostics and accumulate_density else None
+                    )
                     adjoint_images = renderer.render_training_step(
                         list(active_training_camera_ids), device_step_options,
                     )
+                    if density_before is not None:
+                        density_diagnostics.observe(
+                            active_training_camera_ids[0], density_before,
+                            renderer.get_densification_stats(),
+                        )
                     loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
                     regularizer_loss_state = adjoint_images.get("regularizer_loss_state")
                     if regularizer_loss_state is not None:
@@ -1150,6 +1219,18 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     prior_raw = float(adjoint_images.get("opacity_prior_loss_raw", 0.0))
                     helpers.add_opacity_prior_loss(loss_state, prior_raw, config.opacity_prior_weight)
                     helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
+                    if active_area_weight > 0 and 'surfel_area_loss_raw' not in adjoint_images:
+                        raise RuntimeError('Surfel area prior requires rebuilding the pale module')
+                    area_raw = float(adjoint_images.get('surfel_area_loss_raw', 0.))
+                    if active_scale_ceiling:
+                        if not adjoint_images.get("scale_ceiling_active", False):
+                            raise RuntimeError("Native optimizer did not apply the scale ceiling")
+                        if scale_ceiling.ceiling is None:
+                            ceiling = np.asarray(renderer.capture_device_adam_state()["scale_ceiling"])
+                            scale_ceiling.ceiling = torch.from_numpy(ceiling.copy())
+                            np.save(config.output_dir / "frozen_scale_ceiling.npy", ceiling)
+                    helpers.add_surfel_area_loss(loss_state, area_raw, active_area_weight)
+                    helpers.add_surfel_area_loss(averaged_loss_state, area_raw, active_area_weight)
 
                     if topology_updates_enabled and inactive_transport_prune_cycles > 0:
                         transport_score_during_camera_cycle_np += surfel_scores_from_primal_transport(
@@ -1242,6 +1323,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_grad_abs_min=active_densification_grad_abs_min,
                             force_densification=True,
                             renderer=renderer, overlap_camera_names=all_camera_ids,
+                        )
+
+                    if should_check_densification and density_diagnostics:
+                        density_diagnostics.decision(
+                            global_iteration,
+                            dict(position=positions, rotation=rotations, scale=scales,
+                                 albedo=albedos, opacity=opacities, beta=betas, power=powers),
+                            densification_result, densify_position_grad_accum_np,
+                            densify_position_grad_denom_np,
+                            vector_sum=densify_position_grad_vector_accum_np,
+                            threshold=active_densification_grad_abs_min,
                         )
 
                     if should_check_prune:
@@ -1391,6 +1483,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     axis=0,
                                 )
 
+                        if density_diagnostics:
+                            density_diagnostics.remap(
+                                keep_mask_np, n_new_for_topology, iteration=global_iteration,
+                                result=densification_result,
+                                prune_reasons=dict(scale=scale_prune_indices, opacity=opacity_prune_indices,
+                                                   inactive_transport=inactive_camera_cycle_indices))
                         render.rebuild_bvh(renderer)
                         positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(
                             renderer, device)
@@ -1505,6 +1603,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                     if densification_is_due:
                         renderer.reset_densification_stats()
+                        if density_diagnostics:
+                            density_diagnostics.reset()
                         densify_position_grad_accum_np[:] = 0.0
                         densify_position_grad_denom_np[:] = 0.0
                         densify_position_grad_vector_accum_np[:] = 0.0
@@ -1590,6 +1690,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         )
 
                     if should_save_point_cloud:
+                        if density_diagnostics:
+                            density_diagnostics.snapshot_ids(global_iteration, 'points')
                         helpers.save_iteration_point_cloud_snapshot(
                             config.output_dir,
                             global_iteration,
@@ -1664,6 +1766,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["total_intra_slab_depth_loss_weighted"],
                             averaged_loss_state["total_opacity_prior_loss_raw"],
                             averaged_loss_state["total_opacity_prior_loss_weighted"],
+                            averaged_loss_state["total_surfel_area_loss_raw"],
+                            averaged_loss_state["total_surfel_area_loss_weighted"],
+                            active_area_weight,
+                            int(active_scale_ceiling),
                             averaged_loss_state["total_loss_value"],
                             num_points,
                             densification_new_points,
@@ -1689,7 +1795,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             grad_position_total_max,
                             grad_opacity_total_norm,
                             grad_opacity_total_max,
-                        ]
+                        ] + (density_diagnostics.values if density_diagnostics else [])
                     )
                     csv_file.flush()
 
@@ -1836,6 +1942,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         total_gradients["opacity"].shape)
                 helpers.add_opacity_prior_loss(loss_state, prior_raw, config.opacity_prior_weight)
                 helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
+                area_raw, area_scale_grad, area_opacity_grad = helpers.compute_surfel_area_prior(
+                    scales, opacities, trainable_surfel_mask, active_area_weight, area_reference_length)
+                if area_scale_grad is not None:
+                    total_gradients['scale'] = total_gradients['scale'] + area_scale_grad
+                    total_gradients['opacity'] = total_gradients['opacity'] + area_opacity_grad.reshape(
+                        total_gradients['opacity'].shape)
+                helpers.add_surfel_area_loss(loss_state, area_raw, active_area_weight)
+                helpers.add_surfel_area_loss(averaged_loss_state, area_raw, active_area_weight)
 
                 (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np,
                  grad_betas_np,) = helpers.extract_total_gradient_arrays(total_gradients)
@@ -1903,7 +2017,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     learning_rate_schedules,
                     global_iteration,
                 )
+                if active_scale_ceiling:
+                    if scale_ceiling.ceiling is None:
+                        scale_ceiling.capture(scales)
+                        np.save(config.output_dir / "frozen_scale_ceiling.npy", scales.detach().cpu().numpy())
+                    else:
+                        scale_ceiling.capture(scales)  # Check that topology has stayed fixed.
                 optimizer.step()
+                if active_scale_ceiling:
+                    scale_ceiling.project(scales, trainable_surfel_mask)
                 density.apply_local_rotation_update_to_quaternions_inplace(
                     rotations,
                     rotation_delta,
@@ -2315,6 +2437,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_intra_slab_depth_loss_weighted"],
                         averaged_loss_state["total_opacity_prior_loss_raw"],
                         averaged_loss_state["total_opacity_prior_loss_weighted"],
+                        averaged_loss_state["total_surfel_area_loss_raw"],
+                        averaged_loss_state["total_surfel_area_loss_weighted"],
+                        active_area_weight,
+                        int(active_scale_ceiling),
                         averaged_loss_state["total_loss_value"],
                         num_points,
                         densification_new_points,
@@ -2509,6 +2635,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
     final_prior_weighted = config.opacity_prior_weight * final_prior_raw
     final_total_loss += final_prior_weighted
+    final_area_weight = helpers.scheduled_surfel_area_weight(config, global_iteration)
+    final_area_raw, _, _ = helpers.compute_surfel_area_prior(
+        scales, opacities, trainable_surfel_mask, final_area_weight, area_reference_length)
+    final_area_weighted = final_area_weight * final_area_raw
+    final_total_loss += final_area_weighted
     helpers.print_loss_summary("Initial", *initial_loss_tuple)
     helpers.print_loss_summary(
         "Final",
@@ -2522,6 +2653,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_total_loss,
         final_prior_raw,
         final_prior_weighted,
+        final_area_raw,
+        final_area_weighted,
     )
     refresh_current_densification_snapshot(helpers.scheduled_densification_grad_abs_min(
         initial_threshold=densification_grad_abs_min,

@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 64
+    adjoint_passes: int = 6
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -73,9 +73,9 @@ class OptimizationConfig:
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.0005 
+    learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0035
+    learning_rate_scale: float = 0.003
     learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.003
     learning_rate_beta: float = 0.0005
@@ -92,7 +92,7 @@ class OptimizationConfig:
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 18000  # Objective: geometric regularizers
 
-    depth_distort_weight: float = 0.00075
+    depth_distort_weight: float = 0.0005
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
     depth_distort_start_iteration: int = 2000
@@ -104,6 +104,13 @@ class OptimizationConfig:
 
     # Parameter prior: weight * mean((1 - opacity)^2) over non-emissive surfels.
     opacity_prior_weight: float = 0.0  # Disabled; independent of camera batch scaling.
+    # weight * sum(opacity * pi * su * sv) / reference_length**2.
+    # Reference length is fixed from training cameras and the initial cloud;
+    # no GT, camera-count normalization, or current point-count normalization.
+    surfel_area_weight: float = 0.0
+    # Fractions of total training steps; zero/zero preserves a constant prior.
+    surfel_area_start_fraction: float = 0.0
+    surfel_area_ramp_fraction: float = 0.0
 
     # Rendering model
     adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
@@ -120,23 +127,24 @@ class OptimizationConfig:
     min_surfel_area: float = math.pi * 1.0e-4
     min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
+    cap_scale_after_topology_freeze: bool = True  # Capture per-axis radii as ceilings; shrinking remains allowed.
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
     # Prune after this many consecutive full training-camera cycles below the
     # support threshold; 0 disables transport pruning. Respects topology freeze.
     inactive_transport_prune_cycles: int = 1
-    inactive_transport_min_score: float = 5.0
+    inactive_transport_min_score: float = 10.0
 
     # Densification: schedule
     densification_interval: int = 200
-    densify_after: int = 0
+    densify_after: int = 500
     densification_stats_skip_interval_start: bool = True
 
     # Densification: gradient signal
     # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
     densification_relative_error: bool = True
-    densification_radiance_floor: float = 0.001  # linear RGB radiance units
+    densification_radiance_floor: float = 0.05  # linear RGB radiance units
     densification_full_position: bool = False    # False uses only the surfel's local footprint-translation derivative as the clone signal, not just last camera to scene propagation.
     densification_downweight_normal_gradients: bool = False # Project signal to tangent planes before using as signal
     densification_tangent_only: bool = True # Only displace along tangent
@@ -144,9 +152,13 @@ class OptimizationConfig:
     # Reject densification when the current full-footprint mean slab membership, Disabled if 0
     densification_max_mean_slab_members: float = 0.0
     densification_verbose: bool = False
+    # Optional per-camera decision attribution in metrics.csv and NPZ snapshots.
+    # Requires device training with one camera per iteration; never changes selection.
+    densification_diagnostics: bool = True
+    densification_diagnostics_below_z: float = -0.05
 
-    densification_grad_abs_min: float = 0.00025
-    densification_grad_abs_min_final: float = 0.00025
+    densification_grad_abs_min: float = 0.0003
+    densification_grad_abs_min_final: float = 0.0003
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
@@ -190,8 +202,8 @@ class OptimizationConfig:
     save_snapshot_visible_normal: bool = False
     save_snapshot_normal_from_depth: bool = False
     save_snapshot_grad: bool = False
-    enable_metrics: bool = True
-    enable_image_preview: bool = True
+    enable_metrics: bool = False
+    enable_image_preview: bool = False
 
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False
@@ -517,6 +529,9 @@ def parse_args() -> OptimizationConfig:
         "depth_distort_weight",
         "intra_slab_depth_weight",
         "opacity_prior_weight",
+        "surfel_area_weight",
+        "surfel_area_start_fraction",
+        "surfel_area_ramp_fraction",
     )
     _add_boolean_argument(
         objective,
@@ -640,8 +655,17 @@ def parse_args() -> OptimizationConfig:
         ),
     )
     _add_boolean_argument(densification_split, "--densification-verbose")
+    _add_boolean_argument(
+        densification_split, "--densification-diagnostics",
+        help="Record exact per-camera density-window attribution in metrics.csv and NPZ files; requires native one-camera training.",
+    )
+    densification_split.add_argument(
+        "--densification-diagnostics-below-z", type=float,
+        help="World-z cutoff for the diagnostic below-plane population; does not affect training.",
+    )
 
     pruning = parser.add_argument_group("pruning and topology maintenance")
+    _add_boolean_argument(pruning, "--cap-scale-after-topology-freeze")
     pruning.add_argument(
         "--min-surfel-opacity",
         type=float,
@@ -746,6 +770,14 @@ def parse_args() -> OptimizationConfig:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
     if not math.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
         parser.error("--opacity-prior-weight must be finite and non-negative")
+    if not math.isfinite(config.surfel_area_weight) or config.surfel_area_weight < 0.0:
+        parser.error("--surfel-area-weight must be finite and non-negative")
+    if (not math.isfinite(config.surfel_area_start_fraction)
+            or not math.isfinite(config.surfel_area_ramp_fraction)
+            or config.surfel_area_start_fraction < 0
+            or config.surfel_area_ramp_fraction < 0
+            or config.surfel_area_start_fraction + config.surfel_area_ramp_fraction > 1):
+        parser.error("Surfel area start/ramp fractions must be finite, non-negative and sum to at most one")
     if not math.isfinite(config.inactive_transport_min_score) or config.inactive_transport_min_score <= 0:
         parser.error("--inactive-transport-min-score must be finite and positive")
     if config.topology_freeze_last_iterations < 0:

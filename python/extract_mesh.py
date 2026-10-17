@@ -478,15 +478,20 @@ class PaleExtractor:
             cameras: dict[str, Open3DCamera],
             camera_names: list[str],
             depth_key: str,
+            depth_provenance: bool = False,
     ):
         self.renderer = renderer
         self.cameras = cameras
         self.camera_names = camera_names
         self.depth_key = depth_key
+        if depth_provenance and depth_key != 'median_depth':
+            raise ValueError('Depth provenance requires median_depth')
+        self.depth_provenance = depth_provenance
         self.forward_out = None
 
     def reconstruction(self) -> None:
-        self.forward_out = self.renderer.render_forward()
+        self.forward_out = (self.renderer.render_forward(depth_provenance=True)
+                            if self.depth_provenance else self.renderer.render_forward())
 
     def depth_frames(self) -> list[DepthFrame]:
         if self.forward_out is None:
@@ -546,6 +551,18 @@ class PaleExtractor:
 
             color = sanitize_color(color)
             depth = clean_depth(depth, depth_trunc)
+
+            if self.depth_provenance:
+                identities = as_numpy(camera_output['median_primitive_index'])
+                if np.any(identities[depth > 0] == np.iinfo(np.uint32).max):
+                    raise RuntimeError(f'{camera_name}: this renderer path does not supply depth identities')
+                if render_output_dir is not None:
+                    provenance_dir = render_output_dir / 'depth_provenance'
+                    provenance_dir.mkdir(parents=True, exist_ok=True)
+                    np.savez_compressed(provenance_dir / f'{camera_name}{render_name_suffix}.npz',
+                                        depth=depth, primitive_index=identities,
+                                        world_to_camera=camera.world_to_camera,
+                                        intrinsics=[camera.fx, camera.fy, camera.cx, camera.cy])
 
             if render_output_dir is not None:
                 save_extraction_render_images(
@@ -649,6 +666,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Bake/export an existing mesh instead of rerunning TSDF extraction.")
 
     parser.add_argument("--depth-key", type=str, default="median_depth", choices=["median_depth", "mean_depth"])
+    parser.add_argument('--save-depth-provenance', action='store_true',
+                        help='Save exact surfel row IDs for median-depth pixels (requires a provenance-capable renderer).')
     parser.add_argument("--median-depth-retain-last-hit", action=argparse.BooleanOptionalAction, default=True,
                         help="Retain the last valid hit when opacity never reaches the median depth threshold.")
     parser.add_argument(
@@ -750,6 +769,7 @@ if __name__ == "__main__":
         cameras=cameras,
         camera_names=camera_names,
         depth_key=args.depth_key,
+        depth_provenance=args.save_depth_provenance,
     )
 
     if not args.skip_mesh:
@@ -783,6 +803,7 @@ if __name__ == "__main__":
             raise RuntimeError(f'Could not save {mesh_post_path}')
         print(f"mesh post processed saved at {mesh_post_path}")
         metadata = {'renderer': 'pale', 'points': str(points_path.resolve()), 'depth_key': args.depth_key,
+                    'depth_provenance': args.save_depth_provenance,
                     'median_depth_retain_last_hit': args.median_depth_retain_last_hit,
                     'tsdf': tsdf, 'num_cluster': args.num_cluster,
                     'min_cluster_triangles': args.min_cluster_triangles,

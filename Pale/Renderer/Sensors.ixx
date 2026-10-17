@@ -187,6 +187,7 @@ export namespace Pale {
             free(sensor.intraSlabDepthActiveSlabCountBuffer);
             free(sensor.intraSlabRayDepthBuffer);
             free(sensor.visiblePrimitiveIndexBuffer);
+            free(sensor.medianPrimitiveIndexBuffer);
             free(sensor.meanDepthBuffer);
             free(sensor.medianDepthAdjointBuffer);
             free(sensor.medianWorldPositionBuffer);

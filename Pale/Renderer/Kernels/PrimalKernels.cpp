@@ -276,6 +276,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         float accumulatedCompositeWeight = 0.0f;
         bool medianFound = false;
         float medianDepth = 0.0f;
+        uint32_t medianPrimitiveIndex = kInvalidIndex;
         float3 medianWorldPosition{0.0f};
         bool keepTracingRegularizer = settings.computeSurfaceDiagnostics;
 
@@ -307,6 +308,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                 // fallback and the existing hit-budget fallback.
                 medianDepth = depth;
                 medianWorldPosition = regularizerHit.hitPositionW;
+                medianPrimitiveIndex = regularizerHit.primitiveIndex;
                 medianFound = accumulatedCompositeWeight + compositeWeight >= settings.medianDepthThreshold;
             }
             accumulatedCompositeWeight += compositeWeight;
@@ -795,6 +797,10 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
         // uncapped transparent rays too. Empty rays still have no depth.
         const bool surfaceDepthValid = medianFound ||
                 ((settings.medianDepthRetainLastHit || regularizerHitIndex >= maxSplatEventsPerRay) && medianDepth > 0.0f);
+        if (sensor.medianPrimitiveIndexBuffer) {
+            sensor.medianPrimitiveIndexBuffer[pixelIndex] =
+                surfaceDepthValid ? medianPrimitiveIndex : kInvalidIndex;
+        }
         if (surfaceDepthValid) {
             sensor.medianDepthBuffer[pixelIndex] = medianDepth;
             sensor.medianWorldPositionBuffer[pixelIndex] = float4{medianWorldPosition.x(), medianWorldPosition.y(), medianWorldPosition.z(), 1.0f};

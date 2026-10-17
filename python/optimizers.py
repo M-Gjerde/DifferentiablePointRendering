@@ -9,6 +9,31 @@ import torch
 from config import OptimizationConfig
 
 
+class FrozenScaleCeiling:
+    """Capture physical radii once and project later updates onto those bounds.
+
+    Used only after topology stops changing. Other parameters and optimizer
+    moments keep evolving. A radius can shrink and recover up to its ceiling.
+    """
+
+    def __init__(self):
+        self.ceiling = None
+
+    @torch.no_grad()
+    def capture(self, scales: torch.Tensor) -> None:
+        if self.ceiling is None:
+            self.ceiling = scales.detach().clone()
+        elif self.ceiling.shape != scales.shape:
+            raise ValueError("Scale ceiling requires unchanged topology")
+
+    @torch.no_grad()
+    def project(self, scales: torch.Tensor, trainable_mask: torch.Tensor) -> None:
+        if self.ceiling is None or self.ceiling.shape != scales.shape:
+            raise ValueError("Capture the scale ceiling before updating parameters")
+        mask = trainable_mask.reshape(-1, 1)
+        scales.copy_(torch.where(mask, torch.minimum(scales, self.ceiling), scales))
+
+
 class _LogScaleStepMixin:
     """Optimize log radii while exposing physical radii between optimizer steps.
 

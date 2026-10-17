@@ -33,6 +33,9 @@ namespace Pale {
         uint32_t* intraSlabDepthActiveSlabCountBuffer = nullptr;
         // Optional dominant primitive from the visible slab, or UINT32_MAX.
         uint32_t* visiblePrimitiveIndexBuffer = nullptr;
+        // Exact individual surfel supplying medianDepthBuffer (not slab dominance).
+        // Optional diagnostic output; UINT32_MAX denotes missing/unsupported identity.
+        uint32_t* medianPrimitiveIndexBuffer = nullptr;
 
         float*  medianDepthBuffer;        // scalar visualization depth
         float*  meanDepthBuffer;        // scalar visualization depth

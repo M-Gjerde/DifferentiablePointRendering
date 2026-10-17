@@ -85,6 +85,72 @@ def add_opacity_prior_loss(loss_state: dict[str, Any], raw_loss: float, weight: 
     loss_state["total_loss_value"] += weighted_loss
 
 
+def scheduled_surfel_area_weight(config: OptimizationConfig, iteration: int) -> float:
+    """Delay and linearly ramp the scene prior using the global training step."""
+    start = config.surfel_area_start_fraction
+    ramp = config.surfel_area_ramp_fraction
+    if (not np.isfinite(start) or not np.isfinite(ramp) or start < 0 or ramp < 0
+            or start + ramp > 1):
+        raise ValueError("Surfel area start/ramp fractions must be finite, non-negative and sum to at most one")
+    if config.iterations <= 0:
+        raise ValueError("Surfel area scheduling requires positive total iterations")
+    if start == 0 and ramp == 0:
+        return float(config.surfel_area_weight)
+    total_iterations = max(0, int(config.resume_iteration_offset)) + config.iterations
+    elapsed = iteration - start * total_iterations
+    if elapsed <= 0:
+        return 0.0
+    factor = min(1.0, elapsed / (ramp * total_iterations)) if ramp else 1.0
+    return float(config.surfel_area_weight * factor)
+
+
+def surfel_area_reference_length(positions, trainable_mask, camera_origins) -> float:
+    """RMS camera distance to the initial trainable centroid; fixed for a run."""
+    points = np.asarray(positions, dtype=np.float64)[np.asarray(trainable_mask, dtype=bool)]
+    cameras = np.asarray(camera_origins, dtype=np.float64)
+    if not len(points):
+        return 1.0  # No trainable surface, hence identically zero area loss.
+    if cameras.ndim != 2 or cameras.shape[1] != 3 or not len(cameras):
+        raise ValueError("Surfel area normalization requires training camera origins")
+    length = float(np.sqrt(np.mean(np.sum((cameras-points.mean(axis=0))**2, axis=1))))
+    if not np.isfinite(length) or length <= 0:
+        raise ValueError("Surfel area normalization requires a finite nonzero camera distance")
+    return length
+
+
+@torch.no_grad()
+def compute_surfel_area_prior(scales, opacities, trainable_mask, weight, reference_length):
+    """Return dimensionless total area and weighted physical parameter gradients.
+
+    A sum prevents dilution of the penalty by introducing more surfels. Both
+    opacity and radii are optimized. The explicit mask excludes emissive rows.
+    """
+    if not np.isfinite(weight) or weight < 0:
+        raise ValueError("surfel_area_weight must be finite and non-negative")
+    if not np.isfinite(reference_length) or reference_length <= 0:
+        raise ValueError("surfel_area_reference_length must be finite and positive")
+    if weight == 0:
+        return 0., None, None
+    mask = trainable_mask.to(device=scales.device, dtype=torch.bool).reshape(-1)
+    opacity = opacities.reshape(-1)
+    if scales.shape != (len(mask), 2) or len(opacity) != len(mask):
+        raise ValueError("Surfel area parameter/mask shape mismatch")
+    factor = np.pi / reference_length**2
+    scale_gradient = torch.zeros_like(scales)
+    opacity_gradient = torch.zeros_like(opacity)
+    area = scales[mask].prod(dim=1)
+    raw = float((opacity[mask] * area).sum().item()) * factor
+    scale_gradient[mask] = weight * factor * opacity[mask, None] * scales[mask].flip(dims=(1,))
+    opacity_gradient[mask] = weight * factor * area
+    return raw, scale_gradient.cpu().numpy(), opacity_gradient.reshape(opacities.shape).cpu().numpy()
+
+
+def add_surfel_area_loss(loss_state, raw_loss, weight):
+    loss_state['total_surfel_area_loss_raw'] = raw_loss
+    loss_state['total_surfel_area_loss_weighted'] = weight * raw_loss
+    loss_state['total_loss_value'] += weight * raw_loss
+
+
 def make_averaged_loss_state_from_camera_cache(
         latest_loss_values_by_camera: dict[str, dict[str, float]],
         expected_camera_ids: list[str],
@@ -144,6 +210,12 @@ def select_active_training_camera_ids(
 def topology_updates_allowed(iteration: int, final_iteration: int, freeze_last_iterations: int) -> bool:
     """Keep the last N global iterations free of densification and all pruning."""
     return iteration <= final_iteration - freeze_last_iterations
+
+
+def scale_ceiling_active(config: OptimizationConfig, iteration: int) -> bool:
+    final_iteration = int(config.iterations) + max(0, int(config.resume_iteration_offset))
+    return bool(config.cap_scale_after_topology_freeze and config.topology_freeze_last_iterations > 0
+                and not topology_updates_allowed(iteration, final_iteration, config.topology_freeze_last_iterations))
 
 
 def as_config_float(value: Any) -> float:
@@ -385,6 +457,10 @@ def migrate_device_adam_state_snapshot(
     if n_new < 0:
         raise RuntimeError(f"Invalid device Adam migration sizes: new_n={new_n}, kept_n={kept_n}")
 
+    ceiling = np.asarray(snapshot.get("scale_ceiling", np.empty((0, 2))))
+    if ceiling.size and (kept_n != old_n or n_new):
+        raise RuntimeError("Cannot change topology while frozen scale ceilings are active")
+
     if source_index_for_new_np is not None:
         source_index_for_new_np = np.asarray(source_index_for_new_np, dtype=np.int64).reshape(-1)
         if source_index_for_new_np.shape[0] != n_new:
@@ -396,6 +472,8 @@ def migrate_device_adam_state_snapshot(
         # Legacy device snapshots predate these fields and use pure log-space moments.
         "use_log_scale": bool(snapshot.get("use_log_scale", True)),
     }
+    if ceiling.size:
+        migrated["scale_ceiling"] = ceiling.copy()
 
     for key in DEVICE_ADAM_STATE_ARRAY_KEYS:
         if key not in snapshot:
@@ -723,6 +801,7 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     normal_weighted = float(loss_state["total_normal_loss_weighted"])
     intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
     opacity_prior_weighted = float(loss_state.get("total_opacity_prior_loss_weighted", 0.0))
+    area_weighted = float(loss_state.get("total_surfel_area_loss_weighted", 0.0))
     total_loss = float(loss_state["total_loss_value"])
 
     after_depth = rgb_loss + depth_weighted
@@ -730,7 +809,7 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
     after_intra_slab = after_normal + intra_slab_weighted
     regularizer_total = (
         depth_weighted + normal_weighted +
-        intra_slab_weighted + opacity_prior_weighted
+        intra_slab_weighted + opacity_prior_weighted + area_weighted
     )
     loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
     loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
@@ -748,6 +827,8 @@ def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
         f"(+{intra_slab_weighted:.3e})\n"
         f"  {'+ opacity prior':<28} {after_intra_slab + opacity_prior_weighted:>12.3e}  "
         f"(+{opacity_prior_weighted:.3e})\n"
+        f"  {'+ surfel area':<28} {after_intra_slab + opacity_prior_weighted + area_weighted:>12.3e}  "
+        f"(+{area_weighted:.3e})\n"
         f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
         f"  {'total':<28} {total_loss:>12.3e}"
     )
@@ -1512,6 +1593,8 @@ def print_loss_summary(
         total_loss: float,
         opacity_prior_loss_raw: float = 0.0,
         opacity_prior_loss_weighted: float = 0.0,
+        surfel_area_loss_raw: float = 0.0,
+        surfel_area_loss_weighted: float = 0.0,
 ) -> None:
     print_status(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
     print_status(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
@@ -1522,6 +1605,8 @@ def print_loss_summary(
     print_status(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
     print_status(f"{prefix} opacity prior loss (raw)               : {opacity_prior_loss_raw:.6e}")
     print_status(f"{prefix} opacity prior loss (weighted)          : {opacity_prior_loss_weighted:.6e}")
+    print_status(f"{prefix} surfel area loss (raw)                 : {surfel_area_loss_raw:.6e}")
+    print_status(f"{prefix} surfel area loss (weighted)            : {surfel_area_loss_weighted:.6e}")
     print_status(f"{prefix} total loss                             : {total_loss:.6e}")
 
 

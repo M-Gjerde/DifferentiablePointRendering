@@ -200,6 +200,7 @@ class PythonRenderer
         std::string optimizer = "adam";
         bool skipZeroGradientSurfels = false;
         bool useLogScale = true;
+        bool capScaleAtActivation = false;
         float learningRatePosition = 0.0f;
         float learningRateRotation = 0.0f;
         float learningRateScale = 0.0f;
@@ -208,6 +209,9 @@ class PythonRenderer
         float learningRateBeta = 0.0f;
         float cameraBatchScale = 1.0f;
         float opacityPriorWeight = 0.0f;
+        // Sum of opacity-weighted ellipse areas, normalized by a fixed scene length.
+        float surfelAreaWeight = 0.0f;
+        float surfelAreaReferenceLength = 1.0f;
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float epsilon = 1.0e-8f;
@@ -225,6 +229,7 @@ class PythonRenderer
         Pale::float3* rotationV = nullptr;
         Pale::float2* scaleM = nullptr;
         Pale::float2* scaleV = nullptr;
+        Pale::float2* scaleCeiling = nullptr;
         Pale::float3* albedoM = nullptr;
         Pale::float3* albedoV = nullptr;
         float* opacityM = nullptr;
@@ -768,9 +773,22 @@ public:
         return result;
     }
 
-    py::dict render_forward(std::string cameraName)
+    py::dict render_forward(std::string cameraName, bool depthProvenance = false)
     {
         py::gil_scoped_release release;
+        auto queue = deviceSelector->getQueue();
+        if (depthProvenance) {
+            for (auto& sensor : sensorsForward) {
+                const size_t count = static_cast<size_t>(sensor.width) * sensor.height;
+                if (!sensor.medianPrimitiveIndexBuffer) {
+                    sensor.medianPrimitiveIndexBuffer = sycl::malloc_device<uint32_t>(count, queue);
+                    if (!sensor.medianPrimitiveIndexBuffer) throw std::bad_alloc();
+                }
+                // Unsupported render paths report invalid IDs instead of stale data.
+                queue.fill(sensor.medianPrimitiveIndexBuffer, UINT32_MAX, count);
+            }
+            queue.wait();
+        }
 
         std::vector<Pale::SensorGPU> selectedSensors =
             selectSensorsByName(cameraName.empty()
@@ -778,8 +796,6 @@ public:
                                     : std::optional<std::string>{cameraName});
 
         pathTracer->renderForward(selectedSensors);
-
-        auto queue = deviceSelector->getQueue();
 
         struct HostImage
         {
@@ -793,6 +809,7 @@ public:
             std::vector<float> intraSlabDepthData;
             std::vector<float> intraSlabRayDepthData;
             std::vector<std::uint32_t> intraSlabDepthActiveSlabCountData;
+            std::vector<std::uint32_t> medianPrimitiveIndexData;
 
             std::vector<float> medianDepthData;
             std::vector<float> meanDepthData;
@@ -834,6 +851,10 @@ public:
             hostImage.intraSlabDepthActiveSlabCountData =
                 Pale::downloadUint32Buffer(
                     queue, sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
+            if (depthProvenance) {
+                hostImage.medianPrimitiveIndexData = Pale::downloadUint32Buffer(
+                    queue, sensor.medianPrimitiveIndexBuffer, pixelCount);
+            }
 
 
 
@@ -955,6 +976,10 @@ public:
 
             cameraResult[py::str("median_depth")] =
                 makeScalarArray(hostImage.medianDepthData);
+            if (depthProvenance) {
+                cameraResult[py::str("median_primitive_index")] =
+                    makeUintScalarArray(hostImage.medianPrimitiveIndexData);
+            }
             cameraResult[py::str("mean_depth")] =
                 makeScalarArray(hostImage.meanDepthData);
             cameraResult[py::str("median_world_position")] =
@@ -1096,6 +1121,7 @@ public:
                                       const py::dict& optionsDictionary = py::dict())
     {
         float opacityPriorRaw = 0.0f;
+        float surfelAreaRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
         ensureDebugImages();
@@ -1133,7 +1159,7 @@ public:
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
             opacityPriorRaw = launchDeviceTrainingStepKernel(
-                syclQueue, gradients, nullptr, nullptr, nullptr, options);
+                syclQueue, gradients, nullptr, nullptr, nullptr, options, surfelAreaRaw);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
         }
@@ -1161,6 +1187,9 @@ public:
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
         result["opacity_prior_loss_raw"] = opacityPriorRaw;
         result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
+        result["surfel_area_loss_raw"] = surfelAreaRaw;
+        result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
+        result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
         if (returnGradientStats)
         {
             result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -1231,6 +1260,7 @@ public:
     py::dict apply_device_training_step(const py::dict& optionsDictionary = py::dict())
     {
         float opacityPriorRaw = 0.0f;
+        float surfelAreaRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
         const bool includeDepthDistortion =
@@ -1266,7 +1296,7 @@ public:
                 depthGradients,
                 normalGradients,
                 intraSlabGradients,
-                options);
+                options, surfelAreaRaw);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
         }
@@ -1276,6 +1306,9 @@ public:
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
         result["opacity_prior_loss_raw"] = opacityPriorRaw;
         result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
+        result["surfel_area_loss_raw"] = surfelAreaRaw;
+        result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
+        result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
         return result;
     }
 
@@ -1285,6 +1318,7 @@ public:
                                   const py::dict& optionsDictionary = py::dict())
     {
         float opacityPriorRaw = 0.0f;
+        float surfelAreaRaw = 0.0f;
         auto queue = deviceSelector->getQueue();
         const auto options = parseDeviceTrainingStepOptions(optionsDictionary);
         const auto rgbOptions = parseRgbLossOptions(optionsDictionary);
@@ -1320,7 +1354,7 @@ public:
             opacityPriorRaw = launchDeviceTrainingStepKernel(queue, gradients,
                 regularizers.depth && regularizers.depthWeight != 0.0f ? &depthDistortionGradients : nullptr,
                 regularizers.normal && regularizers.normalWeight != 0.0f ? &normalConsistencyGradients : nullptr,
-                regularizers.intra && regularizers.intraWeight != 0.0f ? &intraSlabDepthGradients : nullptr, options);
+                regularizers.intra && regularizers.intraWeight != 0.0f ? &intraSlabDepthGradients : nullptr, options, surfelAreaRaw);
             launchPointBvhRefitKernel(queue);
             if (hasRegularizers) enqueueSurfaceRegularizerLogging(queue, logging);
             for (std::size_t i = 0; i < batch.sensors.size(); ++i)
@@ -1345,6 +1379,9 @@ public:
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
         result["opacity_prior_loss_raw"] = opacityPriorRaw;
         result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
+        result["surfel_area_loss_raw"] = surfelAreaRaw;
+        result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
+        result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
         // No finite cotangent is discarded based on its magnitude.
         result["cotangent_culling_discarded_mass"] = 0.0f;
         if (returnGradientStats) result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -3552,6 +3589,7 @@ public:
         state["point_count"] = static_cast<std::uint64_t>(0u);
         state["step"] = static_cast<std::uint64_t>(0u);
         state["use_log_scale"] = deviceTrainingState.useLogScale;
+        state["scale_ceiling"] = py::array_t<float>(std::vector<py::ssize_t>{0, 2});
 
         if (!isDeviceTrainingStateAllocated())
         {
@@ -3599,6 +3637,13 @@ public:
         state["rotation_v"] = makeDeviceAdamFloat3Array(std::move(rotationV), pointCount);
         state["scale_m"] = makeDeviceAdamFloat2Array(std::move(scaleM), pointCount);
         state["scale_v"] = makeDeviceAdamFloat2Array(std::move(scaleV), pointCount);
+        if (deviceTrainingState.scaleCeiling)
+        {
+            std::vector<Pale::float2> ceiling(pointCount);
+            syclQueue.memcpy(ceiling.data(), deviceTrainingState.scaleCeiling,
+                             pointCount * sizeof(Pale::float2)).wait_and_throw();
+            state["scale_ceiling"] = makeDeviceAdamFloat2Array(std::move(ceiling), pointCount);
+        }
         state["albedo_m"] = makeDeviceAdamFloat3Array(std::move(albedoM), pointCount);
         state["albedo_v"] = makeDeviceAdamFloat3Array(std::move(albedoV), pointCount);
         state["opacity_m"] = makeDeviceAdamFloat1Array(std::move(opacityM), pointCount);
@@ -3642,6 +3687,14 @@ public:
             readDeviceAdamFloat2Array(state, "scale_m", pointCount);
         std::vector<Pale::float2> scaleV =
             readDeviceAdamFloat2Array(state, "scale_v", pointCount);
+        std::vector<Pale::float2> scaleCeiling;
+        if (state.contains("scale_ceiling") && state["scale_ceiling"].cast<py::array>().size() > 0)
+        {
+            scaleCeiling = readDeviceAdamFloat2Array(state, "scale_ceiling", pointCount);
+            for (const auto& value : scaleCeiling)
+                if (!std::isfinite(value.x()) || !std::isfinite(value.y()) || value.x() < 0 || value.y() < 0)
+                    throw std::invalid_argument("Scale ceilings must be finite and non-negative");
+        }
         std::vector<Pale::float3> albedoM =
             readDeviceAdamFloat3Array(state, "albedo_m", pointCount);
         std::vector<Pale::float3> albedoV =
@@ -3665,6 +3718,12 @@ public:
             syclQueue.memcpy(deviceTrainingState.rotationV, rotationV.data(), pointCount * sizeof(Pale::float3));
             syclQueue.memcpy(deviceTrainingState.scaleM, scaleM.data(), pointCount * sizeof(Pale::float2));
             syclQueue.memcpy(deviceTrainingState.scaleV, scaleV.data(), pointCount * sizeof(Pale::float2));
+            if (!scaleCeiling.empty())
+            {
+                deviceTrainingState.scaleCeiling = sycl::malloc_device<Pale::float2>(pointCount, syclQueue);
+                if (!deviceTrainingState.scaleCeiling) throw std::runtime_error("Failed to allocate scale ceilings");
+                syclQueue.memcpy(deviceTrainingState.scaleCeiling, scaleCeiling.data(), pointCount * sizeof(Pale::float2));
+            }
             syclQueue.memcpy(deviceTrainingState.albedoM, albedoM.data(), pointCount * sizeof(Pale::float3));
             syclQueue.memcpy(deviceTrainingState.albedoV, albedoV.data(), pointCount * sizeof(Pale::float3));
             syclQueue.memcpy(deviceTrainingState.opacityM, opacityM.data(), pointCount * sizeof(float));
@@ -4929,6 +4988,7 @@ private:
         options.learningRateScale =
             get_f(optionsDictionary, "learning_rate_scale", options.learningRateScale);
         options.useLogScale = get_b(optionsDictionary, "use_log_scale", options.useLogScale);
+        options.capScaleAtActivation = get_b(optionsDictionary, "cap_scale_at_activation", false);
         options.learningRateAlbedo =
             get_f(optionsDictionary, "learning_rate_albedo", options.learningRateAlbedo);
         options.learningRateOpacity =
@@ -4940,6 +5000,14 @@ private:
         options.opacityPriorWeight = get_f(optionsDictionary, "opacity_prior_weight", 0.0f);
         if (!std::isfinite(options.opacityPriorWeight) || options.opacityPriorWeight < 0.0f)
             throw std::invalid_argument("opacity_prior_weight must be finite and non-negative");
+        options.surfelAreaWeight = get_f(optionsDictionary, "surfel_area_weight", 0.0f);
+        options.surfelAreaReferenceLength = get_f(optionsDictionary, "surfel_area_reference_length", 1.0f);
+        if (!std::isfinite(options.surfelAreaWeight) || options.surfelAreaWeight < 0.0f)
+            throw std::invalid_argument("surfel_area_weight must be finite and non-negative");
+        if (!std::isfinite(options.surfelAreaReferenceLength) || options.surfelAreaReferenceLength <= 0.0f ||
+            !std::isfinite(1.0f / (options.surfelAreaReferenceLength * options.surfelAreaReferenceLength)) ||
+            !std::isfinite(options.surfelAreaReferenceLength * options.surfelAreaReferenceLength))
+            throw std::invalid_argument("surfel_area_reference_length must have a finite positive squared scale and reciprocal");
         options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
         options.beta2 = get_f(optionsDictionary, "adam_beta2", options.beta2);
         options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
@@ -5176,6 +5244,7 @@ private:
         releasePointer(deviceTrainingState.rotationV);
         releasePointer(deviceTrainingState.scaleM);
         releasePointer(deviceTrainingState.scaleV);
+        releasePointer(deviceTrainingState.scaleCeiling);
         releasePointer(deviceTrainingState.albedoM);
         releasePointer(deviceTrainingState.albedoV);
         releasePointer(deviceTrainingState.opacityM);
@@ -5263,7 +5332,8 @@ private:
                                         const Pale::PointGradients* depthGradients,
                                         const Pale::PointGradients* normalGradients,
                                         const Pale::PointGradients* intraSlabGradients,
-                                        const DeviceTrainingStepOptions& options)
+                                        const DeviceTrainingStepOptions& options,
+                                        float& surfelAreaRaw)
     {
         if (!sceneGpu.points || sceneGpu.pointCount == 0u)
         {
@@ -5288,6 +5358,31 @@ private:
         validateOptionalGradientSource(depthGradients, "depthDistortionGradients");
         validateOptionalGradientSource(normalGradients, "normalConsistencyGradients");
         validateOptionalGradientSource(intraSlabGradients, "intraSlabDepthGradients");
+
+        surfelAreaRaw = 0.0f;
+        const float areaNormalization = 3.14159265358979323846f /
+            (options.surfelAreaReferenceLength * options.surfelAreaReferenceLength);
+        const float areaGradientScale = options.surfelAreaWeight * areaNormalization;
+        if (options.surfelAreaWeight > 0.0f)
+        {
+            float areaSum = 0.0f;
+            {
+                sycl::buffer<float, 1> areaBuffer(&areaSum, sycl::range<1>(1));
+                queue.submit([&](sycl::handler& cgh)
+                {
+                    auto reduction = sycl::reduction(areaBuffer, cgh, sycl::plus<float>());
+                    cgh.parallel_for<class SurfelAreaReductionKernelTag>(
+                        sycl::range<1>(sceneGpu.pointCount), reduction,
+                        [points = sceneGpu.points](sycl::id<1> id, auto& sum)
+                        {
+                            const auto& point = points[id[0]];
+                            if (!point.isEmissive())
+                                sum += point.opacity * point.scale.x() * point.scale.y();
+                        });
+                }).wait_and_throw();
+            }
+            surfelAreaRaw = areaSum * areaNormalization;
+        }
 
         float opacityPriorRaw = 0.0f;
         float opacityPriorGradientScale = 0.0f;
@@ -5333,6 +5428,23 @@ private:
                 "Create a new renderer or call upload_device_adam_state({}) before continuing.");
         }
         deviceTrainingState.useLogScale = options.useLogScale;
+        // Capture before the first constrained update. The bounds persist through
+        // BVH rebuilds and state roundtrips; disabling the option releases them.
+        if (options.capScaleAtActivation && !deviceTrainingState.scaleCeiling)
+        {
+            deviceTrainingState.scaleCeiling = sycl::malloc_device<Pale::float2>(sceneGpu.pointCount, queue);
+            if (!deviceTrainingState.scaleCeiling) throw std::runtime_error("Failed to allocate scale ceilings");
+            queue.parallel_for<class CaptureScaleCeilingKernelTag>(sycl::range<1>(sceneGpu.pointCount),
+                [points = sceneGpu.points, ceiling = deviceTrainingState.scaleCeiling](sycl::id<1> id)
+                {
+                    ceiling[id[0]] = points[id[0]].scale;
+                }).wait_and_throw();
+        }
+        else if (!options.capScaleAtActivation && deviceTrainingState.scaleCeiling)
+        {
+            sycl::free(deviceTrainingState.scaleCeiling, queue);
+            deviceTrainingState.scaleCeiling = nullptr;
+        }
         const bool useAdam = options.optimizer == "adam";
         const std::uint32_t adamStep = ++deviceTrainingState.step;
         const float biasCorrection1 =
@@ -5376,6 +5488,7 @@ private:
                 rotationV = deviceTrainingState.rotationV,
                 scaleM = deviceTrainingState.scaleM,
                 scaleV = deviceTrainingState.scaleV,
+                scaleCeiling = deviceTrainingState.scaleCeiling,
                 albedoM = deviceTrainingState.albedoM,
                 albedoV = deviceTrainingState.albedoV,
                 opacityM = deviceTrainingState.opacityM,
@@ -5396,6 +5509,7 @@ private:
                 lrAlbedo = options.learningRateAlbedo,
                 lrOpacity = options.learningRateOpacity,
                 opacityPriorGradientScale,
+                areaGradientScale,
                 lrBeta = options.learningRateBeta,
                 cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
             {
@@ -5559,7 +5673,7 @@ private:
                     gradOpacity[primitiveIndex]);
                 // Add once, after image-gradient scaling. Do not contaminate
                 // the photometric gradients used by densification.
-                const float optimizerOpacityGradient = cleanGradient(
+                float optimizerOpacityGradient = cleanGradient(
                     opacityPriorGradientScale > 0.0f
                         ? opacityGradient * cameraBatchScale + opacityPriorGradientScale * (point.opacity - 1.0f)
                         : opacityGradient * cameraBatchScale);
@@ -5576,15 +5690,24 @@ private:
                     cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale, maxSurfelScale);
                 const float physicalScaleY = clampValue(
                     cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale, maxSurfelScale);
+                // Parameter prior enters after camera scaling and never enters
+                // the RGB footprint statistics used for densification.
+                if (areaGradientScale > 0.0f)
+                    optimizerOpacityGradient = cleanGradient(optimizerOpacityGradient +
+                        areaGradientScale * physicalScaleX * physicalScaleY);
                 // Log radii use dL/drho = s * dL/ds.
                 const float scaleGradientMultiplierX =
                     useLogScale ? physicalScaleX : 1.0f;
                 const float scaleGradientMultiplierY =
                     useLogScale ? physicalScaleY : 1.0f;
                 const float optimizerScaleGradientX = cleanGradient(
-                    scaleGradientX * cameraBatchScale * scaleGradientMultiplierX);
+                    (areaGradientScale > 0.0f
+                        ? scaleGradientX * cameraBatchScale + areaGradientScale * point.opacity * physicalScaleY
+                        : scaleGradientX * cameraBatchScale) * scaleGradientMultiplierX);
                 const float optimizerScaleGradientY = cleanGradient(
-                    scaleGradientY * cameraBatchScale * scaleGradientMultiplierY);
+                    (areaGradientScale > 0.0f
+                        ? scaleGradientY * cameraBatchScale + areaGradientScale * point.opacity * physicalScaleX
+                        : scaleGradientY * cameraBatchScale) * scaleGradientMultiplierY);
                 // Whole-surfel gating: zero components of an active surfel still use Adam.
                 if (skipZeroGradientSurfels)
                 {
@@ -5730,6 +5853,12 @@ private:
                         point.scale.y() = clampValue(
                             physicalScaleY - scaleUpdateY, minSurfelScale, maxSurfelScale);
                     }
+                }
+
+                if (scaleCeiling)
+                {
+                    point.scale.x() = sycl::fmin(point.scale.x(), scaleCeiling[primitiveIndex].x());
+                    point.scale.y() = sycl::fmin(point.scale.y(), scaleCeiling[primitiveIndex].y());
                 }
 
                 const float albedoUpdateX = adamUpdate(
@@ -6569,7 +6698,9 @@ PYBIND11_MODULE(pale, m)
              "Reading does not reset the accumulated measurement window.")
         .def("get_backward_allocation_stats", &PythonRenderer::get_backward_allocation_stats,
              "Report allocated backward gradient bytes, sensor adjoint bytes, and ray scratch state.")
-        .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "")
+        .def("render_forward", &PythonRenderer::render_forward, py::arg("camera_name") = "",
+             py::arg("depth_provenance") = false,
+             "Render; optional median_primitive_index identifies the exact depth hit in the standard photon-mapping surfel path. Unsupported paths return UINT32_MAX.")
         .def("upload_training_targets",
              &PythonRenderer::upload_training_targets,
              py::arg("target_images"))

@@ -172,8 +172,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     base = ROOT / "OptimizationOutput"
     parser.add_argument("--paper-run", type=Path, default=base / "paper/workbench")
-    parser.add_argument("--crowd1-run", type=Path, default=base / "work/workbench_crowd_penalty")
-    parser.add_argument("--latest-run", type=Path, default=base / "work/workbench")
+    parser.add_argument("--crowd1-run", type=Path, default=base / "work/workbench_crowd_penalty_11")
+    parser.add_argument("--latest-run", type=Path, default=base / "work/workbench_4")
     parser.add_argument("--gt", type=Path, default=Path.home() / "phd/models/gt/workbench.ply")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "../output/workbench_cd_comparison")
     parser.add_argument("--step", type=int, default=1000)
