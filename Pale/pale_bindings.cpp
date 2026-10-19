@@ -208,7 +208,6 @@ class PythonRenderer
         float learningRateOpacity = 0.0f;
         float learningRateBeta = 0.0f;
         float cameraBatchScale = 1.0f;
-        float opacityPriorWeight = 0.0f;
         // Sum of opacity-weighted ellipse areas, normalized by a fixed scene length.
         float surfelAreaWeight = 0.0f;
         float surfelAreaReferenceLength = 1.0f;
@@ -1120,7 +1119,6 @@ public:
     py::dict render_rgb_training_step(const py::list& cameraNamesList,
                                       const py::dict& optionsDictionary = py::dict())
     {
-        float opacityPriorRaw = 0.0f;
         float surfelAreaRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
@@ -1158,7 +1156,7 @@ public:
             // Adam may execute even if a later allocation, refit or readback throws.
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
-            opacityPriorRaw = launchDeviceTrainingStepKernel(
+            launchDeviceTrainingStepKernel(
                 syclQueue, gradients, nullptr, nullptr, nullptr, options, surfelAreaRaw);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
@@ -1185,8 +1183,6 @@ public:
         result["l2_loss_values"] = std::move(l2LossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        result["opacity_prior_loss_raw"] = opacityPriorRaw;
-        result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
         result["surfel_area_loss_raw"] = surfelAreaRaw;
         result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
         result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
@@ -1259,7 +1255,6 @@ public:
 
     py::dict apply_device_training_step(const py::dict& optionsDictionary = py::dict())
     {
-        float opacityPriorRaw = 0.0f;
         float surfelAreaRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
@@ -1290,7 +1285,7 @@ public:
             // Adam may execute even if a later allocation, refit or readback throws.
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
-            opacityPriorRaw = launchDeviceTrainingStepKernel(
+            launchDeviceTrainingStepKernel(
                 syclQueue,
                 gradients,
                 depthGradients,
@@ -1304,8 +1299,6 @@ public:
         py::dict result;
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        result["opacity_prior_loss_raw"] = opacityPriorRaw;
-        result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
         result["surfel_area_loss_raw"] = surfelAreaRaw;
         result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
         result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
@@ -1317,7 +1310,6 @@ public:
     py::dict render_training_step(const py::list& cameraNamesList,
                                   const py::dict& optionsDictionary = py::dict())
     {
-        float opacityPriorRaw = 0.0f;
         float surfelAreaRaw = 0.0f;
         auto queue = deviceSelector->getQueue();
         const auto options = parseDeviceTrainingStepOptions(optionsDictionary);
@@ -1351,7 +1343,7 @@ public:
             // Adam may execute even if a later allocation, refit or readback throws.
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
-            opacityPriorRaw = launchDeviceTrainingStepKernel(queue, gradients,
+            launchDeviceTrainingStepKernel(queue, gradients,
                 regularizers.depth && regularizers.depthWeight != 0.0f ? &depthDistortionGradients : nullptr,
                 regularizers.normal && regularizers.normalWeight != 0.0f ? &normalConsistencyGradients : nullptr,
                 regularizers.intra && regularizers.intraWeight != 0.0f ? &intraSlabDepthGradients : nullptr, options, surfelAreaRaw);
@@ -1377,8 +1369,6 @@ public:
             result["regularizer_loss_state"] = makeSurfaceRegularizerLossValues(batch.sensors, regularizers, logging);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        result["opacity_prior_loss_raw"] = opacityPriorRaw;
-        result["opacity_prior_loss_weighted"] = options.opacityPriorWeight * opacityPriorRaw;
         result["surfel_area_loss_raw"] = surfelAreaRaw;
         result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
         result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
@@ -4997,9 +4987,6 @@ private:
             get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
         options.cameraBatchScale =
             get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
-        options.opacityPriorWeight = get_f(optionsDictionary, "opacity_prior_weight", 0.0f);
-        if (!std::isfinite(options.opacityPriorWeight) || options.opacityPriorWeight < 0.0f)
-            throw std::invalid_argument("opacity_prior_weight must be finite and non-negative");
         options.surfelAreaWeight = get_f(optionsDictionary, "surfel_area_weight", 0.0f);
         options.surfelAreaReferenceLength = get_f(optionsDictionary, "surfel_area_reference_length", 1.0f);
         if (!std::isfinite(options.surfelAreaWeight) || options.surfelAreaWeight < 0.0f)
@@ -5325,9 +5312,7 @@ private:
         queue.wait_and_throw();
     }
 
-    // Returns the raw pre-update opacity prior loss. The disabled path does no
-    // reduction/readback and leaves the existing optimizer gradients unchanged.
-    float launchDeviceTrainingStepKernel(sycl::queue queue,
+    void launchDeviceTrainingStepKernel(sycl::queue queue,
                                         const Pale::PointGradients& pointGradients,
                                         const Pale::PointGradients* depthGradients,
                                         const Pale::PointGradients* normalGradients,
@@ -5382,40 +5367,6 @@ private:
                 }).wait_and_throw();
             }
             surfelAreaRaw = areaSum * areaNormalization;
-        }
-
-        float opacityPriorRaw = 0.0f;
-        float opacityPriorGradientScale = 0.0f;
-        if (options.opacityPriorWeight > 0.0f)
-        {
-            float squaredResidualSum = 0.0f;
-            std::uint32_t trainableCount = 0u;
-            {
-                sycl::buffer<float, 1> lossBuffer(&squaredResidualSum, sycl::range<1>(1));
-                sycl::buffer<std::uint32_t, 1> countBuffer(&trainableCount, sycl::range<1>(1));
-                queue.submit([&](sycl::handler& cgh)
-                {
-                    auto lossSum = sycl::reduction(lossBuffer, cgh, sycl::plus<float>());
-                    auto countSum = sycl::reduction(countBuffer, cgh, sycl::plus<std::uint32_t>());
-                    cgh.parallel_for<class OpacityPriorReductionKernelTag>(
-                        sycl::range<1>(sceneGpu.pointCount), lossSum, countSum,
-                        [points = sceneGpu.points](sycl::id<1> id, auto& loss, auto& count)
-                        {
-                            const auto& point = points[id[0]];
-                            if (!point.isEmissive())
-                            {
-                                const float residual = point.opacity - 1.0f;
-                                loss += residual * residual;
-                                count += 1u;
-                            }
-                        });
-                }).wait_and_throw();
-            }
-            if (trainableCount > 0u)
-            {
-                opacityPriorRaw = squaredResidualSum / static_cast<float>(trainableCount);
-                opacityPriorGradientScale = 2.0f * options.opacityPriorWeight / static_cast<float>(trainableCount);
-            }
         }
 
         // A scale-parameterization change invalidates the existing scale moments.
@@ -5508,7 +5459,6 @@ private:
                 lrScale = options.learningRateScale,
                 lrAlbedo = options.learningRateAlbedo,
                 lrOpacity = options.learningRateOpacity,
-                opacityPriorGradientScale,
                 areaGradientScale,
                 lrBeta = options.learningRateBeta,
                 cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
@@ -5671,12 +5621,7 @@ private:
                     normalGradOpacity,
                     intraSlabGradOpacity,
                     gradOpacity[primitiveIndex]);
-                // Add once, after image-gradient scaling. Do not contaminate
-                // the photometric gradients used by densification.
-                float optimizerOpacityGradient = cleanGradient(
-                    opacityPriorGradientScale > 0.0f
-                        ? opacityGradient * cameraBatchScale + opacityPriorGradientScale * (point.opacity - 1.0f)
-                        : opacityGradient * cameraBatchScale);
+                float optimizerOpacityGradient = cleanGradient(opacityGradient * cameraBatchScale);
                 const float betaGradient = sumFloatGradient(
                     depthGradBeta,
                     normalGradBeta,
@@ -5898,7 +5843,6 @@ private:
         {
             updateEvent.wait_and_throw();
         }
-        return opacityPriorRaw;
     }
 
     void freePointBvhRefitPlan(sycl::queue queue)

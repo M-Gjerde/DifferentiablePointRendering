@@ -18,8 +18,6 @@ METRICS_COLUMNS = (
     "loss_normal_consistency_weighted_mean",
     "loss_intra_slab_depth_raw_mean",
     "loss_intra_slab_depth_weighted_mean",
-    "loss_opacity_prior_raw",
-    "loss_opacity_prior_weighted",
     "loss_surfel_area_raw",
     "loss_surfel_area_weighted",
     "surfel_area_weight_active",

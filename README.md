@@ -205,17 +205,6 @@ counts. Rebuild `pale` when updating Python training code to use these scores.
 These statistics track camera and direct shadow support; they do not separately
 measure indirect-light importance or the loss change from deleting a surfel.
 
-The optional opacity prior adds `opacity_prior_weight * mean((1 - opacity)^2)`
-over trainable, non-emissive surfels. Set `opacity_prior_weight` in
-`python/config.py` or pass `--opacity-prior-weight 1e-4` (an example weight to
-tune). It defaults to `0.0`, which disables the calculation. It works with both
-Python and device training, is applied once per step independently of camera
-batch scaling, and leaves learning-rate and pruning settings unchanged.
-`metrics.csv` records `loss_opacity_prior_raw` and `loss_opacity_prior_weighted`;
-the weighted term is included in total loss. This prior updates opacity only;
-the photometric loss drives any compensating albedo adjustment, so individual
-updates do not preserve radiance. Rebuild the `pale` target to use the device path.
-
 Pass `--metrics` to launch the live metrics viewer alongside training. When
 `--gt` is present, `main.py` computes geometry scores at mesh extraction
 checkpoints and writes them to `geometry_metrics.csv`; the viewer reads that

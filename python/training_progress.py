@@ -8,7 +8,6 @@ WEIGHTED_LOSS_FIELDS = (
     ("depth", "total_depth_distortion_loss_weighted"),
     ("normal", "total_normal_loss_weighted"),
     ("slab", "total_intra_slab_depth_loss_weighted"),
-    ("opacity", "total_opacity_prior_loss_weighted"),
     ("area", "total_surfel_area_loss_weighted"),
 )
 

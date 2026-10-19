@@ -75,9 +75,9 @@ class OptimizationConfig:
     learning_rate: float = 1.0
     learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.003
-    learning_rate_albedo: float = 0.001
-    learning_rate_opacity: float = 0.003
+    learning_rate_scale: float = 0.0035
+    learning_rate_albedo: float = 0.003
+    learning_rate_opacity: float = 0.001
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -103,7 +103,6 @@ class OptimizationConfig:
     intra_slab_depth_weight: float = 0.0e-5
 
     # Parameter prior: weight * mean((1 - opacity)^2) over non-emissive surfels.
-    opacity_prior_weight: float = 0.0  # Disabled; independent of camera batch scaling.
     # weight * sum(opacity * pi * su * sv) / reference_length**2.
     # Reference length is fixed from training cameras and the initial cloud;
     # no GT, camera-count normalization, or current point-count normalization.
@@ -154,14 +153,13 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Optional per-camera decision attribution in metrics.csv and NPZ snapshots.
     # Requires device training with one camera per iteration; never changes selection.
-    densification_diagnostics: bool = True
-    densification_diagnostics_below_z: float = -0.05
+    densification_diagnostics: bool = False
 
     densification_grad_abs_min: float = 0.0003
     densification_grad_abs_min_final: float = 0.0003
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
-    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
+    densification_split_scale_factor: float = 1.4 # 1.6 matches 3DGS split procedure.
     densification_split_offset_scale: float = 0.2 
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
@@ -202,7 +200,7 @@ class OptimizationConfig:
     save_snapshot_visible_normal: bool = False
     save_snapshot_normal_from_depth: bool = False
     save_snapshot_grad: bool = False
-    enable_metrics: bool = False
+    enable_metrics: bool = True
     enable_image_preview: bool = False
 
     # Internal CLI/checkpoint state
@@ -528,7 +526,6 @@ def parse_args() -> OptimizationConfig:
         "normal_consistency_weight",
         "depth_distort_weight",
         "intra_slab_depth_weight",
-        "opacity_prior_weight",
         "surfel_area_weight",
         "surfel_area_start_fraction",
         "surfel_area_ramp_fraction",
@@ -659,10 +656,6 @@ def parse_args() -> OptimizationConfig:
         densification_split, "--densification-diagnostics",
         help="Record exact per-camera density-window attribution in metrics.csv and NPZ files; requires native one-camera training.",
     )
-    densification_split.add_argument(
-        "--densification-diagnostics-below-z", type=float,
-        help="World-z cutoff for the diagnostic below-plane population; does not affect training.",
-    )
 
     pruning = parser.add_argument_group("pruning and topology maintenance")
     _add_boolean_argument(pruning, "--cap-scale-after-topology-freeze")
@@ -768,8 +761,6 @@ def parse_args() -> OptimizationConfig:
         parser.error("--local-layer-depth-epsilon must be finite and greater than 1e-6")
     if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
         parser.error("--min-surfel-opacity must be finite and in [0, 1]")
-    if not math.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
-        parser.error("--opacity-prior-weight must be finite and non-negative")
     if not math.isfinite(config.surfel_area_weight) or config.surfel_area_weight < 0.0:
         parser.error("--surfel-area-weight must be finite and non-negative")
     if (not math.isfinite(config.surfel_area_start_fraction)

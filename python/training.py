@@ -467,7 +467,6 @@ def make_device_training_step_options(
             float(config.learning_rate_beta),
         ),
         "camera_batch_scale": camera_batch_scale,
-        "opacity_prior_weight": float(config.opacity_prior_weight),
         "surfel_area_weight": helpers.scheduled_surfel_area_weight(config, iteration),
         "surfel_area_reference_length": surfel_area_reference_length,
         "return_gradient_stats": return_gradient_stats,
@@ -655,8 +654,6 @@ def compute_iteration_gradients(
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig) -> None:
-    if not np.isfinite(config.opacity_prior_weight) or config.opacity_prior_weight < 0.0:
-        raise ValueError("opacity_prior_weight must be finite and non-negative")
     if not np.isfinite(config.surfel_area_weight) or config.surfel_area_weight < 0.0:
         raise ValueError("surfel_area_weight must be finite and non-negative")
     initial_area_weight = helpers.scheduled_surfel_area_weight(config, max(0, int(config.resume_iteration_offset)))
@@ -703,7 +700,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         f"normal_consistency={use_normal_consistency} weight={normal_consistency_weight:.3e} "
         f"start_iter={normal_consistency_start_iteration}, "
         f"intra_slab_depth={use_intra_slab_depth} weight={intra_slab_depth_weight:.3e}, "
-        f"opacity_prior_weight={config.opacity_prior_weight:.3e}, "
     )
     if (int(config.inactive_transport_prune_cycles) > 0 and
             not hasattr(renderer, "get_primal_activity_stats")):
@@ -816,16 +812,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     del initial_images
 
-    initial_prior_raw, _ = helpers.compute_opacity_prior(
-        opacities, trainable_surfel_mask, config.opacity_prior_weight,
-    )
-    initial_prior_weighted = config.opacity_prior_weight * initial_prior_raw
     initial_area_raw, _, _ = helpers.compute_surfel_area_prior(
         scales, opacities, trainable_surfel_mask, initial_area_weight, area_reference_length)
     initial_area_weighted = initial_area_weight * initial_area_raw
     initial_loss_tuple = (
-        *initial_loss_tuple[:-1], initial_loss_tuple[-1] + initial_prior_weighted + initial_area_weighted,
-        initial_prior_raw, initial_prior_weighted,
+        *initial_loss_tuple[:-1], initial_loss_tuple[-1] + initial_area_weighted,
         initial_area_raw, initial_area_weighted,
     )
     helpers.print_loss_summary("Initial", *initial_loss_tuple)
@@ -1082,7 +1073,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             raise ValueError("Density diagnostics require native one-camera training")
         density_diagnostics = DensificationDiagnostics(
             config.output_dir, training_camera_ids, int(positions.shape[0]),
-            config.densification_diagnostics_below_z,
             start_iteration=resume_iteration_offset,
         )
     with open(metrics_csv_path, "w", newline="") as csv_file:
@@ -1213,12 +1203,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         latest_loss_values_by_camera=latest_loss_values_by_camera,
                         expected_camera_ids=list(training_camera_ids),
                     )
-                    # Native loss is measured before the update, like RGB loss.
-                    if config.opacity_prior_weight > 0.0 and "opacity_prior_loss_raw" not in adjoint_images:
-                        raise RuntimeError("Opacity prior requires rebuilding the pale module")
-                    prior_raw = float(adjoint_images.get("opacity_prior_loss_raw", 0.0))
-                    helpers.add_opacity_prior_loss(loss_state, prior_raw, config.opacity_prior_weight)
-                    helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
                     if active_area_weight > 0 and 'surfel_area_loss_raw' not in adjoint_images:
                         raise RuntimeError('Surfel area prior requires rebuilding the pale module')
                     area_raw = float(adjoint_images.get('surfel_area_loss_raw', 0.))
@@ -1764,8 +1748,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["total_normal_loss_weighted"],
                             averaged_loss_state["total_intra_slab_depth_loss_raw"],
                             averaged_loss_state["total_intra_slab_depth_loss_weighted"],
-                            averaged_loss_state["total_opacity_prior_loss_raw"],
-                            averaged_loss_state["total_opacity_prior_loss_weighted"],
                             averaged_loss_state["total_surfel_area_loss_raw"],
                             averaged_loss_state["total_surfel_area_loss_weighted"],
                             active_area_weight,
@@ -1932,16 +1914,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         surface_regularizer_gradients,
                     )
 
-                # A parameter prior is independent of camera count and is not a
-                # densification signal. Add it after camera scaling, before Adam.
-                prior_raw, prior_gradient = helpers.compute_opacity_prior(
-                    opacities, trainable_surfel_mask, config.opacity_prior_weight,
-                )
-                if prior_gradient is not None:
-                    total_gradients["opacity"] = total_gradients["opacity"] + prior_gradient.reshape(
-                        total_gradients["opacity"].shape)
-                helpers.add_opacity_prior_loss(loss_state, prior_raw, config.opacity_prior_weight)
-                helpers.add_opacity_prior_loss(averaged_loss_state, prior_raw, config.opacity_prior_weight)
                 area_raw, area_scale_grad, area_opacity_grad = helpers.compute_surfel_area_prior(
                     scales, opacities, trainable_surfel_mask, active_area_weight, area_reference_length)
                 if area_scale_grad is not None:
@@ -2435,8 +2407,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["total_normal_loss_weighted"],
                         averaged_loss_state["total_intra_slab_depth_loss_raw"],
                         averaged_loss_state["total_intra_slab_depth_loss_weighted"],
-                        averaged_loss_state["total_opacity_prior_loss_raw"],
-                        averaged_loss_state["total_opacity_prior_loss_weighted"],
                         averaged_loss_state["total_surfel_area_loss_raw"],
                         averaged_loss_state["total_surfel_area_loss_weighted"],
                         active_area_weight,
@@ -2630,11 +2600,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_total_loss += intra_slab_depth_cam_weighted
 
 
-    final_prior_raw, _ = helpers.compute_opacity_prior(
-        opacities, trainable_surfel_mask, config.opacity_prior_weight,
-    )
-    final_prior_weighted = config.opacity_prior_weight * final_prior_raw
-    final_total_loss += final_prior_weighted
     final_area_weight = helpers.scheduled_surfel_area_weight(config, global_iteration)
     final_area_raw, _, _ = helpers.compute_surfel_area_prior(
         scales, opacities, trainable_surfel_mask, final_area_weight, area_reference_length)
@@ -2651,8 +2616,6 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_intra_slab_depth_loss_raw,
         final_intra_slab_depth_loss_weighted,
         final_total_loss,
-        final_prior_raw,
-        final_prior_weighted,
         final_area_raw,
         final_area_weighted,
     )

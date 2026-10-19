@@ -362,10 +362,11 @@ namespace Pale {
     constexpr uint32_t kMaxSplatEventsPerRay = 12;
     constexpr uint32_t kMaxLocalSurfelHits = 8;
     constexpr uint32_t kMaxPointHitBatch = 8;
-    constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;
+    constexpr uint32_t kMaxPointHitBatchWithLookahead = kMaxPointHitBatch + kMaxLocalSurfelHits - 1u;   
     // Camera visibility gathers a complete slab even when the batch cap is smaller.
     constexpr uint32_t kMaxPointLayerCandidates =
         kMaxPointHitBatch > kMaxLocalSurfelHits ? kMaxPointHitBatch : kMaxLocalSurfelHits;
+
 
     constexpr float RayEpsilon = 1e-6f;
     constexpr float RayEpsilon2 = 1e-6f;
