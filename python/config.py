@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 6
+    adjoint_passes: int = 12
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -63,7 +63,7 @@ class OptimizationConfig:
 
     # Execution
     device: str = "cpu"
-    iterations: int = 20000
+    iterations: int = 30000
     optimizer_type: str = "adam"
     use_device_training_step: bool = True
     skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
@@ -77,7 +77,7 @@ class OptimizationConfig:
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.0035
     learning_rate_albedo: float = 0.003
-    learning_rate_opacity: float = 0.001
+    learning_rate_opacity: float = 0.003
     learning_rate_beta: float = 0.0005
 
     # Optimizer: learning-rate schedules
@@ -87,10 +87,10 @@ class OptimizationConfig:
     global_lr_scale_init: float = 1.0
     global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 1.5
+    position_lr_scale_init: float = 1.5 * 4.0
     position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 18000  # Objective: geometric regularizers
+    lr_decay_max_steps: int = 25000  # Objective: geometric regularizers
 
     depth_distort_weight: float = 0.0005
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
@@ -136,7 +136,7 @@ class OptimizationConfig:
     inactive_transport_min_score: float = 10.0
 
     # Densification: schedule
-    densification_interval: int = 200
+    densification_interval: int = 1000
     densify_after: int = 500
     densification_stats_skip_interval_start: bool = True
 
@@ -153,13 +153,13 @@ class OptimizationConfig:
     densification_verbose: bool = False
     # Optional per-camera decision attribution in metrics.csv and NPZ snapshots.
     # Requires device training with one camera per iteration; never changes selection.
-    densification_diagnostics: bool = False
+    densification_diagnostics: bool = True
 
     densification_grad_abs_min: float = 0.0003
     densification_grad_abs_min_final: float = 0.0003
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
-    densification_split_scale_factor: float = 1.4 # 1.6 matches 3DGS split procedure.
+    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
     densification_split_offset_scale: float = 0.2 
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
@@ -713,7 +713,13 @@ def parse_args() -> OptimizationConfig:
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
     _add_boolean_argument(mesh, "--mesh-extraction-median-depth-retain-last-hit",
                           help="Keep last-hit depths below the opacity threshold during mesh extraction.")
-    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
+    mesh.add_argument(
+        "--mesh-res", "--mesh-extraction-mesh-res",
+        dest="mesh_extraction_mesh_res",
+        type=int,
+        help="Override mesh extraction resolution (default: 2048).",
+    )
+    _add_typed_fields(mesh, int, "mesh_extraction_num_cluster",
                       "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
     _add_boolean_argument(
         mesh, "--mesh-export-lights",
