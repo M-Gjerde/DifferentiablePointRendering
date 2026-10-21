@@ -4,8 +4,11 @@ import argparse
 import csv
 import json
 import math
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from terminal_output import print_status
 
 
 @dataclass
@@ -18,14 +21,23 @@ class RendererSettingsConfig:
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
     adjoint_passes: int = 4
+    adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
+    # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
+    # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
+    adjoint_opacity_uniform_mix: float = 0.0
     enable_adjoint_shadow_rays: bool = True
     adjoint_shadow_path_rays: int = 1  # p_i
     logging: int = 3
+    local_layer_depth_mode: str = "symmetric_ray_depth"
 
-    def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool]:
+    def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool | str]:
+        if not math.isfinite(self.adjoint_opacity_uniform_mix) or not 0.0 <= self.adjoint_opacity_uniform_mix <= 1.0:
+            raise ValueError("adjoint_opacity_uniform_mix must be finite and in [0, 1]")
         settings = asdict(self)
         settings.update({
             "depth_distort_weight": config.depth_distort_weight,
+            "depth_distort_world_space": config.depth_distort_world_space,
+            "depth_distort_squared": config.depth_distort_squared,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
@@ -34,8 +46,9 @@ class RendererSettingsConfig:
                 config.inactive_transport_prune_cycles > 0
             ),
         })
+        if config.local_layer_depth_epsilon is not None:
+            settings["local_layer_depth_epsilon"] = config.local_layer_depth_epsilon
         return settings
-
 
 @dataclass
 class OptimizationConfig:
@@ -44,115 +57,122 @@ class OptimizationConfig:
     scene_xml: str = "cbox_custom.xml"
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
-    target_color_space: str = "auto"
+    target_color_space: str = "linear"
     output_dir: Path = Path("OptimizationOutput")
     checkpoint: Path | None = None
 
-    # Execution and optimizer
+    # Execution
     device: str = "cpu"
-    iterations: int = 30_000
+    iterations: int = 30000
     optimizer_type: str = "adam"
+    use_device_training_step: bool = True
+    skip_zero_gradient_surfels: bool = False # Sparse-adam like implementation
+    # Device optimizer only: False selects additive physical-radius updates.
+    use_log_scale: bool = True
+
+    # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    # Calibrated from the photometric-only global LR search (0.11x).
-    learning_rate_position: float = 0.000055
+    learning_rate_position: float = 0.0005
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.0005
-    learning_rate_albedo: float = 0.0005
-    learning_rate_opacity: float = 0.0002
+    learning_rate_scale: float = 0.0035
+    learning_rate_albedo: float = 0.003
+    learning_rate_opacity: float = 0.003
     learning_rate_beta: float = 0.0005
-    # Multiplicative learning-rate decay. All parameter groups receive the
+
+    # Optimizer: learning-rate schedules
+    # Multiplicative decay. All parameter groups receive the
     # global scale; position optionally receives a second position-only scale.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.25
+    global_lr_scale_final: float = 0.5
     use_position_lr_decay: bool = True
-    position_lr_scale_init: float = 20.0
-    position_lr_scale_final: float = 1.0
+    position_lr_scale_init: float = 1.5 * 4.0
+    position_lr_scale_final: float = 0.5
     lr_decay_start_iteration: int = 0
-    lr_decay_max_steps: int = 25_000
-    use_device_training_step: bool = True
+    lr_decay_max_steps: int = 25000  # Objective: geometric regularizers
 
-    # Objective and regularizers
-    depth_distort_weight: float = 1000.0
-    depth_distort_start_iteration: int = 0
-    normal_consistency_weight: float = 0.005
-    intra_slab_depth_weight: float = 1.0e-4
-
-    # Rendering and camera sampling
-    share_local_layer_direct_lighting: bool = False
-    one_camera_per_iteration: bool = True
-    camera_sampling_mode: str = "round_robin"  # "round_robin" or "random"
-    camera_sampling_seed: int = 0
-    scale_single_camera_gradients: bool = False
+    depth_distort_weight: float = 0.0025
+    depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
+    depth_distort_start_iteration: int = 2000
+    normal_consistency_weight: float = 5.0e-3
+    normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
 
-    # Final densification/pruning freeze.
+    intra_slab_depth_weight: float = 0.0e-5
+
+    # Parameter prior: weight * mean((1 - opacity)^2) over non-emissive surfels.
+    # weight * sum(opacity * pi * su * sv) / reference_length**2.
+    # Reference length is fixed from training cameras and the initial cloud;
+    # no GT, camera-count normalization, or current point-count normalization.
+    surfel_area_weight: float = 0.0
+    # Fractions of total training steps; zero/zero preserves a constant prior.
+    surfel_area_start_fraction: float = 0.0
+    surfel_area_ramp_fraction: float = 0.0
+
+    # Rendering model
+    adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
+    local_layer_depth_epsilon: float | None = None  # None preserves the native h default.
+    share_local_layer_direct_lighting: bool = False
+
+    # Camera sampling
+    one_camera_per_iteration: bool = True
+    camera_sampling_mode: str = "round_robin"  # "round_robin" or "random": Random will still loop all cameras but in no particular order
+    camera_sampling_seed: int = 0
+    scale_single_camera_gradients: bool = False
+
+    # Pruning and topology maintenance
+    min_surfel_area: float = math.pi * 1.0e-4
+    min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
-
-    # Densification signal
-    # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
-    densification_relative_error: bool = True
-    densification_radiance_floor: float = 0.001  # linear RGB radiance units
-    # False uses only the surfel's local footprint-translation derivative as
-    # the clone signal. True also includes non-local position derivatives from
-    # visibility, shadowing, attenuation, and other transport effects.
-    densification_full_position: bool = False
-    densification_stats_skip_interval_start: bool = True
-    densification_downweight_normal_gradients: bool = False
-    # When false, position-triggered densification may displace children along
-    # the full 3D gradient, including the surfel normal direction.
-    densification_tangent_only: bool = False
-    # Legacy albedo normalization; ignored when relative-error statistics are enabled.
-    densify_bsdf_floor: float = 0.01
-    densify_bsdf_gamma: float = 1.0
-
-    # Densification schedule
-    densification_interval: int = 200
-    densify_after: int = 0
-
-    # Densification candidate thresholds
-    densification_grad_abs_min: float = 8.0e-5
-    densification_grad_abs_min_final: float = 8.0e-5
-    densification_grad_abs_min_decay_start_iteration: int = 0
-    densification_grad_abs_min_decay_end_iteration: int = 0
-    densification_scale_min: float = 6.0e-3
-
-    # Densification split and growth policy
-    densification_split_offset_scale: float = 0.1
-    densification_split_scale_factor: float = math.sqrt(2)
-    densification_max_new_fraction: float = 1.0
-    densification_verbose: bool = False
-
+    cap_scale_after_topology_freeze: bool = True  # Capture per-axis radii as ceilings; shrinking remains allowed.
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
-    min_surfel_area: float = math.pi * 2.0e-5
-    # Consecutive full training-camera cycles below the threshold; 0 disables.
+    # Prune after this many consecutive full training-camera cycles below the
+    # support threshold; 0 disables transport pruning. Respects topology freeze.
     inactive_transport_prune_cycles: int = 1
-    # Combined transmission-weighted camera + shadow support per cycle.
-    # Score >= threshold passes. Viewer threshold edits are preview-only.
     inactive_transport_min_score: float = 10.0
+
+    # Densification: schedule
+    densification_interval: int = 1000
+    densify_after: int = 500
+    densification_stats_skip_interval_start: bool = True
+
+    # Densification: gradient signal
+    # Auxiliary relative half-MSE statistics; parameter updates retain the RGB loss.
+    densification_relative_error: bool = True
+    densification_radiance_floor: float = 0.05  # linear RGB radiance units
+    densification_full_position: bool = False    # False uses only the surfel's local footprint-translation derivative as the clone signal, not just last camera to scene propagation.
+    densification_downweight_normal_gradients: bool = False # Project signal to tangent planes before using as signal
+    densification_tangent_only: bool = True # Only displace along tangent
+    densification_max_new_fraction: float = 1.0
+    # Reject densification when the current full-footprint mean slab membership, Disabled if 0
+    densification_max_mean_slab_members: float = 0.0
+    densification_verbose: bool = False
+    # Optional per-camera decision attribution in metrics.csv and NPZ snapshots.
+    # Requires device training with one camera per iteration; never changes selection.
+    densification_diagnostics: bool = True
+
+    densification_grad_abs_min: float = 0.0003
+    densification_grad_abs_min_final: float = 0.0003
+    densification_grad_abs_min_decay_start_iteration: int = 0
+    densification_grad_abs_min_decay_end_iteration: int = 0
+    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
+    densification_split_offset_scale: float = 0.2 
+    densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
+    # Densification: radiance balancing
+    densification_radiance_bias_strength: float = 0.0
+    densification_radiance_bias_min_weight: float = 0.25
+    densification_radiance_bias_max_weight: float = 1.65
+
     rebuild_bvh_interval: int = densification_interval
-
-    # Output and monitoring
-    log_interval: int = 25
-    save_interval: int = 100
-    save_ply_files_interval: int = save_interval
-    save_snapshot_rgb: bool = True
-    save_snapshot_median_depth: bool = False
-    save_snapshot_depth_distortion: bool = False
-    save_snapshot_visible_normal: bool = False
-    save_snapshot_normal_from_depth: bool = False
-    save_snapshot_grad: bool = False
-    enable_metrics: bool = True
-    enable_image_preview: bool = True
-
     # Mesh extraction and evaluation
-    mesh_extraction_interval: int = 2_000
+    mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_median_depth_retain_last_hit: bool = False
-    mesh_extraction_mesh_res: int = 2048
+    mesh_extraction_median_depth_retain_last_hit: bool = True
+    mesh_extraction_mesh_res: int = 1024
     mesh_extraction_num_cluster: int = 0  # Keep all components with at least 50 triangles.
     mesh_albedo_texture_size: int = 1024
     mesh_uv_partitions: int = 30
@@ -161,15 +181,33 @@ class OptimizationConfig:
     mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
-    geometry_samples: int = 500_000
+    geometry_samples: int = 5_000_000
     geometry_seed: int = 0
+
+    # Output and monitoring
+    log_interval: int = 25
+    # When enabled (> 0), save images on the first iteration, immediately before
+    # each scheduled densification, and on the final iteration.
+    save_interval: int = 500
+    # When enabled (> 0), also save the first iteration, matching image snapshots.
+    save_ply_files_interval: int = 100
+    # Debug snapshots at the iteration immediately before the next scheduled
+    # densification, replacing periodic PLY saves. Interval 0 still disables saves.
+    save_ply_before_densification: bool = False
+    save_snapshot_rgb: bool = True
+    save_snapshot_median_depth: bool = False
+    save_snapshot_depth_distortion: bool = False
+    save_snapshot_visible_normal: bool = False
+    save_snapshot_normal_from_depth: bool = False
+    save_snapshot_grad: bool = False
+    enable_metrics: bool = True
+    enable_image_preview: bool = False
 
     # Internal CLI/checkpoint state
     output_dir_is_explicit: bool = False
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
     resume_iteration_offset: int = 0
-
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     learning_rate_fields = (
@@ -254,15 +292,46 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
     if config.checkpoint is None:
         return
 
+    if config.checkpoint == Path("__output__"):
+        if "output_dir" not in cli_overrides:
+            raise ValueError("--checkpoint without a path requires -o/--output-dir")
+        config.checkpoint = config.output_dir
     checkpoint_dir = config.checkpoint.expanduser().resolve()
     if not checkpoint_dir.is_dir():
         raise NotADirectoryError(f"--checkpoint is not an existing run directory: {checkpoint_dir}")
 
-    checkpoint_points_path = checkpoint_dir / "points_final.ply"
-    if not checkpoint_points_path.is_file():
-        raise FileNotFoundError(f"Could not find points_final.ply in checkpoint directory: {checkpoint_points_path}")
-
     run_config = _load_checkpoint_run_config(checkpoint_dir)
+    snapshots = []
+    for path in (checkpoint_dir / "points").glob("iter_*_points.ply"):
+        match = re.fullmatch(r"iter_(\d+)_points\.ply", path.name)
+        if match and path.is_file() and path.stat().st_size > 0:
+            snapshots.append((int(match.group(1)), path))
+    final_points = checkpoint_dir / "points_final.ply"
+    if final_points.is_file():
+        snapshots.append((_checkpoint_resume_iteration_offset(checkpoint_dir, run_config), final_points))
+    if not snapshots:
+        raise FileNotFoundError(f"No saved point-cloud checkpoints found in {checkpoint_dir}")
+    saved_iteration, checkpoint_points_path = max(snapshots, key=lambda item: item[0])
+
+    # Restore saved training settings; paths and bookkeeping are handled below.
+    excluded = {
+        "checkpoint", "output_dir", "pointcloud_ply", "iterations",
+        "resume_iteration_offset", "output_dir_is_explicit",
+        "scene_xml_is_explicit", "pointcloud_ply_is_explicit",
+        "assets_root", "scene_xml", "dataset_path", "target_color_space",
+    }
+    for field_name in OptimizationConfig.__dataclass_fields__:
+        if field_name in excluded or field_name in cli_overrides:
+            continue
+        value = _checkpoint_config_value(run_config, field_name)
+        if value is not None:
+            if field_name == "ground_truth":
+                value = Path(value)
+            # Saved per-parameter rates already include the old multiplier.
+            if field_name.startswith("learning_rate_"):
+                old_multiplier = float(_checkpoint_config_value(run_config, "learning_rate") or 1.0)
+                value = float(value) / old_multiplier
+            setattr(config, field_name, value)
 
     inherited_fields = (
         ("assets_root", Path, False),
@@ -290,16 +359,40 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
     config.pointcloud_ply = str(checkpoint_points_path)
     config.pointcloud_ply_is_explicit = True
     if "resume_iteration_offset" not in cli_overrides:
-        config.resume_iteration_offset = _checkpoint_resume_iteration_offset(
-            checkpoint_dir=checkpoint_dir,
-            run_config=run_config,
+        config.resume_iteration_offset = saved_iteration
+    target_iteration = int(config.iterations)
+    if config.resume_iteration_offset < 0 or target_iteration <= config.resume_iteration_offset:
+        raise ValueError(
+            f"Target --iterations ({target_iteration}) must exceed checkpoint iteration "
+            f"({config.resume_iteration_offset}), which must be non-negative."
         )
+    config.iterations = target_iteration - config.resume_iteration_offset
 
-    print(f"[checkpoint] Run directory       : {checkpoint_dir}")
-    print(f"[checkpoint] Scene XML           : {config.scene_xml}")
-    print(f"[checkpoint] Dataset path        : {config.dataset_path}")
-    print(f"[checkpoint] Initial point cloud : {checkpoint_points_path}")
-    print(f"[checkpoint] Resume iteration   : {config.resume_iteration_offset}")
+    # prepare_run clears its destination: never let it delete the source run.
+    destination = config.output_dir.expanduser().resolve()
+    if "output_dir" not in cli_overrides or destination == checkpoint_dir:
+        destination = checkpoint_dir.with_name(
+            f"{checkpoint_dir.name}_resume_{config.resume_iteration_offset:05d}"
+        )
+        base_destination = destination
+        suffix = 1
+        while destination.exists():
+            destination = base_destination.with_name(f"{base_destination.name}_{suffix}")
+            suffix += 1
+        config.output_dir = destination
+        config.output_dir_is_explicit = True
+    elif destination in checkpoint_dir.parents or checkpoint_dir in destination.parents:
+        raise ValueError("Checkpoint output must be separate from the source run directory")
+
+    print_status(f"[checkpoint] Target iteration   : {target_iteration}")
+    print_status(f"[checkpoint] Output directory   : {config.output_dir}")
+    print_status("[checkpoint] Restoring PLY parameters; optimizer moments and RNG state restart.")
+
+    print_status(f"[checkpoint] Run directory       : {checkpoint_dir}")
+    print_status(f"[checkpoint] Scene XML           : {config.scene_xml}")
+    print_status(f"[checkpoint] Dataset path        : {config.dataset_path}")
+    print_status(f"[checkpoint] Initial point cloud : {checkpoint_points_path}")
+    print_status(f"[checkpoint] Resume iteration   : {config.resume_iteration_offset}")
 
 
 def _add_typed_fields(parser, value_type, *field_names: str) -> None:
@@ -330,20 +423,23 @@ def parse_args() -> OptimizationConfig:
     inputs.add_argument(
         "--target-color-space",
         choices=["auto", "srgb", "linear"],
+        default="linear",
         help=(
             "Target image encoding (default: auto). 'auto' uses ICC metadata, "
             "decodes untagged integer images as sRGB, and treats EXR/HDR as linear; "
-            "all targets are converted to linear sRGB for optimization."
+            "all targets are converted to linear sRGB for preview, optimization itself uses linear."
         ),
     )
     inputs.add_argument("--output", "-o", "-m", "--output-dir", dest="output_dir", type=Path)
     inputs.add_argument(
         "--checkpoint",
         type=Path,
+        nargs="?",
+        const=Path("__output__"),
         help=(
-            "Prior optimization run directory. Reuses scene/dataset/assets from "
-            "<checkpoint>/run_config.json and uses <checkpoint>/points_final.ply "
-            "as this run's initial point cloud."
+            "Resume the latest saved point cloud from a run directory (defaults to -o). "
+            "Restores saved settings and continues to --iterations total (default 30000). "
+            "Optimizer moments restart; output defaults to a new sibling directory."
         ),
     )
     inputs.add_argument(
@@ -351,14 +447,13 @@ def parse_args() -> OptimizationConfig:
         type=int,
         help=(
             "Global iteration offset for resumed schedules. Defaults to the "
-            "checkpoint metrics.csv max iteration, falling back to the "
-            "checkpoint run_config iterations."
+            "selected snapshot iteration; final PLYs use metrics.csv or run_config."
         ),
     )
     inputs.add_argument("--device", type=str)
 
     optimizer = parser.add_argument_group("optimizer and learning-rate schedule")
-    optimizer.add_argument("--iterations", type=int)
+    optimizer.add_argument("--iterations", type=int, help="Total target iteration, including checkpoint iterations (default: 30000).")
     optimizer.add_argument(
         "--optimizer",
         dest="optimizer_type",
@@ -382,8 +477,21 @@ def parse_args() -> OptimizationConfig:
         ("beta", "beta"),
     ):
         optimizer.add_argument(f"--lr-{suffix}", dest=f"learning_rate_{field_name}", type=float)
+    _add_boolean_argument(
+        optimizer, "--log-scale", dest="use_log_scale",
+        help=(
+            "Device optimizer: optimize log radii (default). "
+            "--no-log-scale uses additive physical-radius updates. "
+            "Retune --lr-scale when switching; host optimizer is unchanged."
+        ),
+    )
     _add_boolean_argument(optimizer, "--global-lr-decay", dest="use_global_lr_decay")
     _add_boolean_argument(optimizer, "--position-lr-decay", dest="use_position_lr_decay")
+    _add_boolean_argument(
+        optimizer,
+        "--skip-zero-gradient-surfels",
+        help="Device Adam: preserve a surfel and its moments when all enabled parameter gradients are zero; retain global bias correction.",
+    )
     _add_typed_fields(
         optimizer,
         float,
@@ -418,8 +526,21 @@ def parse_args() -> OptimizationConfig:
         "normal_consistency_weight",
         "depth_distort_weight",
         "intra_slab_depth_weight",
+        "surfel_area_weight",
+        "surfel_area_start_fraction",
+        "surfel_area_ramp_fraction",
+    )
+    _add_boolean_argument(
+        objective,
+        "--depth-distort-world-space",
+        help="Use camera-forward depth differences in scene units instead of 2DGS squared NDC differences; retune --depth-distort-weight when switching.",
+    )
+    _add_boolean_argument(
+        objective, "--depth-distort-squared",
+        help="Square world-space depth differences (NDC always uses squared differences).",
     )
     objective.add_argument("--depth-distort-start-iteration", type=int)
+    objective.add_argument("--normal-consistency-start-iteration", type=int)
     _add_boolean_argument(
         objective,
         "--normal-from-depth-use-mean-depth",
@@ -427,6 +548,9 @@ def parse_args() -> OptimizationConfig:
     )
 
     rendering = parser.add_argument_group("rendering")
+    rendering.add_argument("--adjoint-spp", type=int, help="Override adjoint samples per pixel.")
+    rendering.add_argument("--local-layer-depth-epsilon", type=float,
+                           help="Override slab depth h in scene units; must exceed 1e-6.")
     _add_boolean_argument(
         rendering,
         "--share-local-layer-direct-lighting",
@@ -434,51 +558,15 @@ def parse_args() -> OptimizationConfig:
         help="Share one point-light transport vertex and shadow connection across each local slab.",
     )
 
-    densification = parser.add_argument_group("densification")
-    _add_boolean_argument(
-        densification, "--densification-relative-error",
-        help="Use a frozen per-pixel relative-MSE source for densification and disable the albedo boost.",
-    )
-    _add_boolean_argument(
-        densification, "--densification-full-position",
-        help="Include all position derivatives in relative statistics; disable to retain the local footprint signal.",
-    )
-    densification.add_argument(
-        "--densification-radiance-floor", type=float,
-        help="Positive linear-RGB floor in the symmetric relative-error normalizer.",
-    )
+    densification_schedule = parser.add_argument_group("densification: schedule")
     _add_typed_fields(
-        densification,
+        densification_schedule,
         int,
         "densification_interval",
         "densify_after",
     )
-    _add_typed_fields(
-        densification,
-        float,
-        "densification_grad_abs_min",
-        "densification_grad_abs_min_final",
-        "densification_scale_min",
-        "densification_split_offset_scale",
-        "densification_split_scale_factor",
-        "densification_max_new_fraction",
-        "densify_bsdf_floor",
-        "densify_bsdf_gamma",
-    )
-    densification.add_argument(
-        "--densification-grad-abs-min-decay-start-iteration",
-        "--densification-grad-abs-min-iter-start",
-        dest="densification_grad_abs_min_decay_start_iteration",
-        type=int,
-    )
-    densification.add_argument(
-        "--densification-grad-abs-min-decay-end-iteration",
-        "--densification-grad-abs-min-iter-end",
-        dest="densification_grad_abs_min_decay_end_iteration",
-        type=int,
-    )
     _add_boolean_argument(
-        densification,
+        densification_schedule,
         "--densification-stats-skip-interval-start",
         "--densification-stats-warmup",
         dest="densification_stats_skip_interval_start",
@@ -488,16 +576,74 @@ def parse_args() -> OptimizationConfig:
             "spelling is accepted as an alias."
         ),
     )
+
+    densification_signal = parser.add_argument_group("densification: gradient signal")
     _add_boolean_argument(
-        densification,
+        densification_signal, "--densification-relative-error",
+        help="Use a frozen per-pixel relative-MSE source for densification and disable the albedo boost.",
+    )
+    _add_boolean_argument(
+        densification_signal, "--densification-full-position",
+        help="Include all position derivatives in relative statistics; disable to retain the local footprint signal.",
+    )
+    densification_signal.add_argument(
+        "--densification-radiance-floor", type=float,
+        help="Positive linear-RGB floor in the symmetric relative-error normalizer.",
+    )
+    _add_boolean_argument(
+        densification_signal,
         "--densification-downweight-normal-gradients",
         help=(
             "Downweight tangent densification statistics when position gradients "
             "point mostly along the surfel normal. Disabled by default."
         ),
     )
+
+    densification_selection = parser.add_argument_group("densification: candidate selection")
+    _add_typed_fields(
+        densification_selection,
+        float,
+        "densification_grad_abs_min",
+        "densification_grad_abs_min_final",
+    )
+    densification_selection.add_argument(
+        "--densification-grad-abs-min-decay-start-iteration",
+        "--densification-grad-abs-min-iter-start",
+        dest="densification_grad_abs_min_decay_start_iteration",
+        type=int,
+    )
+    densification_selection.add_argument(
+        "--densification-grad-abs-min-decay-end-iteration",
+        "--densification-grad-abs-min-iter-end",
+        dest="densification_grad_abs_min_decay_end_iteration",
+        type=int,
+    )
+
+    densification_selection.add_argument(
+        "--densification-max-mean-slab-members", type=float,
+        help="Block splits/clones at or above this mean slab membership (including self); 0 disables.",
+    )
+
+    densification_radiance = parser.add_argument_group("densification: radiance balancing")
+    _add_typed_fields(
+        densification_radiance,
+        float,
+        "densification_radiance_bias_strength",
+        "densification_radiance_bias_min_weight",
+        "densification_radiance_bias_max_weight",
+    )
+
+    densification_split = parser.add_argument_group("densification: split policy")
+    _add_typed_fields(
+        densification_split,
+        float,
+        "densification_scale_min",
+        "densification_split_offset_scale",
+        "densification_split_scale_factor",
+        "densification_max_new_fraction",
+    )
     _add_boolean_argument(
-        densification,
+        densification_split,
         "--densification-tangent-only",
         help=(
             "Restrict position-triggered densification displacement to the surfel "
@@ -505,9 +651,19 @@ def parse_args() -> OptimizationConfig:
             "full 3D gradient direction."
         ),
     )
-    _add_boolean_argument(densification, "--densification-verbose")
+    _add_boolean_argument(densification_split, "--densification-verbose")
+    _add_boolean_argument(
+        densification_split, "--densification-diagnostics",
+        help="Record exact per-camera density-window attribution in metrics.csv and NPZ files; requires native one-camera training.",
+    )
 
     pruning = parser.add_argument_group("pruning and topology maintenance")
+    _add_boolean_argument(pruning, "--cap-scale-after-topology-freeze")
+    pruning.add_argument(
+        "--min-surfel-opacity",
+        type=float,
+        help="Prune trainable surfels with stored opacity strictly below this threshold (default: 0.3); 0 disables opacity pruning.",
+    )
     _add_typed_fields(
         pruning,
         int,
@@ -526,6 +682,10 @@ def parse_args() -> OptimizationConfig:
 
     output = parser.add_argument_group("output and monitoring")
     _add_typed_fields(output, int, "log_interval", "save_interval", "save_ply_files_interval")
+    _add_boolean_argument(
+        output, "--save-ply-before-densification",
+        help="Save PLY one iteration before each scheduled densification instead of periodically; --save-ply-files-interval 0 disables these saves.",
+    )
     _add_boolean_argument(
         output,
         "--metrics",
@@ -553,10 +713,22 @@ def parse_args() -> OptimizationConfig:
     mesh.add_argument("--mesh-extraction-depth-key", type=str, choices=["median_depth", "mean_depth"])
     _add_boolean_argument(mesh, "--mesh-extraction-median-depth-retain-last-hit",
                           help="Keep last-hit depths below the opacity threshold during mesh extraction.")
-    _add_typed_fields(mesh, int, "mesh_extraction_mesh_res", "mesh_extraction_num_cluster",
+    mesh.add_argument(
+        "--mesh-res", "--mesh-extraction-mesh-res",
+        dest="mesh_extraction_mesh_res",
+        type=int,
+        help="Override mesh extraction resolution (default: 2048).",
+    )
+    _add_typed_fields(mesh, int, "mesh_extraction_num_cluster",
                       "mesh_albedo_texture_size", "mesh_uv_partitions", "mesh_uv_threads")
-    _add_boolean_argument(mesh, "--mesh-export-lights")
-    _add_boolean_argument(mesh, "--mesh-export-cameras")
+    _add_boolean_argument(
+        mesh, "--mesh-export-lights",
+        help="Include point lights in exported reconstruction GLBs.",
+    )
+    _add_boolean_argument(
+        mesh, "--mesh-export-cameras",
+        help="Include scene cameras in exported reconstruction GLBs.",
+    )
     _add_boolean_argument(mesh, "--save-final-mesh")
     mesh.add_argument(
         "--ground-truth",
@@ -587,14 +759,39 @@ def parse_args() -> OptimizationConfig:
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
-
+    if config.adjoint_spp is not None and config.adjoint_spp < 1:
+        parser.error("--adjoint-spp must be positive")
+    if config.local_layer_depth_epsilon is not None and (
+        not math.isfinite(config.local_layer_depth_epsilon) or config.local_layer_depth_epsilon <= 1e-6
+    ):
+        parser.error("--local-layer-depth-epsilon must be finite and greater than 1e-6")
+    if not math.isfinite(config.min_surfel_opacity) or not 0.0 <= config.min_surfel_opacity <= 1.0:
+        parser.error("--min-surfel-opacity must be finite and in [0, 1]")
+    if not math.isfinite(config.surfel_area_weight) or config.surfel_area_weight < 0.0:
+        parser.error("--surfel-area-weight must be finite and non-negative")
+    if (not math.isfinite(config.surfel_area_start_fraction)
+            or not math.isfinite(config.surfel_area_ramp_fraction)
+            or config.surfel_area_start_fraction < 0
+            or config.surfel_area_ramp_fraction < 0
+            or config.surfel_area_start_fraction + config.surfel_area_ramp_fraction > 1):
+        parser.error("Surfel area start/ramp fractions must be finite, non-negative and sum to at most one")
     if not math.isfinite(config.inactive_transport_min_score) or config.inactive_transport_min_score <= 0:
         parser.error("--inactive-transport-min-score must be finite and positive")
     if config.topology_freeze_last_iterations < 0:
         parser.error("--topology-freeze-last-iterations must be non-negative")
 
+
+    if (not math.isfinite(config.densification_max_mean_slab_members)
+            or config.densification_max_mean_slab_members < 0):
+        parser.error("--densification-max-mean-slab-members must be finite and non-negative")
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")
+    if not math.isfinite(config.densification_radiance_bias_strength) or config.densification_radiance_bias_strength < 0:
+        parser.error("--densification-radiance-bias-strength must be finite and non-negative")
+    if not math.isfinite(config.densification_radiance_bias_min_weight) or not 0 < config.densification_radiance_bias_min_weight <= 1:
+        parser.error("--densification-radiance-bias-min-weight must be finite and in (0, 1]")
+    if not math.isfinite(config.densification_radiance_bias_max_weight) or config.densification_radiance_bias_max_weight < 1:
+        parser.error("--densification-radiance-bias-max-weight must be finite and at least 1")
 
     resolve_learning_rates(config)
 

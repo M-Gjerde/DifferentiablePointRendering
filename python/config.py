@@ -133,7 +133,7 @@ class OptimizationConfig:
     # Prune after this many consecutive full training-camera cycles below the
     # support threshold; 0 disables transport pruning. Respects topology freeze.
     inactive_transport_prune_cycles: int = 1
-    inactive_transport_min_score: float = 10.0
+    inactive_transport_min_score: float = 5.0
 
     # Densification: schedule
     densification_interval: int = 1000
@@ -159,7 +159,7 @@ class OptimizationConfig:
     densification_grad_abs_min_final: float = 0.0003
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
-    densification_split_scale_factor: float = 1.2 # 1.6 matches 3DGS split procedure.
+    densification_split_scale_factor: float = 1.1 # 1.6 matches 3DGS split procedure.
     densification_split_offset_scale: float = 0.2 
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     # Densification: radiance balancing
