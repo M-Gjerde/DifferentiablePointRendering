@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 12
+    adjoint_passes: int = 4
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -92,11 +92,11 @@ class OptimizationConfig:
     lr_decay_start_iteration: int = 0
     lr_decay_max_steps: int = 25000  # Objective: geometric regularizers
 
-    depth_distort_weight: float = 0.0005
+    depth_distort_weight: float = 0.0025
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
     depth_distort_start_iteration: int = 2000
-    normal_consistency_weight: float = 1.0e-3
+    normal_consistency_weight: float = 5.0e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
 
