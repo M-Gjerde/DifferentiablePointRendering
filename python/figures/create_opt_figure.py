@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple
 
@@ -10,6 +10,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from run_paths import parse_run_timestamp
 
 
 def parse_args() -> argparse.Namespace:
@@ -148,16 +154,6 @@ def parse_args() -> argparse.Namespace:
 
     return parser.parse_args()
 
-
-def parse_run_timestamp(run_dir_name: str) -> datetime | None:
-    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})", run_dir_name)
-    if match is None:
-        return None
-
-    try:
-        return datetime.strptime(match.group(1), "%Y-%m-%d_%H-%M-%S")
-    except ValueError:
-        return None
 
 def find_run_dir_by_index(optimization_output_root: Path, run_index: int) -> Path:
     if run_index < 0:

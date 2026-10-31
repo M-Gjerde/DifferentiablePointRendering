@@ -62,13 +62,11 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "densification_relative_error": (
         "--densification-relative-error", "--no-densification-relative-error",
     ),
+    "densification_image_space": ("--densification-image-space", "--no-densification-image-space"),
     "densification_full_position": (
         "--densification-full-position", "--no-densification-full-position",
     ),
     "densification_radiance_floor": "--densification-radiance-floor",
-    "densification_radiance_bias_strength": "--densification-radiance-bias-strength",
-    "densification_radiance_bias_min_weight": "--densification-radiance-bias-min-weight",
-    "densification_radiance_bias_max_weight": "--densification-radiance-bias-max-weight",
     "prune_interval": "--prune-interval",
     "densify_after": "--densify-after",
     "prune_after": "--prune-after",
@@ -78,7 +76,8 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "densification_grad_abs_min_decay_start_iteration": "--densification-grad-abs-min-decay-start-iteration",
     "densification_grad_abs_min_decay_end_iteration": "--densification-grad-abs-min-decay-end-iteration",
     "densification_scale_min": "--densification-scale-min",
-    "densification_split_offset_scale": "--densification-split-offset-scale",
+    "densification_use_cloning": ("--densification-use-cloning", "--no-densification-use-cloning"),
+    "densification_clone_scale_fraction": "--densification-clone-scale-fraction",
     "densification_split_scale_factor": "--densification-split-scale-factor",
     "densification_max_new_fraction": "--densification-max-new-fraction",
     "densification_stats_skip_interval_start": (
@@ -89,13 +88,8 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
         "--densification-downweight-normal-gradients",
         "--no-densification-downweight-normal-gradients",
     ),
-    "densification_tangent_only": (
-        "--densification-tangent-only",
-        "--no-densification-tangent-only",
-    ),
     "min_surfel_area": "--min-surfel-area",
     "rebuild_bvh_interval": "--rebuild-bvh-interval",
-    "inactive_transport_prune_cycles": "--inactive-transport-prune-cycles",
     "inactive_transport_min_score": "--inactive-transport-min-score",
     "use_device_training_step": (
         "--device-training-step",

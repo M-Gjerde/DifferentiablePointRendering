@@ -25,6 +25,9 @@ import numpy as np
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from run_paths import default_optimization_output_root as default_run_root
 
 RUN_CONFIG_PARAMETERS = [
     "iterations",
@@ -34,12 +37,14 @@ RUN_CONFIG_PARAMETERS = [
     "prune_interval",
     "densify_after",
     "prune_after",
+    "densification_image_space",
     "densification_grad_abs_min",
     "densification_grad_abs_min_final",
     "densification_grad_abs_min_decay_start_iteration",
     "densification_grad_abs_min_decay_end_iteration",
     "densification_scale_min",
-    "densification_split_offset_scale",
+    "densification_use_cloning",
+    "densification_clone_scale_fraction",
     "densification_split_scale_factor",
     "densification_max_new_fraction",
     "normal_consistency_weight",
@@ -60,8 +65,6 @@ RUN_CONFIG_PARAMETERS = [
     "learning_rate_opacity",
     "learning_rate_beta",
     "densification_downweight_normal_gradients",
-    "densification_tangent_only",
-    "inactive_transport_prune_cycles",
     "inactive_transport_min_score",
     "min_surfel_area",
     "ground_truth",
@@ -337,17 +340,6 @@ def load_run_config(run_dir: Path) -> dict[str, Any]:
 def optimization_config_from_run_config(run_config: dict[str, Any]) -> dict[str, Any]:
     optimization_config = run_config.get("optimization_config", {})
     return optimization_config if isinstance(optimization_config, dict) else {}
-
-
-def default_run_root() -> Path:
-    if str(PROJECT_ROOT) not in sys.path:
-        sys.path.insert(0, str(PROJECT_ROOT))
-    from config import OptimizationConfig
-
-    output_dir = Path(OptimizationConfig().output_dir).expanduser()
-    if output_dir.is_absolute():
-        return output_dir.resolve()
-    return (PROJECT_ROOT / output_dir).resolve()
 
 
 def load_rgb_image(path: Path) -> np.ndarray:

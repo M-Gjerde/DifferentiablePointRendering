@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -20,16 +20,10 @@ except ModuleNotFoundError:
     chamfer_distance = None
 
 
-def parse_run_timestamp(run_dir_name: str) -> datetime | None:
-    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})", run_dir_name)
-
-    if match is None:
-        return None
-
-    try:
-        return datetime.strptime(match.group(1), "%Y-%m-%d_%H-%M-%S")
-    except ValueError:
-        return None
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from run_paths import parse_run_timestamp
 
 
 def find_reconstruction_path_by_index(
