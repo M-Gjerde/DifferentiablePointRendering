@@ -182,6 +182,7 @@ class PythonRenderer
     {
         bool relativeDensification = false;
         bool densificationFullPosition = true;
+        bool densificationImageSpace = false;
         bool accumulateDensification = false;
         bool downweightNormal = false;
         float densificationRadianceFloor = 0.01f;
@@ -200,7 +201,6 @@ class PythonRenderer
         std::string optimizer = "adam";
         bool skipZeroGradientSurfels = false;
         bool useLogScale = true;
-        bool capScaleAtActivation = false;
         float learningRatePosition = 0.0f;
         float learningRateRotation = 0.0f;
         float learningRateScale = 0.0f;
@@ -208,9 +208,6 @@ class PythonRenderer
         float learningRateOpacity = 0.0f;
         float learningRateBeta = 0.0f;
         float cameraBatchScale = 1.0f;
-        // Sum of opacity-weighted ellipse areas, normalized by a fixed scene length.
-        float surfelAreaWeight = 0.0f;
-        float surfelAreaReferenceLength = 1.0f;
         float beta1 = 0.9f;
         float beta2 = 0.999f;
         float epsilon = 1.0e-8f;
@@ -228,7 +225,6 @@ class PythonRenderer
         Pale::float3* rotationV = nullptr;
         Pale::float2* scaleM = nullptr;
         Pale::float2* scaleV = nullptr;
-        Pale::float2* scaleCeiling = nullptr;
         Pale::float3* albedoM = nullptr;
         Pale::float3* albedoV = nullptr;
         float* opacityM = nullptr;
@@ -734,10 +730,10 @@ public:
                 sizeof(uint32_t) * size_t(g.cloneSignalActiveCameraCount != nullptr);
             const size_t perCameraBytes =
                 sizeof(Pale::float3) * (size_t(g.gradPositionPerPrimitivePerCamera != nullptr) +
-                    size_t(g.cloneSignalPerPrimitivePerCamera != nullptr)) +
+                    size_t(g.cloneSignalPerPrimitivePerCamera != nullptr) +
+                    size_t(g.cloneImageSignalPerPrimitivePerCamera != nullptr)) +
                 sizeof(uint32_t) * (size_t(g.gradPositionRecordCountPerPrimitivePerCamera != nullptr) +
-                    size_t(g.cloneSignalRecordCountPerPrimitivePerCamera != nullptr)) +
-                sizeof(float) * size_t(g.cloneRadianceRmsSumPerPrimitivePerCamera != nullptr);
+                    size_t(g.cloneSignalRecordCountPerPrimitivePerCamera != nullptr));
             gradientBytes[name] = g.numPoints * (perPointBytes + g.cameraSlotCount * perCameraBytes);
         };
         addGradients("rgb", gradients);
@@ -1119,7 +1115,6 @@ public:
     py::dict render_rgb_training_step(const py::list& cameraNamesList,
                                       const py::dict& optionsDictionary = py::dict())
     {
-        float surfelAreaRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         ensureGradientBuffers(gradients);
         ensureDebugImages();
@@ -1157,7 +1152,7 @@ public:
             // A conservative dirty flag keeps subsequent host synchronization safe.
             devicePointParametersDirty = true;
             launchDeviceTrainingStepKernel(
-                syclQueue, gradients, nullptr, nullptr, nullptr, options, surfelAreaRaw);
+                syclQueue, gradients, nullptr, nullptr, nullptr, options);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
         }
@@ -1183,9 +1178,6 @@ public:
         result["l2_loss_values"] = std::move(l2LossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        result["surfel_area_loss_raw"] = surfelAreaRaw;
-        result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
-        result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
         if (returnGradientStats)
         {
             result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -1255,7 +1247,6 @@ public:
 
     py::dict apply_device_training_step(const py::dict& optionsDictionary = py::dict())
     {
-        float surfelAreaRaw = 0.0f;
         auto syclQueue = deviceSelector->getQueue();
         DeviceTrainingStepOptions options = parseDeviceTrainingStepOptions(optionsDictionary);
         const bool includeDepthDistortion =
@@ -1291,7 +1282,7 @@ public:
                 depthGradients,
                 normalGradients,
                 intraSlabGradients,
-                options, surfelAreaRaw);
+                options);
             launchPointBvhRefitKernel(syclQueue);
             syclQueue.wait_and_throw();
         }
@@ -1299,9 +1290,6 @@ public:
         py::dict result;
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        result["surfel_area_loss_raw"] = surfelAreaRaw;
-        result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
-        result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
         return result;
     }
 
@@ -1310,7 +1298,6 @@ public:
     py::dict render_training_step(const py::list& cameraNamesList,
                                   const py::dict& optionsDictionary = py::dict())
     {
-        float surfelAreaRaw = 0.0f;
         auto queue = deviceSelector->getQueue();
         const auto options = parseDeviceTrainingStepOptions(optionsDictionary);
         const auto rgbOptions = parseRgbLossOptions(optionsDictionary);
@@ -1346,7 +1333,7 @@ public:
             launchDeviceTrainingStepKernel(queue, gradients,
                 regularizers.depth && regularizers.depthWeight != 0.0f ? &depthDistortionGradients : nullptr,
                 regularizers.normal && regularizers.normalWeight != 0.0f ? &normalConsistencyGradients : nullptr,
-                regularizers.intra && regularizers.intraWeight != 0.0f ? &intraSlabDepthGradients : nullptr, options, surfelAreaRaw);
+                regularizers.intra && regularizers.intraWeight != 0.0f ? &intraSlabDepthGradients : nullptr, options);
             launchPointBvhRefitKernel(queue);
             if (hasRegularizers) enqueueSurfaceRegularizerLogging(queue, logging);
             for (std::size_t i = 0; i < batch.sensors.size(); ++i)
@@ -1369,9 +1356,6 @@ public:
             result["regularizer_loss_state"] = makeSurfaceRegularizerLossValues(batch.sensors, regularizers, logging);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
         result["optimizer_step"] = static_cast<std::uint64_t>(deviceTrainingState.step);
-        result["surfel_area_loss_raw"] = surfelAreaRaw;
-        result["surfel_area_loss_weighted"] = options.surfelAreaWeight * surfelAreaRaw;
-        result["scale_ceiling_active"] = deviceTrainingState.scaleCeiling != nullptr;
         // No finite cotangent is discarded based on its magnitude.
         result["cotangent_culling_discarded_mass"] = 0.0f;
         if (returnGradientStats) result["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -1684,8 +1668,8 @@ public:
         std::vector<Pale::float3> gradPositionPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<uint32_t> gradPositionRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<Pale::float3> cloneSignalPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<Pale::float3> cloneImageSignalPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount);
-        std::vector<float> cloneRadianceRmsSumPerPrimitivePerCameraHost(primitiveCameraCount);
 
         if (pointCount > 0)
         {
@@ -1822,6 +1806,11 @@ public:
                     primitiveCameraCount * sizeof(Pale::float3));
             }
 
+            if (primitiveCameraCount > 0 && gradients.cloneImageSignalPerPrimitivePerCamera) {
+                syclQueue.memcpy(cloneImageSignalPerPrimitivePerCameraHost.data(),
+                                 gradients.cloneImageSignalPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(Pale::float3));
+            }
             if (primitiveCameraCount > 0 &&
                 gradients.cloneSignalRecordCountPerPrimitivePerCamera)
             {
@@ -1829,14 +1818,6 @@ public:
                     cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
                     gradients.cloneSignalRecordCountPerPrimitivePerCamera,
                     primitiveCameraCount * sizeof(uint32_t));
-            }
-            if (primitiveCameraCount > 0 &&
-                gradients.cloneRadianceRmsSumPerPrimitivePerCamera)
-            {
-                syclQueue.memcpy(
-                    cloneRadianceRmsSumPerPrimitivePerCameraHost.data(),
-                    gradients.cloneRadianceRmsSumPerPrimitivePerCamera,
-                    primitiveCameraCount * sizeof(float));
             }
 
             syclQueue.wait_and_throw();
@@ -2294,10 +2275,10 @@ public:
             makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
         gradientStatsDictionary["clone_signal_per_camera"] = makeFloat3CameraArray(
             cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_image_signal_per_camera"] = makeFloat3CameraArray(
+            cloneImageSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_record_count_per_camera"] = makeUintCameraArray(
             cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
-        gradientStatsDictionary["clone_radiance_rms_sum_per_camera"] = makeFloatCameraArray(
-            cloneRadianceRmsSumPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         adjointImagesDictionary["gradient_stats"] = std::move(gradientStatsDictionary);
 
         return py::make_tuple(gradientDictionary, adjointImagesDictionary);
@@ -3078,8 +3059,8 @@ public:
         std::vector<float> cloneSignalDisagreementHost(pointCount, 0.0f);
         std::vector<uint32_t> cloneSignalActiveCameraCountHost(pointCount, 0u);
         std::vector<Pale::float3> cloneSignalPerPrimitivePerCameraHost(primitiveCameraCount);
+        std::vector<Pale::float3> cloneImageSignalPerPrimitivePerCameraHost(primitiveCameraCount);
         std::vector<uint32_t> cloneSignalRecordCountPerPrimitivePerCameraHost(primitiveCameraCount, 0u);
-        std::vector<float> cloneRadianceRmsSumPerPrimitivePerCameraHost(primitiveCameraCount, 0.0f);
 
         if (pointCount > 0)
         {
@@ -3130,17 +3111,16 @@ public:
                                  sourceGradients.cloneSignalPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(Pale::float3));
             }
+            if (primitiveCameraCount > 0 && sourceGradients.cloneImageSignalPerPrimitivePerCamera) {
+                syclQueue.memcpy(cloneImageSignalPerPrimitivePerCameraHost.data(),
+                                 sourceGradients.cloneImageSignalPerPrimitivePerCamera,
+                                 primitiveCameraCount * sizeof(Pale::float3));
+            }
             if (sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera)
             {
                 syclQueue.memcpy(cloneSignalRecordCountPerPrimitivePerCameraHost.data(),
                                  sourceGradients.cloneSignalRecordCountPerPrimitivePerCamera,
                                  primitiveCameraCount * sizeof(uint32_t));
-            }
-            if (sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera)
-            {
-                syclQueue.memcpy(cloneRadianceRmsSumPerPrimitivePerCameraHost.data(),
-                                 sourceGradients.cloneRadianceRmsSumPerPrimitivePerCamera,
-                                 primitiveCameraCount * sizeof(float));
             }
         }
         syclQueue.wait_and_throw();
@@ -3254,10 +3234,10 @@ public:
             makeUint1Array(cloneSignalActiveCameraCountHost, pointCount);
         gradientStatsDictionary["clone_signal_per_camera"] =
             makeFloat3CameraArray(cloneSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
+        gradientStatsDictionary["clone_image_signal_per_camera"] = makeFloat3CameraArray(
+            cloneImageSignalPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         gradientStatsDictionary["clone_signal_record_count_per_camera"] =
             makeUintCameraArray(cloneSignalRecordCountPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
-        gradientStatsDictionary["clone_radiance_rms_sum_per_camera"] =
-            makeFloatCameraArray(cloneRadianceRmsSumPerPrimitivePerCameraHost, pointCount, cameraSlotCount);
         return gradientStatsDictionary;
     }
 
@@ -3579,7 +3559,6 @@ public:
         state["point_count"] = static_cast<std::uint64_t>(0u);
         state["step"] = static_cast<std::uint64_t>(0u);
         state["use_log_scale"] = deviceTrainingState.useLogScale;
-        state["scale_ceiling"] = py::array_t<float>(std::vector<py::ssize_t>{0, 2});
 
         if (!isDeviceTrainingStateAllocated())
         {
@@ -3627,13 +3606,6 @@ public:
         state["rotation_v"] = makeDeviceAdamFloat3Array(std::move(rotationV), pointCount);
         state["scale_m"] = makeDeviceAdamFloat2Array(std::move(scaleM), pointCount);
         state["scale_v"] = makeDeviceAdamFloat2Array(std::move(scaleV), pointCount);
-        if (deviceTrainingState.scaleCeiling)
-        {
-            std::vector<Pale::float2> ceiling(pointCount);
-            syclQueue.memcpy(ceiling.data(), deviceTrainingState.scaleCeiling,
-                             pointCount * sizeof(Pale::float2)).wait_and_throw();
-            state["scale_ceiling"] = makeDeviceAdamFloat2Array(std::move(ceiling), pointCount);
-        }
         state["albedo_m"] = makeDeviceAdamFloat3Array(std::move(albedoM), pointCount);
         state["albedo_v"] = makeDeviceAdamFloat3Array(std::move(albedoV), pointCount);
         state["opacity_m"] = makeDeviceAdamFloat1Array(std::move(opacityM), pointCount);
@@ -3677,14 +3649,6 @@ public:
             readDeviceAdamFloat2Array(state, "scale_m", pointCount);
         std::vector<Pale::float2> scaleV =
             readDeviceAdamFloat2Array(state, "scale_v", pointCount);
-        std::vector<Pale::float2> scaleCeiling;
-        if (state.contains("scale_ceiling") && state["scale_ceiling"].cast<py::array>().size() > 0)
-        {
-            scaleCeiling = readDeviceAdamFloat2Array(state, "scale_ceiling", pointCount);
-            for (const auto& value : scaleCeiling)
-                if (!std::isfinite(value.x()) || !std::isfinite(value.y()) || value.x() < 0 || value.y() < 0)
-                    throw std::invalid_argument("Scale ceilings must be finite and non-negative");
-        }
         std::vector<Pale::float3> albedoM =
             readDeviceAdamFloat3Array(state, "albedo_m", pointCount);
         std::vector<Pale::float3> albedoV =
@@ -3708,12 +3672,6 @@ public:
             syclQueue.memcpy(deviceTrainingState.rotationV, rotationV.data(), pointCount * sizeof(Pale::float3));
             syclQueue.memcpy(deviceTrainingState.scaleM, scaleM.data(), pointCount * sizeof(Pale::float2));
             syclQueue.memcpy(deviceTrainingState.scaleV, scaleV.data(), pointCount * sizeof(Pale::float2));
-            if (!scaleCeiling.empty())
-            {
-                deviceTrainingState.scaleCeiling = sycl::malloc_device<Pale::float2>(pointCount, syclQueue);
-                if (!deviceTrainingState.scaleCeiling) throw std::runtime_error("Failed to allocate scale ceilings");
-                syclQueue.memcpy(deviceTrainingState.scaleCeiling, scaleCeiling.data(), pointCount * sizeof(Pale::float2));
-            }
             syclQueue.memcpy(deviceTrainingState.albedoM, albedoM.data(), pointCount * sizeof(Pale::float3));
             syclQueue.memcpy(deviceTrainingState.albedoV, albedoV.data(), pointCount * sizeof(Pale::float3));
             syclQueue.memcpy(deviceTrainingState.opacityM, opacityM.data(), pointCount * sizeof(float));
@@ -3913,7 +3871,7 @@ public:
     {
         auto queue = deviceSelector->getQueue();
         const auto n = sceneGpu.pointCount;
-        std::vector<float> position(n), count(n), radiance(n);
+        std::vector<float> position(n), count(n);
         std::vector<Pale::float3> direction(n);
         try
         {
@@ -3923,7 +3881,6 @@ public:
             {
                 queue.memcpy(position.data(), densificationAccumulator.positionSum, n * sizeof(float));
                 queue.memcpy(count.data(), densificationAccumulator.positionCount, n * sizeof(float));
-                queue.memcpy(radiance.data(), densificationAccumulator.radianceSum, n * sizeof(float));
                 queue.memcpy(direction.data(), densificationAccumulator.directionSum, n * sizeof(Pale::float3));
             }
             queue.wait_and_throw();
@@ -3932,7 +3889,6 @@ public:
         py::dict result;
         result["position_sum"] = makeDeviceAdamFloat1Array(std::move(position), n);
         result["position_count"] = makeDeviceAdamFloat1Array(std::move(count), n);
-        result["radiance_sum"] = makeDeviceAdamFloat1Array(std::move(radiance), n);
         result["direction_sum"] = makeDeviceAdamFloat3Array(std::move(direction), n);
         return result;
     }
@@ -3963,7 +3919,6 @@ public:
         };
         auto position = readScalar("position_sum");
         auto count = readScalar("position_count");
-        auto radiance = readScalar("radiance_sum");
         auto direction = readDeviceAdamFloat3Array(state, "direction_sum", n);
         for (const auto& d : direction)
             if (!std::isfinite(d.x()) || !std::isfinite(d.y()) || !std::isfinite(d.z()))
@@ -3977,7 +3932,6 @@ public:
             {
                 queue.memcpy(densificationAccumulator.positionSum, position.data(), n * sizeof(float));
                 queue.memcpy(densificationAccumulator.positionCount, count.data(), n * sizeof(float));
-                queue.memcpy(densificationAccumulator.radianceSum, radiance.data(), n * sizeof(float));
                 queue.memcpy(densificationAccumulator.directionSum, direction.data(), n * sizeof(Pale::float3));
             }
             queue.wait_and_throw();
@@ -3990,7 +3944,7 @@ public:
         if (!options.accumulateDensification || sceneGpu.pointCount == 0u) return;
         Pale::ensureDensificationAccumulator(queue, densificationAccumulator, sceneGpu.pointCount);
         Pale::launchAccumulateDensificationStatistics(queue, densificationAccumulator,
-            sceneGpu.points, gradients, nullptr, options.downweightNormal, options.relativeDensification);
+            sceneGpu.points, gradients, nullptr, options.downweightNormal, options.densificationImageSpace);
     }
 
     py::dict get_primal_activity_stats()
@@ -4978,7 +4932,6 @@ private:
         options.learningRateScale =
             get_f(optionsDictionary, "learning_rate_scale", options.learningRateScale);
         options.useLogScale = get_b(optionsDictionary, "use_log_scale", options.useLogScale);
-        options.capScaleAtActivation = get_b(optionsDictionary, "cap_scale_at_activation", false);
         options.learningRateAlbedo =
             get_f(optionsDictionary, "learning_rate_albedo", options.learningRateAlbedo);
         options.learningRateOpacity =
@@ -4987,14 +4940,6 @@ private:
             get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
         options.cameraBatchScale =
             get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
-        options.surfelAreaWeight = get_f(optionsDictionary, "surfel_area_weight", 0.0f);
-        options.surfelAreaReferenceLength = get_f(optionsDictionary, "surfel_area_reference_length", 1.0f);
-        if (!std::isfinite(options.surfelAreaWeight) || options.surfelAreaWeight < 0.0f)
-            throw std::invalid_argument("surfel_area_weight must be finite and non-negative");
-        if (!std::isfinite(options.surfelAreaReferenceLength) || options.surfelAreaReferenceLength <= 0.0f ||
-            !std::isfinite(1.0f / (options.surfelAreaReferenceLength * options.surfelAreaReferenceLength)) ||
-            !std::isfinite(options.surfelAreaReferenceLength * options.surfelAreaReferenceLength))
-            throw std::invalid_argument("surfel_area_reference_length must have a finite positive squared scale and reciprocal");
         options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
         options.beta2 = get_f(optionsDictionary, "adam_beta2", options.beta2);
         options.epsilon = get_f(optionsDictionary, "adam_epsilon", options.epsilon);
@@ -5007,7 +4952,10 @@ private:
         options.relativeDensification = get_b(optionsDictionary, "densification_relative_error", false);
         options.accumulateDensification = get_b(optionsDictionary, "accumulate_densification_stats", false);
         options.downweightNormal = get_b(optionsDictionary, "densification_downweight_normal_gradients", false);
-        options.densificationFullPosition = get_b(optionsDictionary, "densification_full_position", true);
+        options.densificationImageSpace = get_b(optionsDictionary, "densification_image_space", false);
+        options.densificationFullPosition = get_b(optionsDictionary, "densification_full_position", !options.densificationImageSpace);
+        if (options.densificationImageSpace && options.densificationFullPosition)
+            throw std::invalid_argument("Image-space densification requires footprint-only gradients (densification_full_position=false)");
         options.densificationRadianceFloor = get_f(
             optionsDictionary, "densification_radiance_floor", options.densificationRadianceFloor);
         const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
@@ -5231,7 +5179,6 @@ private:
         releasePointer(deviceTrainingState.rotationV);
         releasePointer(deviceTrainingState.scaleM);
         releasePointer(deviceTrainingState.scaleV);
-        releasePointer(deviceTrainingState.scaleCeiling);
         releasePointer(deviceTrainingState.albedoM);
         releasePointer(deviceTrainingState.albedoV);
         releasePointer(deviceTrainingState.opacityM);
@@ -5317,8 +5264,7 @@ private:
                                         const Pale::PointGradients* depthGradients,
                                         const Pale::PointGradients* normalGradients,
                                         const Pale::PointGradients* intraSlabGradients,
-                                        const DeviceTrainingStepOptions& options,
-                                        float& surfelAreaRaw)
+                                        const DeviceTrainingStepOptions& options)
     {
         if (!sceneGpu.points || sceneGpu.pointCount == 0u)
         {
@@ -5344,31 +5290,6 @@ private:
         validateOptionalGradientSource(normalGradients, "normalConsistencyGradients");
         validateOptionalGradientSource(intraSlabGradients, "intraSlabDepthGradients");
 
-        surfelAreaRaw = 0.0f;
-        const float areaNormalization = 3.14159265358979323846f /
-            (options.surfelAreaReferenceLength * options.surfelAreaReferenceLength);
-        const float areaGradientScale = options.surfelAreaWeight * areaNormalization;
-        if (options.surfelAreaWeight > 0.0f)
-        {
-            float areaSum = 0.0f;
-            {
-                sycl::buffer<float, 1> areaBuffer(&areaSum, sycl::range<1>(1));
-                queue.submit([&](sycl::handler& cgh)
-                {
-                    auto reduction = sycl::reduction(areaBuffer, cgh, sycl::plus<float>());
-                    cgh.parallel_for<class SurfelAreaReductionKernelTag>(
-                        sycl::range<1>(sceneGpu.pointCount), reduction,
-                        [points = sceneGpu.points](sycl::id<1> id, auto& sum)
-                        {
-                            const auto& point = points[id[0]];
-                            if (!point.isEmissive())
-                                sum += point.opacity * point.scale.x() * point.scale.y();
-                        });
-                }).wait_and_throw();
-            }
-            surfelAreaRaw = areaSum * areaNormalization;
-        }
-
         // A scale-parameterization change invalidates the existing scale moments.
         const bool scaleParameterizationChanged =
             deviceTrainingState.useLogScale != options.useLogScale;
@@ -5379,23 +5300,6 @@ private:
                 "Create a new renderer or call upload_device_adam_state({}) before continuing.");
         }
         deviceTrainingState.useLogScale = options.useLogScale;
-        // Capture before the first constrained update. The bounds persist through
-        // BVH rebuilds and state roundtrips; disabling the option releases them.
-        if (options.capScaleAtActivation && !deviceTrainingState.scaleCeiling)
-        {
-            deviceTrainingState.scaleCeiling = sycl::malloc_device<Pale::float2>(sceneGpu.pointCount, queue);
-            if (!deviceTrainingState.scaleCeiling) throw std::runtime_error("Failed to allocate scale ceilings");
-            queue.parallel_for<class CaptureScaleCeilingKernelTag>(sycl::range<1>(sceneGpu.pointCount),
-                [points = sceneGpu.points, ceiling = deviceTrainingState.scaleCeiling](sycl::id<1> id)
-                {
-                    ceiling[id[0]] = points[id[0]].scale;
-                }).wait_and_throw();
-        }
-        else if (!options.capScaleAtActivation && deviceTrainingState.scaleCeiling)
-        {
-            sycl::free(deviceTrainingState.scaleCeiling, queue);
-            deviceTrainingState.scaleCeiling = nullptr;
-        }
         const bool useAdam = options.optimizer == "adam";
         const std::uint32_t adamStep = ++deviceTrainingState.step;
         const float biasCorrection1 =
@@ -5439,7 +5343,6 @@ private:
                 rotationV = deviceTrainingState.rotationV,
                 scaleM = deviceTrainingState.scaleM,
                 scaleV = deviceTrainingState.scaleV,
-                scaleCeiling = deviceTrainingState.scaleCeiling,
                 albedoM = deviceTrainingState.albedoM,
                 albedoV = deviceTrainingState.albedoV,
                 opacityM = deviceTrainingState.opacityM,
@@ -5459,7 +5362,6 @@ private:
                 lrScale = options.learningRateScale,
                 lrAlbedo = options.learningRateAlbedo,
                 lrOpacity = options.learningRateOpacity,
-                areaGradientScale,
                 lrBeta = options.learningRateBeta,
                 cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
             {
@@ -5621,7 +5523,7 @@ private:
                     normalGradOpacity,
                     intraSlabGradOpacity,
                     gradOpacity[primitiveIndex]);
-                float optimizerOpacityGradient = cleanGradient(opacityGradient * cameraBatchScale);
+                const float optimizerOpacityGradient = cleanGradient(opacityGradient * cameraBatchScale);
                 const float betaGradient = sumFloatGradient(
                     depthGradBeta,
                     normalGradBeta,
@@ -5635,24 +5537,15 @@ private:
                     cleanParameter(point.scale.x(), minSurfelScale), minSurfelScale, maxSurfelScale);
                 const float physicalScaleY = clampValue(
                     cleanParameter(point.scale.y(), minSurfelScale), minSurfelScale, maxSurfelScale);
-                // Parameter prior enters after camera scaling and never enters
-                // the RGB footprint statistics used for densification.
-                if (areaGradientScale > 0.0f)
-                    optimizerOpacityGradient = cleanGradient(optimizerOpacityGradient +
-                        areaGradientScale * physicalScaleX * physicalScaleY);
                 // Log radii use dL/drho = s * dL/ds.
                 const float scaleGradientMultiplierX =
                     useLogScale ? physicalScaleX : 1.0f;
                 const float scaleGradientMultiplierY =
                     useLogScale ? physicalScaleY : 1.0f;
                 const float optimizerScaleGradientX = cleanGradient(
-                    (areaGradientScale > 0.0f
-                        ? scaleGradientX * cameraBatchScale + areaGradientScale * point.opacity * physicalScaleY
-                        : scaleGradientX * cameraBatchScale) * scaleGradientMultiplierX);
+                    scaleGradientX * cameraBatchScale * scaleGradientMultiplierX);
                 const float optimizerScaleGradientY = cleanGradient(
-                    (areaGradientScale > 0.0f
-                        ? scaleGradientY * cameraBatchScale + areaGradientScale * point.opacity * physicalScaleX
-                        : scaleGradientY * cameraBatchScale) * scaleGradientMultiplierY);
+                    scaleGradientY * cameraBatchScale * scaleGradientMultiplierY);
                 // Whole-surfel gating: zero components of an active surfel still use Adam.
                 if (skipZeroGradientSurfels)
                 {
@@ -5798,12 +5691,6 @@ private:
                         point.scale.y() = clampValue(
                             physicalScaleY - scaleUpdateY, minSurfelScale, maxSurfelScale);
                     }
-                }
-
-                if (scaleCeiling)
-                {
-                    point.scale.x() = sycl::fmin(point.scale.x(), scaleCeiling[primitiveIndex].x());
-                    point.scale.y() = sycl::fmin(point.scale.y(), scaleCeiling[primitiveIndex].y());
                 }
 
                 const float albedoUpdateX = adamUpdate(
@@ -6529,8 +6416,8 @@ private:
 
         sensor.relativeDensification = options.relativeDensification;
         sensor.densificationFullPosition = options.densificationFullPosition;
+        sensor.densificationImageSpace = options.densificationImageSpace;
         const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
-        sensor.densificationRadianceFloorSquared = floorSquared;
 
         queue.fill(target.loss, 0.0f, 1u);
 
@@ -6613,6 +6500,8 @@ private:
 // ---- pybind11 module ----
 PYBIND11_MODULE(pale, m)
 {
+    m.attr("IMAGE_SPACE_DENSIFICATION") = true;
+    m.attr("IMAGE_SPACE_DENSIFICATION_COORDINATES") = "ndc";
     m.attr("BETA_MIN") = Pale::kBetaMin;
     m.attr("BETA_MAX") = Pale::kBetaMax;
     py::class_<PythonRenderer>(m, "Renderer")

@@ -761,7 +761,6 @@ if __name__ == "__main__":
 
     print(f"Extracting mesh from {run_dir}")
     print(f"Using point cloud {points_path}")
-    # print(f"Using cameras {args.cameras_xml}")
     print(f"Rendering {len(camera_names)} cameras")
 
     pale_extractor = PaleExtractor(

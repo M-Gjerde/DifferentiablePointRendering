@@ -184,29 +184,11 @@ gradient allocation. Dominant primitive IDs are computed only for views that
 need them. Explicit **Adjoint profiling → Every render** remains an opt-in
 background profiling operation.
 
-The debug controls are generated from `python/config.py` at build time: position
-threshold `0.0005`, radiance-bias strength `0.8`, weight limits `[0.25, 1.5]`,
-radiance floor `0.001`, and crowd gate `3.0` with the current defaults.
-CMake regenerates these values when the config changes. Position previews start at this threshold when loading a
-snapshot; **Use saved** selects its recorded threshold and **Use config default**
-restores the config value.
-
-### Crowd penalty in 3D
-
-Select **Display → Crowd penalty (clone / split gate)**. Each primitive is colored
-by its full-footprint mean slab membership divided by the selected crowd gate.
-Magenta means membership is **at or above** the gate: training would block both
-cloning and position splitting for that parent. This is a hard eligibility gate,
-not an additive loss or a continuous reduction of the cloning signal. Below the
-gate, the gradient, size and budget checks still apply. Gray means unobserved;
-training allows these parents through this gate. Black is background.
-
-**Crowd gate (mean members)** previews other thresholds; `0` disables blocking.
-**Use config default** restores the build's `densification_max_mean_slab_members`.
-The overlap distance and normal controls are shared with **Surface overlap**.
-The calculation includes the anchor, excludes lights, and uses 64 footprint
-samples per saved scene camera. The score stays attached to each primitive while
-orbiting. These controls preview the gate without modifying the training config.
+The position threshold and transport cutoff defaults are generated from
+`python/config.py` at build time. CMake regenerates them when the config changes.
+Position previews start at the configured threshold when loading a snapshot;
+**Use saved** selects its recorded threshold and **Use config default** restores
+the config value.
 
 ### Target image loss in 3D
 
@@ -305,33 +287,8 @@ transmission, candidate-batch limits, and ray-event limits are not applied.
 An unobserved surfel has no score. Changing the view or its color maximum does
 not alter training or split selection.
 
-Training uses the same mean-members calculation, with a current default gate of `3`.
-Set `--densification-max-mean-slab-members 2` for a stricter threshold, or `0`
-to disable this gate. A value of 3 includes the parent: roughly two
-other members per sample on average. The score is a mean across footprint
-locations and in-frame scene-camera rays, not a count of distinct neighbors that
-touch any part of the surfel. For example, half the samples at 2 members and half
-at 10 give a mean of 6.
-
-Training also defaults to symmetric normal-distance overlap. Use
-`--no-surface-overlap-normal-distance` for the camera-ray comparison and
-`--surface-overlap-depth-tolerance 0.005` to set the independent tolerance.
-Viewer controls preview these rules without changing a training run's settings.
-
-At each scheduled densification event, training recomputes scores from current
-geometry before selecting candidates. Parents at or above the threshold are
-excluded from position-triggered splits and optional exact
-clones, before the candidate budget is applied. Accepted splits keep their
-existing offset and scale policy. With `--densification-verbose`, each check logs
-the overlap threshold, blocked candidate count and percentage, candidates remaining
-after the overlap gate, unobserved candidates allowed through, and measurement
-time, including when all candidates are blocked. Counts refer to gradient
-candidates before size checks and the new-point budget; `added` reports the final
-number of new surfels. Geometry-only scores include
-hidden and transparent surfels; zero usable samples are unknown and do not block.
-This experimental gate does not prune existing clusters or impose a strict
-post-split maximum: simultaneous splits can raise occupancy above the threshold,
-and sparse edges can dilute a crowded center's mean.
+Surface overlap is a viewer diagnostic. Its distance tolerance and normal-distance
+controls do not affect training or densification selection.
 
 ## Shared-height surface experiment
 

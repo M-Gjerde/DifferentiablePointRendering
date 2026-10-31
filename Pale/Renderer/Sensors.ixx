@@ -339,11 +339,11 @@ export namespace Pale {
 
                 out.cloneSignalPerPrimitivePerCamera =
                         sycl::malloc_device<float3>(primitiveCameraCount, queue);
+                out.cloneImageSignalPerPrimitivePerCamera =
+                        sycl::malloc_device<float3>(primitiveCameraCount, queue);
 
                 out.cloneSignalRecordCountPerPrimitivePerCamera =
                         sycl::malloc_device<uint32_t>(primitiveCameraCount, queue);
-                out.cloneRadianceRmsSumPerPrimitivePerCamera =
-                        sycl::malloc_device<float>(primitiveCameraCount, queue);
             }
 
             const bool missingStatistics = includeStatistics &&
@@ -352,9 +352,8 @@ export namespace Pale {
                  !out.cloneSignalActiveCameraCount ||
                  (cameraSlotCount > 0u && (!out.gradPositionPerPrimitivePerCamera ||
                                          !out.gradPositionRecordCountPerPrimitivePerCamera ||
-                                         !out.cloneSignalPerPrimitivePerCamera ||
-                                         !out.cloneSignalRecordCountPerPrimitivePerCamera ||
-                                         !out.cloneRadianceRmsSumPerPrimitivePerCamera)));
+                                         !out.cloneSignalPerPrimitivePerCamera || !out.cloneImageSignalPerPrimitivePerCamera ||
+                                         !out.cloneSignalRecordCountPerPrimitivePerCamera)));
             if (!out.gradPosition || !out.gradRotation || !out.gradScale ||
                 !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
                 missingStatistics) {
@@ -382,8 +381,8 @@ export namespace Pale {
                 queue.fill(out.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
                 queue.fill(out.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
                 queue.fill(out.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
+                queue.fill(out.cloneImageSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
                 queue.fill(out.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
-                queue.fill(out.cloneRadianceRmsSumPerPrimitivePerCamera, 0.0f, primitiveCameraCount);
             }
 
             Pale::Log::PA_INFO(
@@ -714,8 +713,8 @@ export namespace Pale {
         freeDevicePtr(gradients.gradPositionPerPrimitivePerCamera);
         freeDevicePtr(gradients.gradPositionRecordCountPerPrimitivePerCamera);
         freeDevicePtr(gradients.cloneSignalPerPrimitivePerCamera);
+        freeDevicePtr(gradients.cloneImageSignalPerPrimitivePerCamera);
         freeDevicePtr(gradients.cloneSignalRecordCountPerPrimitivePerCamera);
-        freeDevicePtr(gradients.cloneRadianceRmsSumPerPrimitivePerCamera);
 
         freeDevicePtr(gradients.cloneSignalMeanNorm);
         freeDevicePtr(gradients.cloneSignalStd);

@@ -17,9 +17,7 @@ set(PALE_ROOT "${PALE_ROOT}" CACHE PATH "DifferentiablePointRendering repository
 # dependencies. Fail visibly if these fields cease to be literals.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PALE_ROOT}/python/config.py")
 file(READ "${PALE_ROOT}/python/config.py" PALE_TRAINING_CONFIG)
-foreach(field densification_max_mean_slab_members densification_grad_abs_min
-        densification_radiance_bias_strength densification_radiance_bias_min_weight
-        densification_radiance_bias_max_weight densification_radiance_floor inactive_transport_min_score)
+foreach(field densification_grad_abs_min inactive_transport_min_score)
     string(REGEX MATCH "\n    ${field}: float = ([0-9.eE+-]+)[ \r\n#]" match "${PALE_TRAINING_CONFIG}")
     if(NOT match)
         message(FATAL_ERROR "Expected a numeric literal for ${field} in python/config.py")

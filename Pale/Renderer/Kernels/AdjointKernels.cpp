@@ -679,7 +679,6 @@ namespace Pale {
         record.cloneSignalY = 0.0f;
         record.cloneSignalZ = 0.0f;
         record.hasCloneSignal = 0u;
-        record.cloneRadianceRms = 0.0f;
         record.gradScaleU = 0.0f;
         record.gradScaleV = 0.0f;
         record.gradRotationX = 0.0f;
@@ -695,12 +694,6 @@ namespace Pale {
         // For half-MSE, q_D = q_photo / B^2. Weight each pixel's contribution
         // before the surfel/camera reduction, never the accumulated gradient.
         const float weight = sensor.framebuffer[pathId].w();
-        if (sycl::isfinite(weight) && weight > 0.0f) {
-            const float meanSquaredRadiance = sycl::fmax(
-                0.0f,
-                1.0f / weight - sensor.densificationRadianceFloorSquared);
-            record.cloneRadianceRms = sycl::sqrt(meanSquaredRadiance);
-        }
         if (sensor.densificationFullPosition) {
             record.cloneSignalX = record.gradPositionX;
             record.cloneSignalY = record.gradPositionY;
@@ -710,6 +703,8 @@ namespace Pale {
         record.cloneSignalX *= weight;
         record.cloneSignalY *= weight;
         record.cloneSignalZ *= weight;
+        record.cloneImageSignalX *= weight;
+        record.cloneImageSignalY *= weight;
     }
 
     // Slab/light producers and the scratch-record reduction share this
@@ -743,9 +738,7 @@ namespace Pale {
                 gradientRecord.hasCloneSignal == 0u ||
                 (sycl::isfinite(gradientRecord.cloneSignalX) &&
                  sycl::isfinite(gradientRecord.cloneSignalY) &&
-                 sycl::isfinite(gradientRecord.cloneSignalZ) &&
-                 sycl::isfinite(gradientRecord.cloneRadianceRms) &&
-                 gradientRecord.cloneRadianceRms >= 0.0f);
+                 sycl::isfinite(gradientRecord.cloneSignalZ));
         const uint32_t primitiveIndex = gradientRecord.primitiveIndex;
         if (primitiveIndex >= gradients.numPoints || cameraSlot >= cameraSlotCount) {
             return false;
@@ -784,12 +777,16 @@ namespace Pale {
                 atomicAddFloat(
                     gradients.cloneSignalPerPrimitivePerCamera[primitiveCameraIndex].z(),
                     gradientRecord.cloneSignalZ);
+                if ((gradientRecord.cloneImageSignalX != 0.0f || gradientRecord.cloneImageSignalY != 0.0f) &&
+                    sycl::isfinite(gradientRecord.cloneImageSignalX) && sycl::isfinite(gradientRecord.cloneImageSignalY)) {
+                    atomicAddFloat(gradients.cloneImageSignalPerPrimitivePerCamera[primitiveCameraIndex].x(),
+                                   gradientRecord.cloneImageSignalX);
+                    atomicAddFloat(gradients.cloneImageSignalPerPrimitivePerCamera[primitiveCameraIndex].y(),
+                                   gradientRecord.cloneImageSignalY);
+                }
                 atomicAddUint32(
                     gradients.cloneSignalRecordCountPerPrimitivePerCamera[primitiveCameraIndex],
                     1u);
-                atomicAddFloat(
-                    gradients.cloneRadianceRmsSumPerPrimitivePerCamera[primitiveCameraIndex],
-                    gradientRecord.cloneRadianceRms);
             }
             if (writePhotometric) {
                 atomicAddFloat(gradients.gradScale[primitiveIndex].x(), gradientRecord.gradScaleU);
@@ -875,6 +872,11 @@ namespace Pale {
         gradientRecord.cloneSignalY = gradPosition.y();
         gradientRecord.cloneSignalZ = gradPosition.z();
         gradientRecord.hasCloneSignal = 1u;
+        if (sensor.densificationImageSpace) {
+            const float2 imageGradient = footprintTranslationGradientNdc(gradPosition, xSurface.hitPositionW, sensor.camera);
+            gradientRecord.cloneImageSignalX = imageGradient.x();
+            gradientRecord.cloneImageSignalY = imageGradient.y();
+        }
         gradientRecord.gradScaleU = gradScaleU;
         gradientRecord.gradScaleV = gradScaleV;
         gradientRecord.gradRotationX = gradRotation.x();
@@ -2115,6 +2117,11 @@ namespace Pale {
                     targetRecord.cloneSignalY = gradPosition.y();
                     targetRecord.cloneSignalZ = gradPosition.z();
                     targetRecord.hasCloneSignal = 1u;
+                    if (sensor.densificationImageSpace) {
+                        const float2 imageGradient = footprintTranslationGradientNdc(gradPosition, surface.hitPositionW, sensor.camera);
+                        targetRecord.cloneImageSignalX = imageGradient.x();
+                        targetRecord.cloneImageSignalY = imageGradient.y();
+                    }
                     targetRecord.gradScaleU = gradScaleU;
                     targetRecord.gradScaleV = gradScaleV;
                     targetRecord.gradRotationX = gradRotation.x();
@@ -3165,7 +3172,7 @@ namespace Pale {
                             surfel.tanU, surfel.tanV, depthGradient.tangentU, depthGradient.tangentV);
                         atomicAddFloat3(depthGradients.gradRotation[hit.primitiveIndex], depthRotationGradient);
                         atomicAddFloat2(depthGradients.gradScale[hit.primitiveIndex], float2{depthGradient.scaleU, depthGradient.scaleV});
-                        //atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
+                        atomicAddFloat(depthGradients.gradOpacity[hit.primitiveIndex], depthGradient.opacity);
                         //atomicAddFloat(depthGradients.gradBeta[hit.primitiveIndex], depthGradient.beta);
 
                     }

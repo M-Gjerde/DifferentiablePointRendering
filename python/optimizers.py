@@ -9,31 +9,6 @@ import torch
 from config import OptimizationConfig
 
 
-class FrozenScaleCeiling:
-    """Capture physical radii once and project later updates onto those bounds.
-
-    Used only after topology stops changing. Other parameters and optimizer
-    moments keep evolving. A radius can shrink and recover up to its ceiling.
-    """
-
-    def __init__(self):
-        self.ceiling = None
-
-    @torch.no_grad()
-    def capture(self, scales: torch.Tensor) -> None:
-        if self.ceiling is None:
-            self.ceiling = scales.detach().clone()
-        elif self.ceiling.shape != scales.shape:
-            raise ValueError("Scale ceiling requires unchanged topology")
-
-    @torch.no_grad()
-    def project(self, scales: torch.Tensor, trainable_mask: torch.Tensor) -> None:
-        if self.ceiling is None or self.ceiling.shape != scales.shape:
-            raise ValueError("Capture the scale ceiling before updating parameters")
-        mask = trainable_mask.reshape(-1, 1)
-        scales.copy_(torch.where(mask, torch.minimum(scales, self.ceiling), scales))
-
-
 class _LogScaleStepMixin:
     """Optimize log radii while exposing physical radii between optimizer steps.
 
@@ -347,7 +322,20 @@ def get_required_learning_rate(config: OptimizationConfig, attribute_name: str) 
     return float(learning_rate)
 
 
-def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, object]:
+def camera_extent_lr_scale(camera_positions) -> float:
+    """2DGS scene extent: 1.1 times the maximum distance from the camera mean."""
+    centers = np.asarray(camera_positions, dtype=np.float64)
+    if centers.ndim != 2 or centers.shape[1] != 3 or len(centers) == 0 or not np.isfinite(centers).all():
+        raise ValueError("Expected a nonempty, finite Nx3 array of training-camera positions")
+    extent = float(1.1 * np.linalg.norm(centers - centers.mean(axis=0), axis=1).max())
+    if extent <= 0:
+        raise ValueError("Scene-scaled position LR requires non-coincident training cameras")
+    return extent
+
+
+def create_learning_rate_schedules(config: OptimizationConfig, position_scene_scale: float = 1.0) -> dict[str, object]:
+    if not math.isfinite(position_scene_scale) or position_scene_scale <= 0:
+        raise ValueError("position_scene_scale must be finite and positive")
     base_learning_rates = {
         "position": get_required_learning_rate(config, "learning_rate_position"),
         "rotation": get_required_learning_rate(config, "learning_rate_rotation"),
@@ -359,6 +347,8 @@ def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, obje
     }
 
     decay_start_iteration = int(getattr(config, "lr_decay_start_iteration", 0))
+    if getattr(config, "use_position_lr_scene_scale", False):
+        base_learning_rates["position"] *= position_scene_scale
     decay_max_steps = int(getattr(config, "lr_decay_max_steps", 0))
 
     if bool(getattr(config, "use_global_lr_decay", False)):
@@ -372,7 +362,12 @@ def create_learning_rate_schedules(config: OptimizationConfig) -> dict[str, obje
         global_lr_scale_func = make_constant_scale_func()
 
     if bool(getattr(config, "use_position_lr_decay", False)):
-        position_lr_scale_func = make_linear_scale_func(
+        position_schedule_factory = (
+            make_exponential_scale_func
+            if bool(getattr(config, "position_lr_decay_exponential", True))
+            else make_linear_scale_func
+        )
+        position_lr_scale_func = position_schedule_factory(
             scale_init=float(getattr(config, "position_lr_scale_init", 1.0)),
             scale_final=float(getattr(config, "position_lr_scale_final", 1.0)),
             start_iteration=decay_start_iteration,

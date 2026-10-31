@@ -187,19 +187,29 @@ existing meshes, and Blender import settings.
 
 ### Monitor optimization metrics
 
-Inactive-transport pruning uses a combined camera and shadow support score over
-each complete training-camera cycle. A camera hit contributes its incoming
+Inactive-transport pruning accumulates a combined camera and shadow support score
+between pruning operations. A camera hit contributes its incoming
 transmittance times its symmetric slab member weight. A shadow hit contributes
 the receiver's camera weight times incoming shadow transmittance times the
 blocker's effective opacity. Thus ten fully effective hits score 10, while one
 hundred hits of weight 0.1 also score approximately 10. This score does not
 depend on BSDF brightness or gradient magnitude and does not change opacity.
 
-`--inactive-transport-min-score` defaults to `10`. Scores at or above this
-threshold pass; lower scores count toward `--inactive-transport-prune-cycles`
-(default `1`). Set the cycle count to `0` to disable this pruning. New surfels
-are exempt for the remainder of their birth cycle, and the existing topology
-freeze still applies. `renderer.get_primal_activity_stats()` returns per-render
+`--prune-interval` (default `100`) schedules transport, area, and opacity pruning
+together; `0` disables all pruning. Transport scores are normalized to one camera
+pass by multiplying accumulated support by the number of training views and
+dividing by each surfel's observed camera-sample count. Thus changing the interval
+does not multiply the threshold's effective scale.
+`--inactive-transport-min-score` defaults to `10`; scores at or above this
+threshold survive, and `0` disables transport pruning alone. The former
+`--inactive-transport-prune-cycles` setting has been removed. New surfels accumulate
+their own samples and are exempt until they have at least one camera pass's worth
+of observations. This is not a guaranteed 100-iteration lifetime for new surfels.
+The existing pruning start and topology freeze still apply.
+When pruning and densification coincide, all scheduled removals are excluded from
+densification selection. Children are created only from surviving parents and
+begin accumulating transport support for the next pruning interval.
+`renderer.get_primal_activity_stats()` returns per-render
 `camera_surface_score` and `shadow_occluder_score` arrays alongside the raw hit
 counts. Rebuild `pale` when updating Python training code to use these scores.
 These statistics track camera and direct shadow support; they do not separately

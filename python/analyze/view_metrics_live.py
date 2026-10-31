@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import argparse
 import io
-import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from terminal_output import print_status
+from run_paths import default_optimization_output_root
 
 LEGEND_KWARGS = {
     "fontsize": "small",
@@ -218,28 +217,6 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(plot_all_losses=True)
 
     return parser.parse_args()
-
-
-def parse_run_timestamp(run_dir_name: str) -> datetime | None:
-    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})", run_dir_name)
-    if match is None:
-        return None
-
-    try:
-        return datetime.strptime(match.group(1), "%Y-%m-%d_%H-%M-%S")
-    except ValueError:
-        return None
-
-
-def default_optimization_output_root() -> Path:
-    if str(PROJECT_ROOT) not in sys.path:
-        sys.path.insert(0, str(PROJECT_ROOT))
-    from config import OptimizationConfig
-
-    output_dir = Path(OptimizationConfig().output_dir).expanduser()
-    if output_dir.is_absolute():
-        return output_dir.resolve()
-    return (PROJECT_ROOT / output_dir).resolve()
 
 
 def find_latest_run_dir(
@@ -1540,7 +1517,7 @@ def main() -> None:
 
             if previous_dataframe is not None and (file_changed or geometry_changed):
                 try:
-                    plotted_columns = draw_metrics_figure(
+                    draw_metrics_figure(
                         figure=figure,
                         dataframe=previous_dataframe,
                         metrics_csv_path=metrics_csv_path,

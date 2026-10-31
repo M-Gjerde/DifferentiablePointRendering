@@ -274,6 +274,28 @@ namespace Pale {
         return surfel.opacity * (dAlphaGeomDu * duDPosition + dAlphaGeomDv * dvDPosition);
     }
 
+    // Shift the projected footprint in normalized image coordinates [-1,1]
+    // with its shape fixed. Pixel derivatives are scaled by (width/2,height/2).
+    // At a ray/plane hit, dL/d(pixel shift) = -dL/dpixel. The existing footprint
+    // translation gradient annihilates the ray direction, so the chain rule
+    // reduces to hit camera-depth / focal length along camera right/down.
+    // Use HIT depth, not center depth: tilted surfels have projective footprints.
+    SYCL_EXTERNAL inline float2 footprintTranslationGradientNdc(
+        const float3 &worldGradient, const float3 &hitPosition, const CameraGPU &camera) {
+        const float depth = -transformPoint(camera.view, hitPosition).z();
+        const bool intrinsics = camera.hasPinholeIntrinsics != 0u && camera.fx > 0 && camera.fy > 0;
+        const float fallbackFocal = 0.5f * static_cast<float>(camera.height) /
+                                   sycl::tan(0.5f * glm::radians(camera.fovy));
+        const float fx = intrinsics ? camera.fx : fallbackFocal;
+        const float fy = intrinsics ? camera.fy : fallbackFocal;
+        if (!(depth > 0 && fx > 0 && fy > 0 && camera.width > 0 && camera.height > 0) ||
+            !sycl::isfinite(depth)) return float2{0.0f};
+        const float3 right = transformDirection(camera.invView, float3{1, 0, 0});
+        const float3 down = transformDirection(camera.invView, float3{0, -1, 0});
+        return float2{0.5f * static_cast<float>(camera.width) * depth / fx * dot(worldGradient, right),
+                      0.5f * static_cast<float>(camera.height) * depth / fy * dot(worldGradient, down)};
+    }
+
     SYCL_EXTERNAL inline float2 computeAlphaEffectiveGradientWrtScale(const Point &surfel,
                                                                       const PointCloudSurfaceRecord &surface) {
 

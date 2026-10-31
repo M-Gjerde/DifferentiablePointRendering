@@ -750,8 +750,9 @@ namespace Pale {
         float cloneSignalX = 0.0f;
         float cloneSignalY = 0.0f;
         float cloneSignalZ = 0.0f;
+        float cloneImageSignalX = 0.0f;
+        float cloneImageSignalY = 0.0f;
         uint32_t hasCloneSignal = 0u;
-        float cloneRadianceRms = 0.0f;
         // Relative statistics can retain a contribution discarded by an
         // absolute photometric threshold without changing optimizer gradients.
         uint32_t accumulatePhotometric = 1u;

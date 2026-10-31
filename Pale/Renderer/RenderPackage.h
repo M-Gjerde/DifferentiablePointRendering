@@ -12,7 +12,7 @@ namespace Pale {
         // per-pixel multiplier for the auxiliary densification signal.
         bool relativeDensification = false;
         bool densificationFullPosition = true;
-        float densificationRadianceFloorSquared = 0.0f;
+        bool densificationImageSpace = false;
         uint32_t width{}, height{};
         uint32_t cameraSlotIndex; // original scene.xml camera index
 
@@ -64,8 +64,9 @@ namespace Pale {
         float3 *gradPositionPerPrimitivePerCamera = nullptr;
         uint32_t *gradPositionRecordCountPerPrimitivePerCamera = nullptr;
         float3 *cloneSignalPerPrimitivePerCamera = nullptr;
+        // Loss derivative per normalized [-1,1] image translation (x, y, 0).
+        float3 *cloneImageSignalPerPrimitivePerCamera = nullptr;
         uint32_t *cloneSignalRecordCountPerPrimitivePerCamera = nullptr;
-        float *cloneRadianceRmsSumPerPrimitivePerCamera = nullptr;
 
         // Final per-primitive clone-signal stats.
         float *cloneSignalMeanNorm = nullptr;

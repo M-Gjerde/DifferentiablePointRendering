@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import csv
+import math
 import select
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,6 @@ import optimizers
 import render_hooks as render
 from config import OptimizationConfig, RendererSettingsConfig
 from terminal_output import print_status
-from metrics_schema import METRICS_COLUMNS
 
 PARAMETER_NAMES = (
     "position",
@@ -46,72 +47,6 @@ LOSS_VALUE_KEYS = (
 
 def make_zero_loss_values() -> dict[str, float]:
     return {loss_key: 0.0 for loss_key in LOSS_VALUE_KEYS}
-
-
-def scheduled_surfel_area_weight(config: OptimizationConfig, iteration: int) -> float:
-    """Delay and linearly ramp the scene prior using the global training step."""
-    start = config.surfel_area_start_fraction
-    ramp = config.surfel_area_ramp_fraction
-    if (not np.isfinite(start) or not np.isfinite(ramp) or start < 0 or ramp < 0
-            or start + ramp > 1):
-        raise ValueError("Surfel area start/ramp fractions must be finite, non-negative and sum to at most one")
-    if config.iterations <= 0:
-        raise ValueError("Surfel area scheduling requires positive total iterations")
-    if start == 0 and ramp == 0:
-        return float(config.surfel_area_weight)
-    total_iterations = max(0, int(config.resume_iteration_offset)) + config.iterations
-    elapsed = iteration - start * total_iterations
-    if elapsed <= 0:
-        return 0.0
-    factor = min(1.0, elapsed / (ramp * total_iterations)) if ramp else 1.0
-    return float(config.surfel_area_weight * factor)
-
-
-def surfel_area_reference_length(positions, trainable_mask, camera_origins) -> float:
-    """RMS camera distance to the initial trainable centroid; fixed for a run."""
-    points = np.asarray(positions, dtype=np.float64)[np.asarray(trainable_mask, dtype=bool)]
-    cameras = np.asarray(camera_origins, dtype=np.float64)
-    if not len(points):
-        return 1.0  # No trainable surface, hence identically zero area loss.
-    if cameras.ndim != 2 or cameras.shape[1] != 3 or not len(cameras):
-        raise ValueError("Surfel area normalization requires training camera origins")
-    length = float(np.sqrt(np.mean(np.sum((cameras-points.mean(axis=0))**2, axis=1))))
-    if not np.isfinite(length) or length <= 0:
-        raise ValueError("Surfel area normalization requires a finite nonzero camera distance")
-    return length
-
-
-@torch.no_grad()
-def compute_surfel_area_prior(scales, opacities, trainable_mask, weight, reference_length):
-    """Return dimensionless total area and weighted physical parameter gradients.
-
-    A sum prevents dilution of the penalty by introducing more surfels. Both
-    opacity and radii are optimized. The explicit mask excludes emissive rows.
-    """
-    if not np.isfinite(weight) or weight < 0:
-        raise ValueError("surfel_area_weight must be finite and non-negative")
-    if not np.isfinite(reference_length) or reference_length <= 0:
-        raise ValueError("surfel_area_reference_length must be finite and positive")
-    if weight == 0:
-        return 0., None, None
-    mask = trainable_mask.to(device=scales.device, dtype=torch.bool).reshape(-1)
-    opacity = opacities.reshape(-1)
-    if scales.shape != (len(mask), 2) or len(opacity) != len(mask):
-        raise ValueError("Surfel area parameter/mask shape mismatch")
-    factor = np.pi / reference_length**2
-    scale_gradient = torch.zeros_like(scales)
-    opacity_gradient = torch.zeros_like(opacity)
-    area = scales[mask].prod(dim=1)
-    raw = float((opacity[mask] * area).sum().item()) * factor
-    scale_gradient[mask] = weight * factor * opacity[mask, None] * scales[mask].flip(dims=(1,))
-    opacity_gradient[mask] = weight * factor * area
-    return raw, scale_gradient.cpu().numpy(), opacity_gradient.reshape(opacities.shape).cpu().numpy()
-
-
-def add_surfel_area_loss(loss_state, raw_loss, weight):
-    loss_state['total_surfel_area_loss_raw'] = raw_loss
-    loss_state['total_surfel_area_loss_weighted'] = weight * raw_loss
-    loss_state['total_loss_value'] += weight * raw_loss
 
 
 def make_averaged_loss_state_from_camera_cache(
@@ -144,6 +79,11 @@ def make_averaged_loss_state_from_camera_cache(
     return averaged_loss_state
 
 
+@lru_cache(maxsize=1)
+def _camera_permutation(camera_count: int, seed: int) -> np.ndarray:
+    return np.random.default_rng(seed).permutation(camera_count)
+
+
 def select_active_training_camera_ids(
         training_camera_ids: list[str],
         iteration: int,
@@ -163,30 +103,34 @@ def select_active_training_camera_ids(
         # A fresh permutation per full camera loop samples without replacement,
         # as in 3DGS. Deriving it from the cycle also preserves checkpoint resume.
         cycle_index, cycle_offset = divmod(iteration - 1, len(training_camera_ids))
-        rng = np.random.default_rng(config.camera_sampling_seed + cycle_index)
-        camera_index = int(rng.permutation(len(training_camera_ids))[cycle_offset])
+        order = _camera_permutation(len(training_camera_ids), config.camera_sampling_seed + cycle_index)
+        camera_index = int(order[cycle_offset])
         return [training_camera_ids[camera_index]]
 
     raise RuntimeError(f"Unknown camera_sampling_mode: {config.camera_sampling_mode}")
 
 
+def transport_prune_indices(scores, camera_samples, camera_count, min_score, trainable_mask):
+    """Compare interval support in camera-pass units, excluding under-observed surfels.
+
+    Per-surfel exposure handles points appended partway through the window.
+    A zero threshold disables transport pruning.
+    """
+    scores = np.asarray(scores, dtype=np.float64)
+    camera_samples = np.asarray(camera_samples)
+    if min_score <= 0 or camera_count <= 0:
+        return np.zeros(0, dtype=np.int64)
+    mean_pass_score = scores * camera_count / np.maximum(camera_samples, 1)
+    return np.flatnonzero(
+        np.asarray(trainable_mask, dtype=bool)
+        & (camera_samples >= camera_count)
+        & (mean_pass_score < min_score)
+    ).astype(np.int64)
+
+
 def topology_updates_allowed(iteration: int, final_iteration: int, freeze_last_iterations: int) -> bool:
     """Keep the last N global iterations free of densification and all pruning."""
     return iteration <= final_iteration - freeze_last_iterations
-
-
-def scale_ceiling_active(config: OptimizationConfig, iteration: int) -> bool:
-    final_iteration = int(config.iterations) + max(0, int(config.resume_iteration_offset))
-    return bool(config.cap_scale_after_topology_freeze and config.topology_freeze_last_iterations > 0
-                and not topology_updates_allowed(iteration, final_iteration, config.topology_freeze_last_iterations))
-
-
-def as_config_float(value: Any) -> float:
-    if isinstance(value, tuple):
-        if len(value) != 1:
-            raise ValueError(f"Expected scalar or single-item tuple, got {value}")
-        value = value[0]
-    return float(value)
 
 
 def make_named_parameter_dict(
@@ -281,28 +225,14 @@ def apply_densification_source_updates_inplace(
     idx = torch.as_tensor(update["index"], device=device, dtype=torch.long).reshape(-1)
     if idx.numel() == 0:
         return
+    parameters = make_named_parameter_dict(positions, rotations, scales, albedos, opacities, betas, powers)
     with torch.no_grad():
-        if "position" in update:
-            v = torch.as_tensor(update["position"], device=device, dtype=positions.dtype)
-            positions.data[idx] = v.view_as(positions.data[idx])
-        if "rotation" in update:
-            v = torch.as_tensor(update["rotation"], device=device, dtype=rotations.dtype)
-            rotations.data[idx] = density.normalize_quaternions_torch(v.view_as(rotations.data[idx]))
-        if "scale" in update:
-            v = torch.as_tensor(update["scale"], device=device, dtype=scales.dtype)
-            scales.data[idx] = v.view_as(scales.data[idx])
-        if "albedo" in update:
-            v = torch.as_tensor(update["albedo"], device=device, dtype=albedos.dtype)
-            albedos.data[idx] = v.view_as(albedos.data[idx])
-        if "opacity" in update:
-            v = torch.as_tensor(update["opacity"], device=device, dtype=opacities.dtype)
-            opacities.data[idx] = v.view_as(opacities.data[idx])
-        if "beta" in update:
-            v = torch.as_tensor(update["beta"], device=device, dtype=betas.dtype)
-            betas.data[idx] = v.view_as(betas.data[idx])
-        if "power" in update:
-            v = torch.as_tensor(update["power"], device=device, dtype=powers.dtype)
-            powers.data[idx] = v.view_as(powers.data[idx])
+        for name, parameter in parameters.items():
+            if name not in update:
+                continue
+            values = torch.as_tensor(update[name], device=parameter.device, dtype=parameter.dtype)
+            values = values.reshape((idx.numel(), *parameter.shape[1:]))
+            parameter[idx] = density.normalize_quaternions_torch(values) if name == "rotation" else values
 
 
 def rebuild_optimizer_preserving_state(
@@ -420,10 +350,6 @@ def migrate_device_adam_state_snapshot(
     if n_new < 0:
         raise RuntimeError(f"Invalid device Adam migration sizes: new_n={new_n}, kept_n={kept_n}")
 
-    ceiling = np.asarray(snapshot.get("scale_ceiling", np.empty((0, 2))))
-    if ceiling.size and (kept_n != old_n or n_new):
-        raise RuntimeError("Cannot change topology while frozen scale ceilings are active")
-
     if source_index_for_new_np is not None:
         source_index_for_new_np = np.asarray(source_index_for_new_np, dtype=np.int64).reshape(-1)
         if source_index_for_new_np.shape[0] != n_new:
@@ -435,9 +361,6 @@ def migrate_device_adam_state_snapshot(
         # Legacy device snapshots predate these fields and use pure log-space moments.
         "use_log_scale": bool(snapshot.get("use_log_scale", True)),
     }
-    if ceiling.size:
-        migrated["scale_ceiling"] = ceiling.copy()
-
     for key in DEVICE_ADAM_STATE_ARRAY_KEYS:
         if key not in snapshot:
             raise RuntimeError(f"Device Adam snapshot is missing '{key}'")
@@ -646,20 +569,6 @@ def max_point_norm(x: np.ndarray) -> float:
     return float(np.max(np.linalg.norm(x, axis=1))) if x.shape[0] > 0 else 0.0
 
 
-def rms_any(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=np.float32)
-    if x.size == 0:
-        return 0.0
-    return float(np.linalg.norm(x.ravel()) / np.sqrt(x.size))
-
-
-def rms_point(x: np.ndarray) -> float:
-    x = np.asarray(x, dtype=np.float32)
-    if x.size == 0:
-        return 0.0
-    return float(np.linalg.norm(x) / np.sqrt(max(x.shape[0], 1)))
-
-
 def position_gradient_norm_stats_or_zero(
         gradient_dict: dict[str, np.ndarray],
 ) -> tuple[float, float]:
@@ -668,36 +577,6 @@ def position_gradient_norm_stats_or_zero(
 
     grad_position = np.asarray(gradient_dict["position"], dtype=np.float32, order="C")
     return gradient_l2_norm(grad_position), max_point_norm(grad_position)
-
-
-def gradient_stats_from_dict(gradient_dict: dict[str, np.ndarray]) -> dict[str, dict[str, float]]:
-    stats: dict[str, dict[str, float]] = {}
-
-    for key, value in gradient_dict.items():
-        gradient_array = np.asarray(value, dtype=np.float32, order="C")
-        stats[key] = {
-            "rms": rms_any(gradient_array),
-            "max": max_point_norm(gradient_array),
-        }
-
-    return stats
-
-
-def format_gradient_stats(tag: str, stats: dict[str, dict[str, float]]) -> str:
-    def format_stat(name: str) -> str:
-        if name not in stats:
-            return f"{name}=NA"
-        return f"{name}_rms={stats[name]['rms']:.2e}, {name}_max={stats[name]['max']:.2e}"
-
-    return (
-        f"{tag}: "
-        f"{format_stat('position')}, "
-        f"{format_stat('rotation')}, "
-        f"{format_stat('scale')}, "
-        f"{format_stat('albedo')}, "
-        f"{format_stat('opacity')}, "
-        f"{format_stat('beta')}"
-    )
 
 
 def scale_gradient_dict(gradient_dict: dict[str, np.ndarray], scale: float) -> dict[str, np.ndarray]:
@@ -749,222 +628,18 @@ def scheduled_densification_grad_abs_min(
     return final_threshold + (initial_threshold - final_threshold) * (1.0 - t) ** decay_power
 
 
-def minimum_splittable_scale_for_config(config: OptimizationConfig) -> float:
-    split_scale_factor = max(
-        float(config.densification_split_scale_factor),
-        1.0,
-    )
-    min_clone_scale = float(config.densification_scale_min)
-    return min_clone_scale * split_scale_factor * (1.0 + 1.0e-4)
-
-
-def format_loss_breakdown(loss_state: dict[str, Any]) -> str:
-    rgb_loss = float(loss_state["total_rgb_loss_value"])
-    depth_weighted = float(loss_state["total_depth_distortion_loss_weighted"])
-    normal_weighted = float(loss_state["total_normal_loss_weighted"])
-    intra_slab_weighted = float(loss_state["total_intra_slab_depth_loss_weighted"])
-    area_weighted = float(loss_state.get("total_surfel_area_loss_weighted", 0.0))
-    total_loss = float(loss_state["total_loss_value"])
-
-    after_depth = rgb_loss + depth_weighted
-    after_normal = after_depth + normal_weighted
-    after_intra_slab = after_normal + intra_slab_weighted
-    regularizer_total = (
-        depth_weighted + normal_weighted +
-        intra_slab_weighted + area_weighted
-    )
-    loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
-    loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
-
-    return (
-        f"Mean loss stack [{loss_camera_count}/{loss_camera_expected_count} cameras]:\n"
-
-        "Loss stack:\n"
-        f"  {'RGB only':<28} {rgb_loss:>12.3e}\n"
-        f"  {'+ depth distortion':<28} {after_depth:>12.3e}  "
-        f"(+{depth_weighted:.3e})\n"
-        f"  {'+ normal consistency':<28} {after_normal:>12.3e}  "
-        f"(+{normal_weighted:.3e})\n"
-        f"  {'+ intra-slab depth':<28} {after_intra_slab:>12.3e}  "
-        f"(+{intra_slab_weighted:.3e})\n"
-        f"  {'+ surfel area':<28} {after_intra_slab + area_weighted:>12.3e}  "
-        f"(+{area_weighted:.3e})\n"
-        f"  {'regularizer total':<28} {regularizer_total:>12.3e}\n"
-        f"  {'total':<28} {total_loss:>12.3e}"
-    )
-
-
-def gradient_norm_for_key(
-        gradient_dict: dict[str, np.ndarray],
-        key: str,
-) -> float:
-    if not gradient_dict or key not in gradient_dict:
-        return 0.0
-    return gradient_l2_norm(np.asarray(gradient_dict[key], dtype=np.float32, order="C"))
-
-
-def format_training_iteration_log(
-        iteration: int,
-        total_iterations: int,
-        iteration_time: float,
-        iteration_rate: float,
-        total_time: float,
-        num_points: int,
-        loss_state: dict[str, Any],
-        lr_position: float,
-        global_lr_scale: float,
-        position_lr_scale: float,
-        active_densification_interval: int,
-        active_prune_interval: int,
-        active_densification_grad_abs_min: float,
-        active_depth_distortion_weight: float,
-        active_normal_consistency_weight: float,
-        minimum_splittable_scale: float,
-        grad_pos_rms: float,
-        grad_rotation_rms: float,
-        grad_scale_rms: float,
-        grad_albedo_rms: float,
-        grad_opacity_rms: float,
-        grad_beta_rms: float,
-        grad_pos_max: float,
-        grad_rotation_max: float,
-        grad_scale_max: float,
-        grad_albedo_max: float,
-        grad_opacity_max: float,
-        grad_beta_max: float,
-) -> str:
-    loss_camera_count = int(loss_state.get("loss_metric_camera_count", 1))
-    loss_camera_expected_count = int(loss_state.get("loss_metric_expected_camera_count", 1))
-
-    return (
-        f"\n[Iter {iteration:04d}/{total_iterations}] "
-        f"time={iteration_time:.3f}s total={total_time:.1f}s "
-        f"it/s={iteration_rate:.2f} pts={num_points} "
-        f"adaptive_lr_pos={lr_position:.3e} "
-        f"lr_global_scale={global_lr_scale:.3e} "
-        f"lr_pos_scale={position_lr_scale:.3e} "
-        f"densify_interval={active_densification_interval} "
-        f"prune_interval={active_prune_interval} "
-        f"densify_thr={active_densification_grad_abs_min:.3e} "
-        f"depth_active_w={active_depth_distortion_weight:.3e} "
-        f"normal_active_w={active_normal_consistency_weight:.3e} "
-        f"split_min_scale={minimum_splittable_scale:.3e}\n"
-        f"  losses_mean[{loss_camera_count}/{loss_camera_expected_count} cameras]:"
-        f" rgb={loss_state['total_rgb_loss_value']:.3e}"
-        f" rgb_l2={loss_state['total_rgb_l2_loss_value']:.3e}"
-        f" depth_raw={loss_state['total_depth_distortion_loss_raw']:.3e}"
-        f" depth_w={loss_state['total_depth_distortion_loss_weighted']:.3e}"
-        f" normal_raw={loss_state['total_normal_loss_raw']:.3e}"
-        f" normal_w={loss_state['total_normal_loss_weighted']:.3e}"
-        f" intra_slab_raw={loss_state['total_intra_slab_depth_loss_raw']:.3e}"
-        f" intra_slab_w={loss_state['total_intra_slab_depth_loss_weighted']:.3e}"
-        f" total={loss_state['total_loss_value']:.3e}\n"
-        f"  grad_rms:"
-        f" pos={grad_pos_rms:.2e}"
-        f" rot={grad_rotation_rms:.2e}"
-        f" scale={grad_scale_rms:.2e}"
-        f" albedo={grad_albedo_rms:.2e}"
-        f" opacity={grad_opacity_rms:.2e}"
-        f" beta={grad_beta_rms:.2e}\n"
-        f"  grad_max:"
-        f" pos={grad_pos_max:.2e}"
-        f" rot={grad_rotation_max:.2e}"
-        f" scale={grad_scale_max:.2e}"
-        f" albedo={grad_albedo_max:.2e}"
-        f" opacity={grad_opacity_max:.2e}"
-        f" beta={grad_beta_max:.2e}"
-    )
-
-
-def format_gradient_source_balance(
-        loss_gradients: dict[str, np.ndarray],
-        depth_regularizer_gradients: dict[str, np.ndarray],
-        normal_regularizer_gradients: dict[str, np.ndarray],
-        intra_slab_depth_gradients: dict[str, np.ndarray],
-        surface_regularizer_gradients: dict[str, np.ndarray],
-        total_gradients: dict[str, np.ndarray],
-) -> str:
-    keys = [
-        ("position", "pos"),
-        ("rotation", "rot"),
-        ("scale", "scale"),
-        ("albedo", "albedo"),
-        ("opacity", "opacity"),
-        ("beta", "beta"),
-    ]
-
-    lines = [
-        "Gradient source balance:",
-        "  "
-        f"{'param':<8}"
-        f"{'loss_grad':>11}"
-        f"{'reg_grad':>11}"
-        f"{'total_grad':>11}"
-        f"{'loss%':>8}"
-        f"{'depth%':>8}"
-        f"{'normal%':>9}"
-        f"{'intra%':>9}"
-        f"   {'source norms'}",
-    ]
-
-    for key, label in keys:
-        loss_norm = gradient_norm_for_key(loss_gradients, key)
-
-        depth_norm = gradient_norm_for_key(depth_regularizer_gradients, key)
-        normal_norm = gradient_norm_for_key(normal_regularizer_gradients, key)
-        intra_slab_norm = gradient_norm_for_key(intra_slab_depth_gradients, key)
-
-        surface_regularizer_norm = gradient_norm_for_key(
-            surface_regularizer_gradients,
-            key,
-        )
-        total_norm = gradient_norm_for_key(total_gradients, key)
-
-        source_norm_denom = (
-                loss_norm
-                + depth_norm
-                + normal_norm
-                + intra_slab_norm
-        )
-
-        loss_percent = (
-            100.0 * loss_norm / source_norm_denom
-            if source_norm_denom > 1.0e-20
-            else 0.0
-        )
-        depth_percent = (
-            100.0 * depth_norm / source_norm_denom
-            if source_norm_denom > 1.0e-20
-            else 0.0
-        )
-        normal_percent = (
-            100.0 * normal_norm / source_norm_denom
-            if source_norm_denom > 1.0e-20
-            else 0.0
-        )
-        intra_slab_percent = (
-            100.0 * intra_slab_norm / source_norm_denom
-            if source_norm_denom > 1.0e-20
-            else 0.0
-        )
-
-        lines.append(
-            "  "
-            f"{label:<8}"
-            f"{loss_norm:>11.2e}"
-            f"{surface_regularizer_norm:>11.2e}"
-            f"{total_norm:>11.2e}"
-            f"{loss_percent:>7.1f}%"
-            f"{depth_percent:>7.1f}%"
-            f"{normal_percent:>8.1f}%"
-            f"{intra_slab_percent:>8.1f}%"
-            f"   "
-            f"depth={depth_norm:.2e}, "
-            f"normal={normal_norm:.2e}, "
-            f"intra={intra_slab_norm:.2e}, "
-        )
-
-    return "\n".join(lines)
+def cloning_max_scale_for_config(config: OptimizationConfig, scene_extent: float | None) -> float | None:
+    if not config.densification_use_cloning:
+        return None
+    fraction = float(config.densification_clone_scale_fraction)
+    if not math.isfinite(fraction) or fraction <= 0:
+        raise ValueError("densification_clone_scale_fraction must be finite and positive")
+    if scene_extent is None or not math.isfinite(scene_extent) or scene_extent <= 0:
+        raise ValueError("Cloning requires a finite positive training-camera scene extent")
+    boundary = fraction * scene_extent
+    if not math.isfinite(boundary) or boundary <= 0:
+        raise ValueError("Cloning size boundary must be finite and positive")
+    return boundary
 
 
 def compute_normal_consistency_loss_and_adjoints(
@@ -1001,39 +676,6 @@ def compute_normal_consistency_loss_and_adjoints(
     dL_ddep[mask] = -scale * opacity[mask, None] * vis[mask]
 
     return loss, dL_dvis, dL_ddep
-
-
-def summarize_depth_distortion_maps(
-        depth_maps: dict[str, np.ndarray],
-        adjoint_maps: dict[str, np.ndarray],
-) -> str:
-    if not depth_maps:
-        return "depth_distortion: no cameras"
-
-    means = []
-    maxs = []
-    p99s = []
-    adjoint_means = []
-    adjoint_maxs = []
-
-    for camera_name, depth in depth_maps.items():
-        depth_np = np.asarray(depth, dtype=np.float32)
-        adjoint_np = np.asarray(adjoint_maps[camera_name], dtype=np.float32)
-
-        means.append(float(np.mean(depth_np)))
-        maxs.append(float(np.max(depth_np)))
-        p99s.append(float(np.quantile(depth_np, 0.99)))
-        adjoint_means.append(float(np.mean(adjoint_np)))
-        adjoint_maxs.append(float(np.max(np.abs(adjoint_np))))
-
-    return (
-        "depth_distortion_maps: "
-        f"mean(avg)={np.mean(means):.3e}, "
-        f"p99(avg)={np.mean(p99s):.3e}, "
-        f"max(global)={np.max(maxs):.3e}, "
-        f"adj_mean(avg)={np.mean(adjoint_means):.3e}, "
-        f"adj_max(global)={np.max(adjoint_maxs):.3e}"
-    )
 
 
 def refetch_parameters_as_torch(
@@ -1173,8 +815,6 @@ def save_manual_snapshot(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
-        densification_position_radiance_rms: np.ndarray | None = None,
-        densification_position_base_threshold: float | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     renders_dir = renders_output_dir(output_dir)
@@ -1230,8 +870,6 @@ def save_manual_snapshot(
         densification_position_signals=densification_position_signals,
         densification_position_sample_counts=densification_position_sample_counts,
         densification_position_threshold=densification_position_threshold,
-        densification_position_radiance_rms=densification_position_radiance_rms,
-        densification_position_base_threshold=densification_position_base_threshold,
     )
 
     print_status(
@@ -1294,8 +932,6 @@ def save_iteration_point_cloud_snapshot(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
-        densification_position_radiance_rms: np.ndarray | None = None,
-        densification_position_base_threshold: float | None = None,
 ) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -1315,10 +951,7 @@ def save_iteration_point_cloud_snapshot(
         densification_position_signals=densification_position_signals,
         densification_position_sample_counts=densification_position_sample_counts,
         densification_position_threshold=densification_position_threshold,
-        densification_position_radiance_rms=densification_position_radiance_rms,
-        densification_position_base_threshold=densification_position_base_threshold,
     )
-    #print(f"[Iter {iteration:04d}] Saved point cloud snapshot: {ply_path}")
     return ply_path
 
 
@@ -1416,18 +1049,6 @@ def create_torch_parameters_from_initial(
     powers = torch.nn.Parameter(torch.tensor(initial_params["power"], device=device, dtype=torch.float32))
     verify_rotations_inplace(rotations)
     return positions, rotations, scales, albedos, opacities, betas, powers
-
-
-def make_initial_params_reference(initial_params: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    return {
-        "position": initial_params["position"].copy(),
-        "rotation": initial_params["rotation"].copy(),
-        "scale": initial_params["scale"].copy(),
-        "albedo": initial_params["albedo"].copy(),
-        "opacity": initial_params["opacity"].copy(),
-        "beta": initial_params["beta"].copy(),
-        "power": initial_params["power"].copy(),
-    }
 
 
 def compute_initial_losses_and_save_outputs(
@@ -1550,8 +1171,6 @@ def print_loss_summary(
         intra_slab_depth_loss_raw: float,
         intra_slab_depth_loss_weighted: float,
         total_loss: float,
-        surfel_area_loss_raw: float = 0.0,
-        surfel_area_loss_weighted: float = 0.0,
 ) -> None:
     print_status(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
     print_status(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
@@ -1560,8 +1179,6 @@ def print_loss_summary(
     print_status(f"{prefix} normal consistency loss (weighted)     : {normal_loss_weighted:.6e}")
     print_status(f"{prefix} intra-slab depth loss (raw)            : {intra_slab_depth_loss_raw:.6e}")
     print_status(f"{prefix} intra-slab depth loss (weighted)       : {intra_slab_depth_loss_weighted:.6e}")
-    print_status(f"{prefix} surfel area loss (raw)                 : {surfel_area_loss_raw:.6e}")
-    print_status(f"{prefix} surfel area loss (weighted)            : {surfel_area_loss_weighted:.6e}")
     print_status(f"{prefix} total loss                             : {total_loss:.6e}")
 
 
@@ -1665,13 +1282,8 @@ def compute_surface_regularizer_losses_and_adjoints(
 def extract_total_gradient_arrays(
         total_gradients: dict[str, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    grad_position_np = np.asarray(total_gradients["position"], dtype=np.float32, order="C")
-    grad_rotation_np = np.asarray(total_gradients["rotation"], dtype=np.float32, order="C")
-    grad_scales_np = np.asarray(total_gradients["scale"], dtype=np.float32, order="C")
-    grad_albedos_np = np.asarray(total_gradients["albedo"], dtype=np.float32, order="C")
-    grad_opacities_np = np.asarray(total_gradients["opacity"], dtype=np.float32, order="C")
-    grad_betas_np = np.asarray(total_gradients["beta"], dtype=np.float32, order="C")
-    return (grad_position_np, grad_rotation_np, grad_scales_np, grad_albedos_np, grad_opacities_np, grad_betas_np)
+    return tuple(np.asarray(total_gradients[name], dtype=np.float32, order="C")
+                 for name in PARAMETER_NAMES[:-1])
 
 
 def should_accumulate_densification_statistics(
@@ -1691,16 +1303,16 @@ def should_accumulate_densification_statistics(
 def download_densification_statistics(
         renderer: pale.Renderer,
         point_count: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Download a window snapshot; reading does not reset device accumulation."""
     state = renderer.get_densification_stats()
     arrays = []
     for key, components in (("position_sum", 1), ("position_count", 1),
-                            ("direction_sum", 3), ("radiance_sum", 1)):
+                            ("direction_sum", 3)):
         values = np.asarray(state[key], dtype=np.float32)
         if values.size != point_count * components:
             raise RuntimeError(f"Densification {key} has shape {values.shape} for {point_count} points")
-        arrays.append(np.array(values.reshape(point_count, components), copy=True))
+        arrays.append(values.reshape(point_count, components))
     return tuple(arrays)
 
 
@@ -1709,14 +1321,12 @@ def upload_densification_statistics(
         position_sum: np.ndarray,
         position_count: np.ndarray,
         direction_sum: np.ndarray,
-        radiance_sum: np.ndarray,
 ) -> None:
     """Restore canonical row order after a topology change within a window."""
     renderer.upload_densification_stats({
         "position_sum": np.ascontiguousarray(position_sum.reshape(-1), dtype=np.float32),
         "position_count": np.ascontiguousarray(position_count.reshape(-1), dtype=np.float32),
         "direction_sum": np.ascontiguousarray(direction_sum, dtype=np.float32),
-        "radiance_sum": np.ascontiguousarray(radiance_sum.reshape(-1), dtype=np.float32),
     })
 
 
@@ -1728,236 +1338,67 @@ def update_densification_statistics(
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
         densify_position_grad_vector_accum_np: np.ndarray,
-        densify_radiance_rms_accum_np: np.ndarray,
         rotations: torch.Tensor,
-        albedos: torch.Tensor,
         trainable_surfel_mask: torch.Tensor,
         densify_position_grad_per_camera_np: np.ndarray,
         densify_position_grad_per_camera_count_np: np.ndarray,
-        densify_radiance_rms_sum_per_camera_np: np.ndarray | None = None,
         densification_downweight_normal_gradients: bool = False,
-        densification_tangent_only: bool = True,
-        densification_relative_error: bool = False,
+        densification_image_space: bool = False,
+        densify_image_grad_per_camera_np: np.ndarray | None = None,
 ) -> None:
     if not should_accumulate_densification_statistics(
             iteration, densification_interval, densification_cycle_start_iteration,
             densification_stats_skip_iterations):
         return
+    gradients = np.asarray(densify_position_grad_per_camera_np, dtype=np.float32)
+    counts = np.asarray(densify_position_grad_per_camera_count_np, dtype=np.uint32)
+    if gradients.ndim != 3 or gradients.shape[2] != 3:
+        raise RuntimeError("Densification gradients must have shape (N, C, 3)")
+    point_count, camera_count, _ = gradients.shape
+    if counts.shape != (point_count, camera_count):
+        raise RuntimeError("Densification camera counts must have shape (N, C)")
+    if (densify_position_grad_accum_np.shape != (point_count, 1)
+            or densify_position_grad_denom_np.shape != (point_count, 1)
+            or densify_position_grad_vector_accum_np.shape != (point_count, 3)):
+        raise RuntimeError("Densification accumulators must match the current point count")
+    trainable = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
+    if trainable.shape != (point_count,):
+        raise RuntimeError("Densification mask must match the current point count")
 
-    if densify_position_grad_per_camera_np is None:
-        raise RuntimeError(
-            "update_densification_statistics requires renderer gradient stats: "
-            "densify_position_grad_per_camera_np is None. "
-            "Expected adjoint_images['gradient_stats']['clone_signal_per_camera']."
-        )
+    visible = counts > 0
+    denominator = np.maximum(visible.sum(axis=1), 1).astype(np.float32)
+    weights = visible.astype(np.float32)
+    # Image-space scores already have their metric. Only construct/download the
+    # tangent frame for world-space scoring or explicit normal downweighting.
+    if not densification_image_space or densification_downweight_normal_gradients:
+        tu, tv, normal = density.quaternion_to_tangent_frame_torch(rotations.detach())
+        gu = np.einsum("nci,ni->nc", gradients, tu.cpu().numpy())
+        gv = np.einsum("nci,ni->nc", gradients, tv.cpu().numpy())
+        tangent_norm = np.nan_to_num(np.sqrt(gu*gu + gv*gv), nan=0., posinf=0., neginf=0.)
+        if densification_downweight_normal_gradients:
+            gn = np.einsum("nci,ni->nc", gradients, normal.cpu().numpy())
+            total_norm = np.sqrt(tangent_norm*tangent_norm + gn*gn)
+            weights *= np.nan_to_num(tangent_norm / np.maximum(total_norm, 1.e-12),
+                                     nan=0., posinf=0., neginf=0.)
+        score_norm = tangent_norm
+    if densification_image_space:
+        image_gradients = np.asarray(densify_image_grad_per_camera_np, dtype=np.float32)
+        if image_gradients.shape != gradients.shape:
+            raise RuntimeError("Image-space gradient statistics must have shape (N, C, 3)")
+        score_norm = np.nan_to_num(np.linalg.norm(image_gradients[..., :2], axis=2),
+                                  nan=0., posinf=0., neginf=0.)
+    signal = np.nan_to_num((score_norm * weights).sum(axis=1) / denominator,
+                           nan=0., posinf=0., neginf=0.)
+    selected = trainable & (signal > 0)
+    densify_position_grad_accum_np[selected, 0] += signal[selected]
+    densify_position_grad_denom_np[selected, 0] += 1
 
-    if densify_position_grad_per_camera_count_np is None:
-        raise RuntimeError(
-            "update_densification_statistics requires renderer gradient stats: "
-            "densify_position_grad_per_camera_count_np is None. "
-            "Expected adjoint_images['gradient_stats']['clone_signal_record_count_per_camera']."
-        )
-
-    per_camera_grad_np = np.asarray(
-        densify_position_grad_per_camera_np,
-        dtype=np.float32,
-        order="C",
-    )
-
-    per_camera_count_np = np.asarray(
-        densify_position_grad_per_camera_count_np,
-        dtype=np.uint32,
-        order="C",
-    )
-
-    if per_camera_grad_np.ndim != 3 or per_camera_grad_np.shape[2] != 3:
-        raise RuntimeError(
-            "densify_position_grad_per_camera_np must have shape (N, C, 3), "
-            f"got {per_camera_grad_np.shape}"
-        )
-
-    point_count = per_camera_grad_np.shape[0]
-    camera_count = per_camera_grad_np.shape[1]
-
-    if per_camera_count_np.shape != (point_count, camera_count):
-        raise RuntimeError(
-            "densify_position_grad_per_camera_count_np must have shape "
-            f"{(point_count, camera_count)}, got {per_camera_count_np.shape}"
-        )
-
-    if densify_position_grad_accum_np.shape[0] != point_count:
-        raise RuntimeError(
-            "Densification accumulator point-count mismatch: "
-            f"accum={densify_position_grad_accum_np.shape[0]}, renderer_stats={point_count}"
-        )
-
-    if densify_radiance_rms_accum_np.shape != (point_count, 1):
-        raise RuntimeError(
-            "Densification radiance accumulator must have shape "
-            f"{(point_count, 1)}, got {densify_radiance_rms_accum_np.shape}"
-        )
-
-    per_camera_radiance_rms_np: np.ndarray | None = None
-    if densification_relative_error:
-        if densify_radiance_rms_sum_per_camera_np is None:
-            raise RuntimeError(
-                "Relative densification requires renderer gradient stat "
-                "'clone_radiance_rms_sum_per_camera'. Rebuild the pale module."
-            )
-        radiance_sum_np = np.asarray(
-            densify_radiance_rms_sum_per_camera_np,
-            dtype=np.float32,
-            order="C",
-        )
-        if radiance_sum_np.shape != (point_count, camera_count):
-            raise RuntimeError(
-                "densify_radiance_rms_sum_per_camera_np must have shape "
-                f"{(point_count, camera_count)}, got {radiance_sum_np.shape}"
-            )
-        per_camera_radiance_rms_np = np.zeros_like(radiance_sum_np)
-        np.divide(
-            radiance_sum_np,
-            per_camera_count_np,
-            out=per_camera_radiance_rms_np,
-            where=per_camera_count_np > 0,
-        )
-        per_camera_radiance_rms_np = np.nan_to_num(
-            per_camera_radiance_rms_np,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-
-    with torch.no_grad():
-        tangent_u, tangent_v, tangent_w = density.quaternion_to_tangent_frame_torch(rotations.detach())
-        tangent_u_np = tangent_u.detach().cpu().numpy().astype(np.float32)
-        tangent_v_np = tangent_v.detach().cpu().numpy().astype(np.float32)
-        tangent_w_np = tangent_w.detach().cpu().numpy().astype(np.float32)
-        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
-
-    if tangent_u_np.shape != (point_count, 3):
-        raise RuntimeError(f"tangent_u shape mismatch: expected {(point_count, 3)}, got {tangent_u_np.shape}")
-    if tangent_v_np.shape != (point_count, 3):
-        raise RuntimeError(f"tangent_v shape mismatch: expected {(point_count, 3)}, got {tangent_v_np.shape}")
-    if tangent_w_np.shape != (point_count, 3):
-        raise RuntimeError(f"tangent_w shape mismatch: expected {(point_count, 3)}, got {tangent_w_np.shape}")
-    if trainable_np.shape[0] != point_count:
-        raise RuntimeError(f"trainable mask length mismatch: expected {point_count}, got {trainable_np.shape[0]}")
-
-    tangent_u_norm_np = np.linalg.norm(tangent_u_np, axis=1, keepdims=True)
-    tangent_v_norm_np = np.linalg.norm(tangent_v_np, axis=1, keepdims=True)
-    tangent_w_norm_np = np.linalg.norm(tangent_w_np, axis=1, keepdims=True)
-
-    tangent_u_unit_np = tangent_u_np / np.maximum(tangent_u_norm_np, 1.0e-8)
-    tangent_v_unit_np = tangent_v_np / np.maximum(tangent_v_norm_np, 1.0e-8)
-    tangent_w_unit_np = tangent_w_np / np.maximum(tangent_w_norm_np, 1.0e-8)
-
-    dot_u_np = np.sum(per_camera_grad_np * tangent_u_unit_np[:, None, :], axis=2, keepdims=True)
-    dot_v_np = np.sum(per_camera_grad_np * tangent_v_unit_np[:, None, :], axis=2, keepdims=True)
-    dot_w_np = np.sum(per_camera_grad_np * tangent_w_unit_np[:, None, :], axis=2)
-
-    visible_camera_mask_np = per_camera_count_np > 0
-    active_camera_count_np = visible_camera_mask_np.sum(axis=1, keepdims=True).astype(np.float32)
-
-    per_camera_tangent_grad_norm_np = np.sqrt(
-        np.square(dot_u_np[:, :, 0]) + np.square(dot_v_np[:, :, 0])
-    ).astype(np.float32)
-    per_camera_tangent_grad_norm_np = np.nan_to_num(
-        per_camera_tangent_grad_norm_np,
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    visible_mask_float_np = visible_camera_mask_np.astype(np.float32)
-    if densification_downweight_normal_gradients:
-        per_camera_normal_grad_abs_np = np.abs(dot_w_np).astype(np.float32)
-        per_camera_local_grad_norm_np = np.sqrt(
-            np.square(per_camera_tangent_grad_norm_np)
-            + np.square(per_camera_normal_grad_abs_np)
-        ).astype(np.float32)
-        normal_direction_downweight_np = (
-            per_camera_tangent_grad_norm_np
-            / np.maximum(per_camera_local_grad_norm_np, 1.0e-12)
-        ).astype(np.float32)
-        normal_direction_downweight_np = np.nan_to_num(
-            normal_direction_downweight_np,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        visible_downweight_np = visible_mask_float_np * normal_direction_downweight_np
-    else:
-        visible_downweight_np = visible_mask_float_np
-
-    safe_active_camera_count_np = np.maximum(active_camera_count_np, 1.0)
-
-    # Scalar score:
-    #     mean_visible(||project_tangent(g_camera)|| * optional_tangent_fraction(g_camera))
-    # The optional tangent fraction suppresses clone pressure from mostly-normal motion.
-    densify_position_signal_np = (
-                                         per_camera_tangent_grad_norm_np * visible_downweight_np
-                                 ).sum(axis=1, keepdims=True) / safe_active_camera_count_np
-
-    # Keep the signed direction in world space across optimizer iterations.
-    # Project it onto the surfel's current tangent frame when densifying.
-    density_grad_position_vector_np = (
-                                              per_camera_grad_np * visible_downweight_np[:, :, None]
-                                      ).sum(axis=1) / safe_active_camera_count_np
-
-    density_grad_position_vector_np[active_camera_count_np[:, 0] == 0.0] = 0.0
-    densify_position_signal_np[active_camera_count_np[:, 0] == 0.0] = 0.0
-
-    densify_position_signal_np = np.nan_to_num(
-        densify_position_signal_np,
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    density_grad_position_vector_np = np.nan_to_num(
-        density_grad_position_vector_np,
-        nan=0.0,
-        posinf=0.0,
-        neginf=0.0,
-    )
-
-    update_density_scalar_mask_np = (
-            trainable_np
-            & np.isfinite(densify_position_signal_np[:, 0])
-            & (densify_position_signal_np[:, 0] > 0.0)
-    )
-
-    densify_position_grad_accum_np[update_density_scalar_mask_np, 0] += (
-        densify_position_signal_np[update_density_scalar_mask_np, 0]
-    )
-    densify_position_grad_denom_np[update_density_scalar_mask_np, 0] += 1.0
-
-    if per_camera_radiance_rms_np is not None:
-        mean_visible_radiance_rms_np = (
-            per_camera_radiance_rms_np * visible_mask_float_np
-        ).sum(axis=1) / safe_active_camera_count_np[:, 0]
-        mean_visible_radiance_rms_np = np.nan_to_num(
-            mean_visible_radiance_rms_np,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        densify_radiance_rms_accum_np[update_density_scalar_mask_np, 0] += (
-            mean_visible_radiance_rms_np[update_density_scalar_mask_np]
-        )
-
-    vector_norm_np = np.linalg.norm(density_grad_position_vector_np, axis=1)
-
-    update_density_vector_mask_np = (
-            trainable_np
-            & np.isfinite(vector_norm_np)
-            & (vector_norm_np > 0.0)
-    )
-
-    densify_position_grad_vector_accum_np[update_density_vector_mask_np] += (
-        density_grad_position_vector_np[update_density_vector_mask_np]
-    )
+    # Retain signed world-space sums for diagnostics, independent of split placement.
+    direction = np.nan_to_num(np.einsum("nci,nc->ni", gradients, weights) / denominator[:, None],
+                              nan=0., posinf=0., neginf=0.)
+    direction_norm = np.linalg.norm(direction, axis=1)
+    selected = trainable & np.isfinite(direction_norm) & (direction_norm > 0)
+    densify_position_grad_vector_accum_np[selected] += direction[selected]
 
 
 def position_densification_snapshot_statistics(
@@ -1965,33 +1406,21 @@ def position_densification_snapshot_statistics(
         densify_position_grad_denom_np: np.ndarray,
         trainable_surfel_mask: torch.Tensor,
         densification_grad_abs_min: float,
-        densify_radiance_rms_accum_np: np.ndarray | None = None,
-        densification_radiance_floor: float = 1.0e-3,
-        densification_radiance_bias_strength: float = 0.0,
-        densification_radiance_bias_min_weight: float = 0.8,
-        densification_radiance_bias_max_weight: float = 1.5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-    """Return signals, sample counts, and brightness-adjusted absolute thresholds."""
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return window-averaged signals, sample counts, and absolute thresholds."""
     accum = np.asarray(densify_position_grad_accum_np, dtype=np.float32).reshape(-1)
     denom = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
-    trainable = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
-    if accum.shape != denom.shape or accum.shape != trainable.shape:
+    if accum.shape != denom.shape or accum.size != trainable_surfel_mask.numel():
         raise RuntimeError(
             "Position densification snapshot arrays must have matching point counts: "
-            f"accum={accum.shape}, denom={denom.shape}, trainable={trainable.shape}"
+            f"accum={accum.shape}, denom={denom.shape}, trainable={trainable_surfel_mask.numel()}"
         )
 
     valid = np.isfinite(denom) & (denom > 0.0)
     signal = np.zeros(accum.shape, dtype=np.float32)
     signal[valid] = accum[valid] / denom[valid]
     signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
-    finite_signal = np.isfinite(signal)
-    absolute_minimum = max(
-        float(densification_grad_abs_min),
-        float(np.finfo(np.float32).tiny),
-    )
-    observed_population = valid & finite_signal & trainable
-    threshold = absolute_minimum
+    threshold = max(float(densification_grad_abs_min), float(np.finfo(np.float32).tiny))
 
     sample_counts = np.clip(
         np.rint(np.nan_to_num(denom, nan=0.0, posinf=0.0, neginf=0.0)),
@@ -2001,67 +1430,7 @@ def position_densification_snapshot_statistics(
     # Compare and persist float32 thresholds so a PLY round-trip cannot move a
     # primitive across a selection boundary through scalar rounding.
     threshold = float(np.float32(threshold))
-    effective_thresholds = np.full(signal.shape, threshold, dtype=np.float32)
-
-    bias_strength = float(densification_radiance_bias_strength)
-    if densify_radiance_rms_accum_np is not None and bias_strength > 0.0:
-        radiance_accum = np.asarray(
-            densify_radiance_rms_accum_np, dtype=np.float32
-        ).reshape(-1)
-        if radiance_accum.shape != signal.shape:
-            raise RuntimeError(
-                "Densification radiance accumulator length mismatch: "
-                f"radiance={radiance_accum.shape}, signal={signal.shape}"
-            )
-        radiance_rms = np.zeros(signal.shape, dtype=np.float32)
-        radiance_rms[valid] = radiance_accum[valid] / denom[valid]
-        observed_radiance = observed_population & np.isfinite(radiance_rms) & (radiance_rms > 0.0)
-        radiance_rms = np.nan_to_num(
-            radiance_rms, nan=0.0, posinf=0.0, neginf=0.0
-        )
-        radiance_reference = max(
-            float(densification_radiance_floor),
-            float(np.finfo(np.float32).tiny),
-        )
-        if bias_strength > 0.0 and np.any(observed_radiance):
-            # Scale the absolute threshold by bounded relative brightness.
-            # Missing/invalid radiance stays neutral and cannot set the median.
-            brightness = np.maximum(
-                radiance_rms[observed_radiance].astype(np.float64), radiance_reference
-            )
-            median_brightness = float(np.median(brightness))
-            log_weights = bias_strength * (np.log(median_brightness) - np.log(brightness))
-            weights = np.exp(np.clip(
-                log_weights,
-                np.log(float(densification_radiance_bias_min_weight)),
-                np.log(float(densification_radiance_bias_max_weight)),
-            ))
-            effective_thresholds[observed_radiance] = (
-                effective_thresholds[observed_radiance] / weights
-            ).astype(np.float32)
-
-    return signal, sample_counts, effective_thresholds, threshold
-
-
-def position_densification_radiance_rms_snapshot(
-        densify_radiance_rms_accum_np: np.ndarray,
-        densify_position_grad_denom_np: np.ndarray,
-) -> np.ndarray:
-    """Return the per-surfel RMS radiance used by the brightness-bias rule."""
-    radiance_accum = np.asarray(densify_radiance_rms_accum_np, dtype=np.float32).reshape(-1)
-    denominator = np.asarray(densify_position_grad_denom_np, dtype=np.float32).reshape(-1)
-    if radiance_accum.shape != denominator.shape:
-        raise RuntimeError(
-            "Densification radiance snapshot arrays must have matching point counts: "
-            f"radiance={radiance_accum.shape}, denominator={denominator.shape}"
-        )
-    result = np.zeros(radiance_accum.shape, dtype=np.float32)
-    valid = np.isfinite(denominator) & (denominator > 0.0)
-    result[valid] = radiance_accum[valid] / denominator[valid]
-    return np.maximum(
-        np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0),
-        0.0,
-    ).astype(np.float32, copy=False)
+    return signal, sample_counts, threshold
 
 
 def maybe_make_densification_result(
@@ -2077,261 +1446,71 @@ def maybe_make_densification_result(
         trainable_surfel_mask: torch.Tensor,
         densify_position_grad_accum_np: np.ndarray,
         densify_position_grad_denom_np: np.ndarray,
-        densify_position_grad_vector_accum_np: np.ndarray,
-        densify_radiance_rms_accum_np: np.ndarray,
         densify_after: int,
         densification_interval: int,
         densification_verbose: bool,
         densification_grad_abs_min: float,
         force_densification: bool = False,
-        renderer: pale.Renderer | None = None,
-        overlap_camera_names: list[str] | None = None,
-) -> dict[str, np.ndarray] | None:
-    if densification_interval <= 0:
+        densification_scene_extent: float | None = None,
+        scheduled_prune_indices: list[int] | None = None,
+) -> dict | None:
+    if densification_interval <= 0 or iteration < densify_after:
+        return None
+    if not force_densification and (
+            iteration <= densification_interval or (iteration - 1) % densification_interval != 0):
         return None
 
-    if iteration < densify_after:
-        return None
-
-    if (
-            not force_densification
-            and (
-                iteration <= densification_interval
-                or (iteration - 1) % densification_interval != 0
+    clone_max_scale = cloning_max_scale_for_config(config, densification_scene_extent)
+    prune_after = config.prune_after if config.prune_after >= 0 else config.prune_interval
+    if scheduled_prune_indices is not None:
+        # Use the complete decision (area, opacity, and transport) made on the
+        # original population. Do not mutate the mask used for optimization.
+        trainable_surfel_mask = trainable_surfel_mask.detach().clone()
+        trainable_surfel_mask[torch.as_tensor(
+            scheduled_prune_indices, device=trainable_surfel_mask.device, dtype=torch.long,
+        )] = False
+    elif config.prune_interval > 0 and iteration >= prune_after and iteration % config.prune_interval == 0:
+        # Do not recreate parents that this same topology update will prune.
+        trainable_surfel_mask = trainable_surfel_mask.detach().clone()
+        if clone_max_scale is not None:
+            area_indices = density.compute_prune_indices_by_degenerate_area(
+                scales, min_area=config.min_surfel_area, trainable_mask=trainable_surfel_mask,
             )
-    ):
-        return None
-
-    max_mean_members = float(config.densification_max_mean_slab_members)
-    if not np.isfinite(max_mean_members) or max_mean_members < 0:
-        raise ValueError("densification_max_mean_slab_members must be finite and non-negative")
-
-    # Do not append children of low-opacity parents being pruned in this iteration.
-    opacity_prune_interval = int(config.prune_interval)
-    opacity_prune_after = int(config.prune_after) if config.prune_after >= 0 else opacity_prune_interval
-    if (
-            config.min_surfel_opacity > 0.0
-            and opacity_prune_interval > 0
-            and iteration >= opacity_prune_after
-            and iteration % opacity_prune_interval == 0
-    ):
-        opacity_prune_mask = compute_opacity_prune_mask(opacities, trainable_surfel_mask, config.min_surfel_opacity)
-        trainable_surfel_mask = trainable_surfel_mask.detach().reshape(-1).to(dtype=torch.bool) & ~opacity_prune_mask.to(device=trainable_surfel_mask.device)
-
-    with torch.no_grad():
-        (
-            avg_density_grad_norm_np,
-            _position_sample_counts_np,
-            grad_thresholds_np,
-            grad_threshold,
-        ) = position_densification_snapshot_statistics(
-            densify_position_grad_accum_np=densify_position_grad_accum_np,
-            densify_position_grad_denom_np=densify_position_grad_denom_np,
-            trainable_surfel_mask=trainable_surfel_mask,
-            densification_grad_abs_min=densification_grad_abs_min,
-            densify_radiance_rms_accum_np=densify_radiance_rms_accum_np,
-            densification_radiance_floor=float(config.densification_radiance_floor),
-            densification_radiance_bias_strength=float(config.densification_radiance_bias_strength),
-            densification_radiance_bias_min_weight=float(config.densification_radiance_bias_min_weight),
-            densification_radiance_bias_max_weight=float(config.densification_radiance_bias_max_weight),
-        )
-        valid_denom_np = densify_position_grad_denom_np.reshape(-1) > 0.0
-        avg_density_grad_vector_np = np.zeros(tuple(positions.shape), dtype=np.float32)
-
-        avg_density_grad_vector_np[valid_denom_np] = (
-                densify_position_grad_vector_accum_np[valid_denom_np]
-                / densify_position_grad_denom_np.reshape(-1, 1)[valid_denom_np]
-        )
-        avg_density_grad_vector_np = np.nan_to_num(
-            avg_density_grad_vector_np,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
+            trainable_surfel_mask[torch.as_tensor(area_indices, device=positions.device)] = False
+        trainable_surfel_mask &= ~compute_opacity_prune_mask(
+            opacities, trainable_surfel_mask, config.min_surfel_opacity,
         )
 
-        grad_pos_norm_np = np.nan_to_num(
-            avg_density_grad_norm_np,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
+    signals, counts, threshold = position_densification_snapshot_statistics(
+        densify_position_grad_accum_np, densify_position_grad_denom_np,
+        trainable_surfel_mask, densification_grad_abs_min,
+    )
+    candidates = (counts > 0) & (signals >= threshold)
+    candidate_count = np.count_nonzero(candidates & trainable_surfel_mask.detach().cpu().numpy().reshape(-1))
+    result = None
+    if candidate_count:
+        result = density.make_under_reconstruction_clones(
+            positions=positions, rotations=rotations, scales=scales, albedos=albedos,
+            opacities=opacities, betas=betas, powers=powers,
+            selection_score_np=signals / threshold, trainable_surfel_mask=trainable_surfel_mask,
+            grad_threshold=1.0, max_clone_fraction=config.densification_max_new_fraction,
+            clone_scale_factor=config.densification_split_scale_factor,
+            min_clone_scale=config.densification_scale_min, clone_max_scale=clone_max_scale,
         )
-
-        trainable_np = trainable_surfel_mask.detach().cpu().numpy().astype(bool).reshape(-1)
-        finite_grad = np.isfinite(grad_pos_norm_np)
-        position_abs_candidate_mask_np = (
-                valid_denom_np
-                & finite_grad
-                & trainable_np
-                & (grad_pos_norm_np >= densification_grad_abs_min)
+    if densification_verbose:
+        # Percentiles and device-to-host counts are diagnostics, not selection work.
+        quantiles = np.quantile(signals, [0, .5, .9, .95, .98, 1]) if signals.size else np.zeros(6)
+        summary = ", ".join(f"signal_{label}={value:.3e}" for label, value in
+                            zip(("min", "p50", "p90", "p95", "p98", "max"), quantiles))
+        clones = result["clone_count"] if result else 0
+        splits = result["split_count"] if result else 0
+        print_status(
+            f"[Iter {iteration:04d}] Densification check | pts={len(positions)}, "
+            f"position_candidates={candidate_count}, added={clones + splits}, "
+            f"clone={clones}, split={splits}, grad_thr={threshold:.3e}, "
+            f"{summary}, split_sampling=beta_footprint"
         )
-
-
-        densification_result = None
-        densify_reason = "not_attempted"
-        n_new_from_densification = 0
-
-        finite_count = int(np.count_nonzero(finite_grad))
-        trainable_count = int(np.count_nonzero(trainable_np))
-        above_abs_count = int(np.count_nonzero(grad_pos_norm_np >= densification_grad_abs_min))
-        position_abs_candidate_count = int(np.count_nonzero(position_abs_candidate_mask_np))
-        valid_denom_count = int(np.count_nonzero(valid_denom_np))
-
-        split_offset_scale = float(config.densification_split_offset_scale)
-
-        finite_signal_np = (
-            grad_pos_norm_np[np.isfinite(grad_pos_norm_np)]
-            if grad_pos_norm_np.size > 0
-            else np.zeros((0,), dtype=np.float32)
-        )
-
-        if finite_signal_np.size > 0:
-            signal_min = float(np.min(finite_signal_np))
-            signal_p50 = float(np.quantile(finite_signal_np, 0.50))
-            signal_p90 = float(np.quantile(finite_signal_np, 0.90))
-            signal_p95 = float(np.quantile(finite_signal_np, 0.95))
-            signal_p98 = float(np.quantile(finite_signal_np, 0.98))
-            signal_max = float(np.max(finite_signal_np))
-        else:
-            signal_min = signal_p50 = signal_p90 = signal_p95 = signal_p98 = signal_max = 0.0
-
-        position_candidate_mask_np = (
-                valid_denom_np
-                & finite_grad
-                & trainable_np
-                & (grad_pos_norm_np >= grad_thresholds_np)
-        )
-        combined_candidate_mask_np = position_candidate_mask_np
-
-        position_candidate_count = int(np.count_nonzero(position_candidate_mask_np))
-        candidate_count = int(np.count_nonzero(combined_candidate_mask_np))
-
-        overlap_blocked_count = 0
-        overlap_unknown_count = 0
-        overlap_compute_ms = 0.0
-        selection_mask = trainable_surfel_mask
-        if candidate_count > 0 and max_mean_members > 0:
-            if renderer is None:
-                raise ValueError("Overlap-gated densification requires the synchronized renderer")
-            overlap = renderer.get_surface_overlap_stats(overlap_camera_names or [])
-            mean_members = np.asarray(overlap["mean_members"], dtype=np.float32)
-            if mean_members.shape != (int(positions.shape[0]),):
-                raise ValueError("Overlap scores must match canonical optimizer point rows")
-            # No usable camera sample means unknown coverage, not an empty slab.
-            # Leave these parents eligible instead of freezing unseen geometry.
-            observed = np.isfinite(mean_members)
-            blocked = observed & (mean_members >= max_mean_members)
-            overlap_blocked_count = int(np.count_nonzero(combined_candidate_mask_np & blocked))
-            overlap_unknown_count = int(np.count_nonzero(combined_candidate_mask_np & ~observed))
-            # Reject crowded parents before the top-k budget is applied.
-            selection_mask = trainable_surfel_mask & torch.as_tensor(
-                ~blocked, device=trainable_surfel_mask.device, dtype=torch.bool)
-            overlap_compute_ms = float(overlap["elapsed_ms"])
-
-        if candidate_count == 0:
-            if not np.any(valid_denom_np):
-                densify_reason = "no_density_samples"
-            else:
-                densify_reason = "no_position_candidates"
-        else:
-
-            position_selection_score_np = np.divide(
-                grad_pos_norm_np,
-                np.maximum(grad_thresholds_np, np.finfo(np.float32).tiny),
-            ).astype(np.float32, copy=False)
-            densification_result = density.make_under_reconstruction_clones(
-                positions=positions,
-                rotations=rotations,
-                scales=scales,
-                albedos=albedos,
-                opacities=opacities,
-                betas=betas,
-                powers=powers,
-                grad_position_np=avg_density_grad_vector_np,
-                selection_score_np=position_selection_score_np,
-                trainable_surfel_mask=selection_mask,
-                grad_threshold=1.0,
-                max_clone_fraction=float(config.densification_max_new_fraction),
-                clone_offset_scale=split_offset_scale,
-                clone_scale_factor=float(config.densification_split_scale_factor),
-                min_clone_scale=float(config.densification_scale_min),
-                split_tangent_only=bool(config.densification_tangent_only),
-                tangent_project_position_grad=True,
-            )
-
-            if densification_result is not None:
-                new_block = densification_result.get("new", None)
-                if new_block is not None:
-                    n_new_from_densification = int(new_block["position"].shape[0])
-                    clone_count = int(densification_result.get("clone_count", 0))
-                    split_count = int(densification_result.get("split_count", 0))
-                    position_split_count = int(
-                        densification_result.get("position_split_count", 0)
-                    )
-                    densify_reason = (
-                        f"densified_clone={clone_count}_split={split_count}"
-                        f"_position={position_split_count}"
-                    )
-                else:
-                    densify_reason = "densification_result_without_new_block"
-            else:
-                densify_reason = ("all_candidates_blocked_by_overlap"
-                                  if overlap_blocked_count == candidate_count
-                                  else "selected_candidates_but_densification_rejected_all")
-
-        if densification_verbose:
-            overlap_log = "overlap_gate=disabled, "
-            if max_mean_members > 0:
-                blocked_percent = 100.0 * overlap_blocked_count / candidate_count if candidate_count else 0.0
-                # These are signal candidates before size checks and the new-point
-                # budget; after_overlap is not necessarily the number added.
-                overlap_log = (
-                    f"overlap_limit={max_mean_members:g}, "
-                    f"overlap_blocked={overlap_blocked_count}/{candidate_count} ({blocked_percent:.1f}%), "
-                    f"after_overlap={candidate_count - overlap_blocked_count}, "
-                    f"overlap_unknown_allowed={overlap_unknown_count}, "
-                    f"overlap_ms={overlap_compute_ms:.1f}, "
-                )
-            print_status(
-                f"[Iter {iteration:04d}] Densification check | "
-                f"reason={densify_reason}, "
-                f"added={n_new_from_densification}, "
-                f"pts={positions.shape[0]}, "
-                f"valid_denom={valid_denom_count}, "
-                f"finite={finite_count}, "
-                f"trainable={trainable_count}, "
-                f"above_abs={above_abs_count}, "
-                f"position_candidates={position_candidate_count}, "
-                f"combined_candidates={candidate_count}, "
-                f"{overlap_log}"
-                f"signal_min={signal_min:.3e}, "
-                f"signal_p50={signal_p50:.3e}, "
-                f"signal_p90={signal_p90:.3e}, "
-                f"signal_p95={signal_p95:.3e}, "
-                f"signal_p98={signal_p98:.3e}, "
-                f"signal_max={signal_max:.3e}, "
-                f"grad_thr={grad_threshold:.3e}, "
-                f"abs_thr={densification_grad_abs_min:.3e}, "
-                f"split_offset={split_offset_scale:.3e}"
-            )
-        elif n_new_from_densification > 0:
-            if config.densification_verbose:
-                clone_count = int(densification_result.get("clone_count", 0)) if densification_result is not None else 0
-                split_count = int(densification_result.get("split_count", 0)) if densification_result is not None else 0
-                position_split_count = int(
-                    densification_result.get("position_split_count", 0)
-                ) if densification_result is not None else 0
-                print_status(
-                    f"[Iter {iteration:04d}] Split densification: "
-                    f"adding {n_new_from_densification} surfels "
-                    f"(clone={clone_count}, split={split_count}, "
-                    f"position={position_split_count}) | "
-                    f"grad_thr={grad_threshold:.3e}, "
-                    f"split_offset={split_offset_scale:.3e}, "
-                    f"abs_thr={densification_grad_abs_min:.3e}, "
-                    f"pts={positions.shape[0]}"
-                )
-
-        return densification_result
+    return result
 
 
 @torch.no_grad()
@@ -2488,7 +1667,3 @@ def save_iteration_outputs(
                     abs_quantile=0.999,
                     flip_y=False,
                 )
-
-
-def write_metrics_header(csv_writer: csv.writer) -> None:
-    csv_writer.writerow(METRICS_COLUMNS)

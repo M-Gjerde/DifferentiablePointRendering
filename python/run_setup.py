@@ -114,9 +114,13 @@ def print_run_configuration(
         ("densification_relative_error", config.densification_relative_error),
         ("densification_radiance_floor", config.densification_radiance_floor),
         ("densification_full_position", config.densification_full_position),
+        ("densification_image_space", config.densification_image_space),
+        ("densification_score_coordinates", "normalized_image" if config.densification_image_space else "world"),
         ("densify_grad_abs_min", config.densification_grad_abs_min),
         ("densify_grad_abs_min_final", config.densification_grad_abs_min_final),
         ("densification_scale_min", config.densification_scale_min),
+        ("densification_use_cloning", config.densification_use_cloning),
+        ("densification_clone_scale_fraction", config.densification_clone_scale_fraction),
         (
             "densify_grad_abs_min_decay",
             f"{config.densification_grad_abs_min_decay_start_iteration} -> "

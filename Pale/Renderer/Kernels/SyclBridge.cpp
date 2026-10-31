@@ -195,8 +195,8 @@ namespace Pale {
             queue.fill(gradients.gradPositionPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
             queue.fill(gradients.gradPositionRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
             queue.fill(gradients.cloneSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
+            queue.fill(gradients.cloneImageSignalPerPrimitivePerCamera, float3{0.0f, 0.0f, 0.0f}, primitiveCameraCount);
             queue.fill(gradients.cloneSignalRecordCountPerPrimitivePerCamera, 0u, primitiveCameraCount);
-            queue.fill(gradients.cloneRadianceRmsSumPerPrimitivePerCamera, 0.0f, primitiveCameraCount);
         }
     }
 

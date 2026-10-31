@@ -28,11 +28,6 @@ def quaternion_to_tangent_frame_torch(q: torch.Tensor) -> tuple[torch.Tensor, to
         1.0 - 2.0 * (qx * qx + qz * qz),
         2.0 * (qy * qz + qx * qw),
     ], dim=1)
-    tw = torch.cat([
-        2.0 * (qx * qz + qy * qw),
-        2.0 * (qy * qz - qx * qw),
-        1.0 - 2.0 * (qx * qx + qy * qy),
-    ], dim=1)
     tu = torch.nn.functional.normalize(tu, dim=1, eps=1.0e-8)
     tv = tv - torch.sum(tv * tu, dim=1, keepdim=True) * tu
     tv = torch.nn.functional.normalize(tv, dim=1, eps=1.0e-8)
@@ -88,6 +83,24 @@ def apply_local_rotation_update_to_quaternions_inplace(
         }
 
 
+def _sample_beta_footprint_positions(positions, rotations, scales, betas, count):
+    """Draw independent positions from each parent's normalized tangent-plane kernel."""
+    tu, tv, _ = quaternion_to_tangent_frame_torch(rotations)
+    # K(u,v) = (1-u^2-v^2)^b, b = 4*exp(beta), on the unit disk.
+    # Including the polar area Jacobian gives r^2 ~ Beta(1, b+1).
+    beta_exponent = 4.0 * torch.exp(betas.reshape(-1))
+    uniforms = torch.rand((positions.shape[0], count, 2), device=positions.device, dtype=positions.dtype)
+    # Stable inverse CDF: 1 - (1-U)^(1/(b+1)), including sharp kernels.
+    radius = torch.sqrt(-torch.expm1(
+        torch.log1p(-uniforms[:, :, 0]) / (beta_exponent[:, None] + 1.0)
+    ))
+    angle = (2.0 * math.pi) * uniforms[:, :, 1]
+    offset_u = scales[:, None, 0] * radius * torch.cos(angle)
+    offset_v = scales[:, None, 1] * radius * torch.sin(angle)
+    offsets = offset_u[:, :, None] * tu[:, None, :] + offset_v[:, :, None] * tv[:, None, :]
+    return positions[:, None, :] + offsets
+
+
 def make_under_reconstruction_clones(
         positions,
         rotations,
@@ -96,55 +109,44 @@ def make_under_reconstruction_clones(
         opacities,
         betas,
         powers,
-        grad_position_np,
         trainable_surfel_mask,
         grad_threshold,
         max_clone_fraction=1.00,
-        clone_offset_scale=0.3,
         clone_scale_factor=math.sqrt(2.0),
         min_clone_scale=5.0e-2,
-        min_split_coherence=0.05,
-        normal_perturbation_min=0.0,
-        normal_perturbation_max=0.0,
         tangent_project_position_grad=False,
-        normal_shift_on_clone=False,
-        normal_shift_scale=0.0,
-        max_normal_shift_fraction=0.50,
         selection_score_np=None,
-        split_tangent_only=True,
+        clone_max_scale=None,
+        grad_position_np=None,
 ):
-    """Split using the current frame, even when the signal spans older frames.
+    """Optionally clone small surfels within their footprint and split larger ones.
 
     The selection score is a window reduction made before each optimizer step.
-    Its signed direction remains in world space. Here, after the latest step,
-    both child displacements are projected into the current parent's plane.
+    Children independently sample the current parent's beta footprint in
+    its tangent plane; the gradient only selects parents, not child placement.
+    With clone_max_scale=None, retain the existing split-only policy. Otherwise,
+    max(su,sv) <= clone_max_scale selects clones, retaining parent and child scales
+    and leaving the parent unchanged.
     """
+    if clone_max_scale is not None and (
+        not math.isfinite(float(clone_max_scale)) or float(clone_max_scale) <= 0
+    ):
+        raise ValueError("clone_max_scale must be finite and positive, or None")
     with torch.no_grad():
         device = positions.device
         point_count = int(positions.shape[0])
 
-        grad_pos = torch.as_tensor(grad_position_np, device=device, dtype=torch.float32)
-        if tuple(grad_pos.shape) != tuple(positions.shape):
-            raise ValueError(
-                "grad_position_np must match positions shape, "
-                f"got {tuple(grad_pos.shape)} and {tuple(positions.shape)}"
-            )
-
-        tu_all, tv_all, _ = quaternion_to_tangent_frame_torch(rotations.detach())
-        tu_all = torch.nn.functional.normalize(tu_all, dim=1, eps=1.0e-12)
-        tv_all = tv_all - torch.sum(tv_all * tu_all, dim=1, keepdim=True) * tu_all
-        tv_all = torch.nn.functional.normalize(tv_all, dim=1, eps=1.0e-12)
-
-        tangent_grad = (
-                torch.sum(grad_pos * tu_all, dim=1, keepdim=True) * tu_all
-                + torch.sum(grad_pos * tv_all, dim=1, keepdim=True) * tv_all
-        )
-
         if selection_score_np is None:
-            position_signal = torch.linalg.norm(
-                tangent_grad if tangent_project_position_grad else grad_pos,
-                dim=1,
-            )
+            grad_pos = torch.as_tensor(grad_position_np, device=device, dtype=positions.dtype)
+            if grad_pos.shape != positions.shape:
+                raise ValueError("grad_position_np must match positions shape")
+            if tangent_project_position_grad:
+                tu, tv, _ = quaternion_to_tangent_frame_torch(rotations.detach())
+                position_signal = torch.sqrt(
+                    torch.sum(grad_pos * tu, dim=1).square()
+                    + torch.sum(grad_pos * tv, dim=1).square())
+            else:
+                position_signal = torch.linalg.norm(grad_pos, dim=1)
         else:
             position_signal = torch.as_tensor(
                 selection_score_np,
@@ -175,6 +177,13 @@ def make_under_reconstruction_clones(
         minimum_splittable_scale = float(min_clone_scale) * safe_clone_scale_factor * (1.0 + 1.0e-4)
 
         min_source_scale = torch.min(scales, dim=1).values
+        clone_mask = (
+            torch.max(scales, dim=1).values <= float(clone_max_scale)
+            if clone_max_scale is not None else torch.zeros(point_count, device=device, dtype=torch.bool)
+        )
+        size_eligible = (clone_mask & (min_source_scale > 0)) | (
+            ~clone_mask & (min_source_scale >= minimum_splittable_scale)
+        )
 
         selected = (
                 torch.isfinite(selection_score)
@@ -183,7 +192,8 @@ def make_under_reconstruction_clones(
                 & torch.all(torch.isfinite(positions), dim=1)
                 & torch.all(torch.isfinite(rotations), dim=1)
                 & torch.all(torch.isfinite(scales), dim=1)
-                & (min_source_scale >= minimum_splittable_scale)
+                & torch.isfinite(betas.detach().reshape(-1))
+                & size_eligible
         )
 
         selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
@@ -202,123 +212,56 @@ def make_under_reconstruction_clones(
             selected_idx = selected_idx[keep]
 
 
-        split_idx = selected_idx
+        clone_idx = selected_idx[clone_mask[selected_idx]]
+        split_idx = selected_idx[~clone_mask[selected_idx]]
 
-        new_positions = []
-        new_rotations = []
-        new_scales = []
-        new_albedos = []
-        new_opacities = []
-        new_betas = []
-        new_powers = []
-        source_index_chunks = []
-        grad_norm_chunks = []
+        # Clones precede splits so provenance labels retain their existing order.
+        source_index_t = torch.cat((clone_idx, split_idx))
+        parameters = dict(position=positions, rotation=rotations, scale=scales,
+                          albedo=albedos, opacity=opacities, beta=betas, power=powers)
+        children = {key: value[source_index_t].detach().clone()
+                    for key, value in parameters.items()}
         update_source = None
 
         if split_idx.numel() > 0:
-            p = positions[split_idx].detach().clone()
-            sc = scales[split_idx].detach().clone()
-            tu = tu_all[split_idx].detach().clone()
-            tv = tv_all[split_idx].detach().clone()
-
-            tu_n = torch.nn.functional.normalize(tu, dim=1, eps=1.0e-12)
-            tv_n = tv - torch.sum(tv * tu_n, dim=1, keepdim=True) * tu_n
-            tv_n = torch.nn.functional.normalize(tv_n, dim=1, eps=1.0e-12)
-
-            # Project the accumulated world-space gradient onto today's tangent
-            # frame. Both tu and tv contribute to the split direction.
-            position_descent = -tangent_grad[split_idx]
-            position_descent_norm = torch.linalg.norm(position_descent, dim=1, keepdim=True)
-            split_direction = torch.where(
-                position_descent_norm > 1.0e-12,
-                position_descent / position_descent_norm.clamp_min(1.0e-12),
-                tu_n,
+            sampled = _sample_beta_footprint_positions(
+                positions[split_idx], rotations[split_idx], scales[split_idx], betas[split_idx], 2,
             )
-
-            axis_u = torch.sum(split_direction * tu_n, dim=1)
-            axis_v = torch.sum(split_direction * tv_n, dim=1)
-            axis_length = torch.sqrt(torch.clamp(axis_u * axis_u + axis_v * axis_v, min=0.0))
-            has_tangent_component = axis_length > 1.0e-12
-            safe_axis_length = torch.clamp(axis_length, min=1.0e-12)
-            axis_u = axis_u / safe_axis_length
-            axis_v = axis_v / safe_axis_length
-
-            safe_scale_u = torch.clamp(torch.abs(sc[:, 0]), min=1.0e-8)
-            safe_scale_v = torch.clamp(torch.abs(sc[:, 1]), min=1.0e-8)
-            inverse_radius_squared = (
-                    torch.square(axis_u) / torch.square(safe_scale_u)
-                    + torch.square(axis_v) / torch.square(safe_scale_v)
-            )
-            tangent_split_radius = torch.rsqrt(
-                torch.clamp(inverse_radius_squared, min=1.0e-24)
-            )
-            normal_split_radius = torch.max(torch.abs(sc), dim=1).values
-            split_radius = torch.where(
-                has_tangent_component,
-                tangent_split_radius,
-                normal_split_radius,
-            )
-            split_offset = (
-                    float(clone_offset_scale)
-                    * split_radius[:, None]
-                    * split_direction
-            )
-
-            source_positions = p - 0.5 * split_offset
-            child_positions = p + 0.5 * split_offset
-
-            child_sc = sc / safe_clone_scale_factor
+            child_sc = scales[split_idx] / safe_clone_scale_factor
 
             parent_opacity = torch.clamp(opacities[split_idx].detach().clone(), 0.0, 1.0)
             update_source = {
                 "index": split_idx.detach().cpu().numpy().astype(np.int64),
-                "position": source_positions.detach().cpu().numpy().astype(np.float32),
+                "position": sampled[:, 0].cpu().numpy().astype(np.float32),
                 "scale": child_sc.detach().cpu().numpy().astype(np.float32),
                 "opacity": parent_opacity.detach().cpu().numpy().reshape(-1).astype(np.float32),
             }
 
-            new_positions.append(child_positions)
-            new_rotations.append(rotations[split_idx].detach().clone())
-            new_scales.append(child_sc)
-            new_albedos.append(albedos[split_idx].detach().clone())
-            new_opacities.append(parent_opacity.clone())
-            new_betas.append(betas[split_idx].detach().clone())
-            new_powers.append(powers[split_idx].detach().clone())
-            source_index_chunks.append(split_idx)
-            grad_norm_chunks.append(selection_score[split_idx])
+            split_start = clone_idx.numel()
+            children["position"][split_start:] = sampled[:, 1]
+            children["scale"][split_start:] = child_sc
+            children["opacity"][split_start:] = parent_opacity
 
-        if not new_positions:
-            return None
+        if clone_idx.numel() > 0:
+            children["position"][:clone_idx.numel()] = _sample_beta_footprint_positions(
+                positions[clone_idx], rotations[clone_idx], scales[clone_idx], betas[clone_idx], 1,
+            )[:, 0]
 
-        new_position_t = torch.cat(new_positions, dim=0)
-        new_rotation_t = torch.cat(new_rotations, dim=0)
-        new_scale_t = torch.cat(new_scales, dim=0)
-        new_albedo_t = torch.cat(new_albedos, dim=0)
-        new_opacity_t = torch.cat(new_opacities, dim=0)
-        new_beta_t = torch.cat(new_betas, dim=0)
-        new_power_t = torch.cat(new_powers, dim=0)
-        source_index_t = torch.cat(source_index_chunks, dim=0)
-        grad_norm_t = torch.cat(grad_norm_chunks, dim=0)
-
+        scores = selection_score[source_index_t].cpu().numpy().astype(np.float32, copy=False)
         result = {
-            "new": {
-                "position": new_position_t.detach().cpu().numpy().astype(np.float32),
-                "rotation": new_rotation_t.detach().cpu().numpy().astype(np.float32),
-                "scale": new_scale_t.detach().cpu().numpy().astype(np.float32),
-                "albedo": new_albedo_t.detach().cpu().numpy().astype(np.float32),
-                "opacity": new_opacity_t.detach().cpu().numpy().reshape(-1).astype(np.float32),
-                "beta": new_beta_t.detach().cpu().numpy().reshape(-1).astype(np.float32),
-                "power": new_power_t.detach().cpu().numpy().reshape(-1).astype(np.float32),
-            },
-            "source_index": source_index_t.detach().cpu().numpy().astype(np.int64),
-            "grad_norm": grad_norm_t.detach().cpu().numpy().astype(np.float32),
-            "selection_score": grad_norm_t.detach().cpu().numpy().astype(np.float32),
-            "clone_count": 0,
+            "new": {key: value.cpu().numpy().astype(np.float32, copy=False)
+                    .reshape((-1,) if key in ("opacity", "beta", "power") else value.shape)
+                    for key, value in children.items()},
+            "source_index": source_index_t.cpu().numpy().astype(np.int64, copy=False),
+            "grad_norm": scores,
+            "selection_score": scores,
+            "clone_count": int(clone_idx.numel()),
             "split_count": int(split_idx.numel()),
             "position_trigger_count": int(torch.count_nonzero(position_score[selected_idx] >= 1.0).item()),
             "position_split_count": int(split_idx.numel()),
-            "split_offset_scale": float(clone_offset_scale),
+            "split_sampling": "beta_footprint",
             "split_scale_factor": safe_clone_scale_factor,
+            "clone_max_scale": clone_max_scale,
             "replace_source": False,
         }
 

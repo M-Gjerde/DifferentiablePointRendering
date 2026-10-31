@@ -13,9 +13,6 @@ namespace viewer {
         std::size_t offset = 0;
         uint32_t firstPoint = 0;
     };
-    inline bool crowdBlocks(float meanMembers, float threshold) {
-        return threshold > 0.0f && std::isfinite(meanMembers) && meanMembers >= threshold;
-    }
 
     inline std::vector<float> rgbHalfSquaredError(
             const std::vector<float>& rendered, const std::vector<float>& target) {

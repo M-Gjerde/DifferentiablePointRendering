@@ -20,7 +20,7 @@ import subprocess
 import sys
 
 PYTHON_DIR = Path(__file__).resolve().parent
-SCENES = ("horse", "workbench", "dragon", "teapot", "plant", "restaurant")
+SCENES = ("horse", "teapot",  "workbench", "dragon", "plant", "restaurant")
 
 
 def main() -> int:

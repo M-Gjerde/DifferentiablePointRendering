@@ -267,84 +267,8 @@ def load_surfels_from_ply(ply_path: Path, opacity_threshold: float) -> Tuple[np.
     return positions_np, quaternions_np, scale_u_np, scale_v_np, colors_np, opacities_np
 
 
-def rotation_matrix_to_quaternion_wxyz(rotation_matrices: np.ndarray) -> np.ndarray:
-    rotation = rotation_matrices
-    quaternions = np.zeros((rotation.shape[0], 4), dtype=np.float32)
-
-    trace = rotation[:, 0, 0] + rotation[:, 1, 1] + rotation[:, 2, 2]
-    positive_trace_mask = trace > 0.0
-
-    positive_trace = trace[positive_trace_mask]
-    positive_scale = np.sqrt(positive_trace + 1.0) * 2.0
-
-    quaternions[positive_trace_mask, 0] = 0.25 * positive_scale
-    quaternions[positive_trace_mask, 1] = (rotation[positive_trace_mask, 2, 1] - rotation[positive_trace_mask, 1, 2]) / positive_scale
-    quaternions[positive_trace_mask, 2] = (rotation[positive_trace_mask, 0, 2] - rotation[positive_trace_mask, 2, 0]) / positive_scale
-    quaternions[positive_trace_mask, 3] = (rotation[positive_trace_mask, 1, 0] - rotation[positive_trace_mask, 0, 1]) / positive_scale
-
-    non_positive_trace_mask = ~positive_trace_mask
-
-    if np.any(non_positive_trace_mask):
-        rotation_negative = rotation[non_positive_trace_mask]
-        diagonal = np.stack([rotation_negative[:, 0, 0], rotation_negative[:, 1, 1], rotation_negative[:, 2, 2]], axis=1)
-        max_diagonal_index = np.argmax(diagonal, axis=1)
-
-        for diagonal_index in (0, 1, 2):
-            current_mask = max_diagonal_index == diagonal_index
-            if not np.any(current_mask):
-                continue
-
-            current_rotation = rotation_negative[current_mask]
-
-            if diagonal_index == 0:
-                current_scale = np.sqrt(1.0 + current_rotation[:, 0, 0] - current_rotation[:, 1, 1] - current_rotation[:, 2, 2]) * 2.0
-                quaternion_w = (current_rotation[:, 2, 1] - current_rotation[:, 1, 2]) / current_scale
-                quaternion_x = 0.25 * current_scale
-                quaternion_y = (current_rotation[:, 0, 1] + current_rotation[:, 1, 0]) / current_scale
-                quaternion_z = (current_rotation[:, 0, 2] + current_rotation[:, 2, 0]) / current_scale
-            elif diagonal_index == 1:
-                current_scale = np.sqrt(1.0 + current_rotation[:, 1, 1] - current_rotation[:, 0, 0] - current_rotation[:, 2, 2]) * 2.0
-                quaternion_w = (current_rotation[:, 0, 2] - current_rotation[:, 2, 0]) / current_scale
-                quaternion_x = (current_rotation[:, 0, 1] + current_rotation[:, 1, 0]) / current_scale
-                quaternion_y = 0.25 * current_scale
-                quaternion_z = (current_rotation[:, 1, 2] + current_rotation[:, 2, 1]) / current_scale
-            else:
-                current_scale = np.sqrt(1.0 + current_rotation[:, 2, 2] - current_rotation[:, 0, 0] - current_rotation[:, 1, 1]) * 2.0
-                quaternion_w = (current_rotation[:, 1, 0] - current_rotation[:, 0, 1]) / current_scale
-                quaternion_x = (current_rotation[:, 0, 2] + current_rotation[:, 2, 0]) / current_scale
-                quaternion_y = (current_rotation[:, 1, 2] + current_rotation[:, 2, 1]) / current_scale
-                quaternion_z = 0.25 * current_scale
-
-            output_indices = np.where(non_positive_trace_mask)[0][current_mask]
-
-            quaternions[output_indices, 0] = quaternion_w
-            quaternions[output_indices, 1] = quaternion_x
-            quaternions[output_indices, 2] = quaternion_y
-            quaternions[output_indices, 3] = quaternion_z
-
-    quaternions /= np.linalg.norm(quaternions, axis=1, keepdims=True) + 1e-12
-    return quaternions
 
 
-def build_orientation_quaternions_wxyz(tangent_u: np.ndarray, tangent_v: np.ndarray) -> np.ndarray:
-    tangent_u_float = tangent_u.astype(np.float32)
-    tangent_v_float = tangent_v.astype(np.float32)
-
-    unit_tangent_u = tangent_u_float / (np.linalg.norm(tangent_u_float, axis=1, keepdims=True) + 1e-12)
-    tangent_v_normalized = tangent_v_float / (np.linalg.norm(tangent_v_float, axis=1, keepdims=True) + 1e-12)
-
-    normal = np.cross(unit_tangent_u, tangent_v_normalized)
-    unit_normal = normal / (np.linalg.norm(normal, axis=1, keepdims=True) + 1e-12)
-
-    tangent_v_orthogonal = tangent_v_normalized - (np.sum(tangent_v_normalized * unit_tangent_u, axis=1, keepdims=True) * unit_tangent_u)
-    unit_tangent_v = tangent_v_orthogonal / (np.linalg.norm(tangent_v_orthogonal, axis=1, keepdims=True) + 1e-12)
-
-    rotation_matrices = np.zeros((unit_tangent_u.shape[0], 3, 3), dtype=np.float32)
-    rotation_matrices[:, :, 0] = unit_tangent_u
-    rotation_matrices[:, :, 1] = unit_tangent_v
-    rotation_matrices[:, :, 2] = unit_normal
-
-    return rotation_matrix_to_quaternion_wxyz(rotation_matrices)
 
 
 def numpy_to_vtk_float_array(name: str, data: np.ndarray, num_components: int) -> vtk.vtkFloatArray:
