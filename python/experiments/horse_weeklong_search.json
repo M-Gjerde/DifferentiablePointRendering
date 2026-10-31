@@ -59,7 +59,9 @@
     "repeats": 3,
     "timeout_hours": 12
   },
-  "base_args": {},
+  "base_args": {
+    "densification_image_space": false
+  },
   "search_space": {
     "learning_rate": {
       "type": "float",
@@ -151,11 +153,6 @@
       "high": 0.012,
       "log": true
     },
-    "densification_split_offset_scale": {
-      "type": "float",
-      "low": 0.15,
-      "high": 0.6
-    },
     "densification_split_scale_factor": {
       "type": "float",
       "low": 1.2,
@@ -168,13 +165,6 @@
         0.1,
         0.25,
         1.0
-      ]
-    },
-    "densification_tangent_only": {
-      "type": "categorical",
-      "choices": [
-        false,
-        true
       ]
     },
     "densification_full_position": {
@@ -235,10 +225,8 @@
       "densification_interval": 200,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -259,10 +247,8 @@
       "densification_interval": 200,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -283,10 +269,8 @@
       "densification_interval": 200,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -307,10 +291,8 @@
       "densification_interval": 200,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -331,10 +313,8 @@
       "densification_interval": 400,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -355,10 +335,8 @@
       "densification_interval": 100,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -379,10 +357,8 @@
       "densification_interval": 200,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": true,
       "densification_full_position": true,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -403,10 +379,8 @@
       "densification_interval": 200,
       "densification_grad_abs_min": 8e-05,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
-      "densification_tangent_only": false,
       "densification_full_position": false,
       "depth_distort_weight": 50.0,
       "normal_consistency_weight": 0.005,
@@ -458,7 +432,6 @@
       "densification_full_position": true,
       "densification_stats_skip_interval_start": true,
       "densification_downweight_normal_gradients": false,
-      "densification_tangent_only": false,
       "densify_bsdf_floor": 0.01,
       "densify_bsdf_gamma": 1.0,
       "densification_interval": 200,
@@ -468,14 +441,12 @@
       "densification_grad_abs_min_decay_start_iteration": 0,
       "densification_grad_abs_min_decay_end_iteration": 0,
       "densification_scale_min": 0.006,
-      "densification_split_offset_scale": 0.35,
       "densification_split_scale_factor": 1.4142135623730951,
       "densification_max_new_fraction": 1.0,
       "densification_verbose": false,
       "prune_interval": 100,
       "prune_after": 0,
       "min_surfel_area": 6.283185307179587e-05,
-      "inactive_transport_prune_cycles": 1,
       "rebuild_bvh_interval": 200,
       "log_interval": 25,
       "save_interval": 100,

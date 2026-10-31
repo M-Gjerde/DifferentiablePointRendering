@@ -170,7 +170,7 @@ With half-MSE, each pixel's existing gradient contributions are weighted before
 surfel/camera accumulation, so no additional adjoint traversal is needed.
 This bypasses the mean-albedo boost. The scalar score retains
 its tangent projection and camera/iteration averaging; the split direction
-still respects `densification_tangent_only`.
+uses the parent tangent plane for beta-footprint sampling.
 
 Relative mode uses all implemented position derivatives by default, including
 camera and shadow attenuation, while retaining the shared anchor's stop-gradient.
