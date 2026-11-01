@@ -99,7 +99,7 @@ class OptimizationConfig:
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
     depth_distort_start_iteration: int = 2000
-    normal_consistency_weight: float = 1.0e-3
+    normal_consistency_weight: float = 2.5e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
 
@@ -118,7 +118,7 @@ class OptimizationConfig:
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
-    min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
+    min_surfel_opacity: float = 0.05  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -145,8 +145,8 @@ class OptimizationConfig:
     densification_diagnostics: bool = True
 
     # Threshold units follow densification_image_space (normalized image or world).
-    densification_grad_abs_min: float = 0.0004
-    densification_grad_abs_min_final: float = 0.0004
+    densification_grad_abs_min: float = 0.0003
+    densification_grad_abs_min_final: float = 0.0003
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.
