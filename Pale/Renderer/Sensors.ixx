@@ -177,6 +177,7 @@ export namespace Pale {
                 buffer = nullptr;
             };
             free(sensor.framebuffer);
+            free(sensor.relativeDensificationWeightBuffer);
             free(sensor.outputFramebuffer);
             free(sensor.ldrFramebuffer);
             free(sensor.depthDistortionBuffer);

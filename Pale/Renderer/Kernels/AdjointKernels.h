@@ -8,6 +8,7 @@
 
 
 namespace Pale {
+    void launchCameraCoverageBackwardKernel(RenderPackage &pkg, uint32_t cameraIndex);
     void launchRayGenAdjointKernel(RenderPackage &pkg, int spp, uint32_t cameraIndex);
 
     void adjointContributionKernels(

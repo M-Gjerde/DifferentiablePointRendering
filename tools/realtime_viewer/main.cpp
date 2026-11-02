@@ -44,10 +44,13 @@
 #include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
 #include "SurfelDensity.h"
+#include "TerminalTransmittance.h"
 #include "SurfaceOverlap.h"
 #include "Renderer/SurfaceOverlapScene.h"
 #include "ResponsiveWork.h"
 #include "ViewportScreenshot.h"
+#include "RawLinearImage.h"
+#include "LinearCompositing.h"
 #include "ViewportPicking.h"
 #include "spdlog/spdlog.h"
 
@@ -166,9 +169,11 @@ namespace {
         IntraSlabPositionGradient,
         AdjointDerivative,
         TransportScore,
+        TerminalTransmittance,
+        RawLinear,
     };
 
-    constexpr std::array<ViewImageMode, 20> kViewImageModeCycleOrder = {
+    constexpr std::array<ViewImageMode, 22> kViewImageModeCycleOrder = {
         ViewImageMode::Rendered,
         ViewImageMode::MedianDepth,
         ViewImageMode::DepthDistortion,
@@ -189,9 +194,11 @@ namespace {
         ViewImageMode::AdjointDerivative,
         ViewImageMode::TransportScore,
         ViewImageMode::IntraSlabDepth,
+        ViewImageMode::TerminalTransmittance,
+        ViewImageMode::RawLinear,
     };
 
-    constexpr std::array<const char*, 21> kViewImageModeLabels = {
+    constexpr std::array<const char*, 22> kViewImageModeLabels = {
         "1 Rendered",
         "2 Median depth",
         "3 Depth distortion",
@@ -212,6 +219,8 @@ namespace {
         "Adjoint radiance derivative (signed)",
         "Transport contribution score",
         "Intra-slab depth (plane distance)",
+        "Terminal transmittance loss",
+        "Raw linear RGB",
     };
 
     [[nodiscard]] const char* viewImageModeLabel(ViewImageMode mode) {
@@ -246,6 +255,8 @@ namespace {
     struct DebugDisplayBuffers {
         uint32_t width = 0;
         uint32_t height = 0;
+        bool terminalTransmittanceValid = false;
+        std::vector<float> terminalTransmittance;
         bool meanDepthValid = false;
         bool medianDepthValid = false;
         bool visibleNormalValid = false;
@@ -294,6 +305,7 @@ namespace {
         void invalidate() {
             width = 0;
             height = 0;
+            terminalTransmittanceValid = false;
             meanDepthValid = false;
             medianDepthValid = false;
             visibleNormalValid = false;
@@ -2069,6 +2081,7 @@ namespace {
 
     void destroySensor(sycl::queue queue, Pale::SensorGPU& sensor) {
         freeDevicePtr(queue, sensor.framebuffer);
+        freeDevicePtr(queue, sensor.relativeDensificationWeightBuffer);
         freeDevicePtr(queue, sensor.outputFramebuffer);
         freeDevicePtr(queue, sensor.ldrFramebuffer);
         freeDevicePtr(queue, sensor.depthDistortionBuffer);
@@ -2273,6 +2286,8 @@ namespace {
         }
         settings.computeSurfaceDiagnostics =
             mode != ViewImageMode::Rendered &&
+            mode != ViewImageMode::RawLinear &&
+            mode != ViewImageMode::TerminalTransmittance &&
             mode != ViewImageMode::SurfelDensity &&
             mode != ViewImageMode::SurfaceOverlap &&
             mode != ViewImageMode::TargetLoss &&
@@ -2497,7 +2512,8 @@ namespace {
     }
 
     void composeViewportPixels(
-        const std::vector<uint8_t>& renderPixels,
+        const std::vector<float>& rawRenderPixels,
+        const viewer::DisplayTransform& displayTransform,
         const OrbitCamera& orbit,
         const SceneBounds& bounds,
         uint32_t renderWidth,
@@ -2508,45 +2524,12 @@ namespace {
         std::vector<uint8_t>& displayPixels) {
         const std::size_t pixelCount =
             static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
-        if (renderPixels.size() < pixelCount * 4u) {
-            return;
-        }
-
+        if (rawRenderPixels.size() != pixelCount * 4u) return;
         displayPixels.assign(pixelCount * 4u, 0u);
-        shadeViewportBackground(
-            displayPixels,
-            orbit,
-            bounds,
-            renderWidth,
-            renderHeight,
-            showViewportGrid,
-            backgroundColor);
-
-        for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
-            const std::size_t baseIndex = pixelIndex * 4u;
-            const bool hasRenderContribution =
-                renderPixels[baseIndex + 3u] > 0u ||
-                renderPixels[baseIndex + 0u] > 0u ||
-                renderPixels[baseIndex + 1u] > 0u ||
-                renderPixels[baseIndex + 2u] > 0u;
-            if (!hasRenderContribution) {
-                continue;
-            }
-
-            const float alpha =
-                forceRenderOpacity ? 1.0f : static_cast<float>(renderPixels[baseIndex + 3u]) / 255.0f;
-            const float invAlpha = 1.0f - alpha;
-            displayPixels[baseIndex + 0u] = channelToByte(
-                static_cast<float>(renderPixels[baseIndex + 0u]) / 255.0f * alpha +
-                static_cast<float>(displayPixels[baseIndex + 0u]) / 255.0f * invAlpha);
-            displayPixels[baseIndex + 1u] = channelToByte(
-                static_cast<float>(renderPixels[baseIndex + 1u]) / 255.0f * alpha +
-                static_cast<float>(displayPixels[baseIndex + 1u]) / 255.0f * invAlpha);
-            displayPixels[baseIndex + 2u] = channelToByte(
-                static_cast<float>(renderPixels[baseIndex + 2u]) / 255.0f * alpha +
-                static_cast<float>(displayPixels[baseIndex + 2u]) / 255.0f * invAlpha);
-            displayPixels[baseIndex + 3u] = 255u;
-        }
+        shadeViewportBackground(displayPixels, orbit, bounds, renderWidth, renderHeight,
+                                showViewportGrid, backgroundColor);
+        viewer::compositeLinearOverBackground(rawRenderPixels, displayPixels,
+                                             displayTransform, forceRenderOpacity);
     }
 
     [[nodiscard]] glm::vec3 lerpColor(const glm::vec3& a, const glm::vec3& b, float t) {
@@ -3103,11 +3086,15 @@ int main(int argc, char** argv) {
         std::string viewerAdjointStatus = "Adjoint profiling is off";
         double lastRegularizerGradientMapMs = 0.0;
         std::vector<uint8_t> renderPixels;
+        std::vector<uint8_t> rawLinearPixels;
+        std::vector<float> rawRenderPixels;
+        viewer::DisplayTransform displayedTransform;
         std::vector<uint8_t> pixels;
         std::vector<uint8_t> screenshotPixels;
         std::string screenshotStatus;
         uint64_t screenshotSequence = 0;
         DebugDisplayBuffers debugDisplayBuffers;
+        float terminalTargetAttenuation = 0.9f;
         OrbitCamera displayedOrbit = orbit;
         SceneBounds displayedBounds = bounds;
         CameraSource displayedCameraSource = cameraSource;
@@ -4224,6 +4211,38 @@ int main(int argc, char** argv) {
                     }
                     return true;
                 }
+                case ViewImageMode::TerminalTransmittance:
+                    if (!debugDisplayBuffers.terminalTransmittanceValid) {
+                        const auto camera = sensor.camera;
+                        auto previewScene = sceneGpu;
+                        previewScene.profileCounters = nullptr;
+                        const auto previewSettings = settings;
+                        const float target = terminalTargetAttenuation;
+                        auto& values = debugDisplayBuffers.terminalTransmittance;
+                        values.resize(pixelCount);
+                        float* output = sycl::malloc_device<float>(pixelCount, queue);
+                        if (!output) throw std::runtime_error("Failed to allocate transmittance preview");
+                        try {
+                            viewer::runWithEventPump([&] {
+                                queue.parallel_for(sycl::range<1>(pixelCount), [=](sycl::id<1> id) {
+                                    const auto pixel = static_cast<uint32_t>(id[0]);
+                                    const auto ray = Pale::makePrimaryRayFromPixelJitteredFov(
+                                        camera, static_cast<float>(pixel % camera.width),
+                                        static_cast<float>(pixel / camera.width), 0.0f, 0.0f);
+                                    output[id[0]] = viewer::traceTerminalTransmittanceLoss(
+                                        ray, previewScene, previewSettings, target);
+                                }).wait_and_throw();
+                                queue.memcpy(values.data(), output, pixelCount * sizeof(float)).wait_and_throw();
+                            }, [] { glfwPollEvents(); });
+                        } catch (...) {
+                            queue.wait();
+                            sycl::free(output, queue);
+                            throw;
+                        }
+                        sycl::free(output, queue);
+                        debugDisplayBuffers.terminalTransmittanceValid = true;
+                    }
+                    return true;
                 case ViewImageMode::SurfelDensity:
                     if (!debugDisplayBuffers.surfelDensityValid) {
                         auto& density = debugDisplayBuffers.surfelDensity;
@@ -4467,6 +4486,8 @@ int main(int argc, char** argv) {
                         debugDisplayBuffers.intraSlabPositionGradientValid = true;
                     }
                     return true;
+                case ViewImageMode::RawLinear:
+                    return !rawLinearPixels.empty();
                 case ViewImageMode::Rendered:
                     return true;
             }
@@ -4476,6 +4497,14 @@ int main(int argc, char** argv) {
 
         auto updateDisplayTexture = [&]() {
             if (renderPixels.empty()) {
+                return;
+            }
+
+            if (viewImageMode == ViewImageMode::RawLinear) {
+                if (rawLinearPixels.empty()) return;
+                pixels = rawLinearPixels;
+                screenshotPixels = pixels; // Opaque PNG: do not attenuate RGB a second time.
+                texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
                 return;
             }
 
@@ -4528,6 +4557,20 @@ int main(int argc, char** argv) {
                             0.0f, surfaceOverlapMetric == kSlabOverflowMetric ? 100.0f : surfaceOverlapColorMaximum,
                             scalarColorMap, pixels);
                         break;
+                    case ViewImageMode::TerminalTransmittance: {
+                        const auto& values = debugDisplayBuffers.terminalTransmittance;
+                        colorizeScalarBufferFixedRange(values, displayedRenderWidth, displayedRenderHeight,
+                            0.0f, terminalTargetAttenuation * terminalTargetAttenuation, scalarColorMap, pixels);
+                        for (std::size_t p = 0; p < values.size(); ++p) {
+                            if (values[p] == 0.0f) {
+                                pixels[4*p] = pixels[4*p+1] = pixels[4*p+2] = 0;
+                            } else if (values[p] < 0.0f) {
+                                pixels[4*p] = pixels[4*p+2] = 255;
+                                pixels[4*p+1] = 0;
+                            }
+                        }
+                        break;
+                    }
                     case ViewImageMode::SurfelDensity: {
                         const auto& density = debugDisplayBuffers.surfelDensity;
                         const std::size_t grid = static_cast<std::size_t>(density.gridSize);
@@ -4677,6 +4720,7 @@ int main(int argc, char** argv) {
                             pixels[4*p+3] = 255u;
                         }
                         break;
+                    case ViewImageMode::RawLinear: // Handled before the diagnostic switch.
                     case ViewImageMode::Rendered:
                         break;
                 }
@@ -4687,22 +4731,19 @@ int main(int argc, char** argv) {
                 return;
             }
 
-            screenshotPixels = viewer::transparentScreenshotPixels(
-                renderPixels, renderPixels, displayedRenderWidth, displayedRenderHeight);
-            if (displayedCameraSource == CameraSource::Viewport) {
-                composeViewportPixels(
-                    renderPixels,
-                    displayedOrbit,
-                    displayedBounds,
-                    displayedRenderWidth,
-                    displayedRenderHeight,
-                    showViewportGrid,
-                    forceRenderOpacity,
-                    viewportBackgroundColor,
-                    pixels);
-            } else {
-                pixels = renderPixels;
-            }
+            if (rawRenderPixels.empty()) return;
+            screenshotPixels = viewer::straightAlphaScreenshot(rawRenderPixels, displayedTransform);
+            composeViewportPixels(
+                rawRenderPixels,
+                displayedTransform,
+                displayedOrbit,
+                displayedBounds,
+                displayedRenderWidth,
+                displayedRenderHeight,
+                displayedCameraSource == CameraSource::Viewport && showViewportGrid,
+                forceRenderOpacity,
+                viewportBackgroundColor,
+                pixels);
             texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
         };
 
@@ -5002,7 +5043,15 @@ int main(int argc, char** argv) {
             std::vector<Pale::SensorGPU> renderSensors{sensor};
             const auto start = std::chrono::steady_clock::now();
             tracer.renderForward(renderSensors);
-            // Adjoint profiling reuses the raw framebuffer as its source. Capture
+            // Loss/adjoint passes overwrite this buffer. Keep the completed primal
+            // and its display settings together, even during diagnostic views.
+            rawRenderPixels = Pale::downloadSensorRGBARAW(queue, sensor);
+            displayedTransform = {exposure, gamma, useSrgbEncoding};
+            if (viewImageMode == ViewImageMode::RawLinear) {
+                rawLinearPixels = viewer::rawLinearPreview(rawRenderPixels);
+            } else {
+                rawLinearPixels.clear();
+            }
             runViewerRegularizerGradientPass(renderSensors);
             runViewerAdjointPass(renderSensors);
             const auto stop = std::chrono::steady_clock::now();
@@ -5380,7 +5429,9 @@ int main(int argc, char** argv) {
                 bool showTransport = viewImageMode == ViewImageMode::TransportScore;
                 if (ImGui::Checkbox("Contribution scores", &showTransport))
                     setViewImageMode(showTransport ? ViewImageMode::TransportScore : ViewImageMode::Rendered);
-                if (viewImageMode != ViewImageMode::Rendered) {
+                if (viewImageMode == ViewImageMode::RawLinear) {
+                    ImGui::TextWrapped("Raw primal RGB: no exposure, sRGB/gamma, normalization, or alpha blending. Display clips to [0,1]; non-finite RGB is magenta.");
+                } else if (viewImageMode != ViewImageMode::Rendered) {
                     ImGui::TextDisabled("Options below in Display diagnostics");
                 }
                 ImGui::BeginDisabled(screenshotPixels.empty());
@@ -5406,8 +5457,12 @@ int main(int argc, char** argv) {
                 }
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Save the displayed render at its native resolution with surface opacity.\n"
-                                      "Transparent background; no grid, controls, or gizmos.");
+                    if (viewImageMode == ViewImageMode::RawLinear) {
+                        ImGui::SetTooltip("Save the raw-linear preview as opaque 8-bit PNG. Values are clipped to [0,1].");
+                    } else {
+                        ImGui::SetTooltip("Save the displayed render at its native resolution with surface opacity.\n"
+                                          "Transparent background; no grid, controls, or gizmos.");
+                    }
                 }
                 if (!screenshotStatus.empty()) {
                     ImGui::TextWrapped("%s", screenshotStatus.c_str());
@@ -5465,16 +5520,23 @@ int main(int argc, char** argv) {
 
             if (ImGui::CollapsingHeader("Appearance")) {
                 const ScopedSectionIndent sectionIndent;
-                if (cameraSource == CameraSource::Viewport) {
-                    if (ImGui::Checkbox("Force opacity = 1", &forceRenderOpacity)) {
-                        updateDisplayTexture();
-                    }
-                    if (ImGui::Checkbox("Show grid", &showViewportGrid)) {
-                        updateDisplayTexture();
-                    }
-                    if (ImGui::ColorEdit3("Background color", &viewportBackgroundColor.x)) {
-                        updateDisplayTexture();
-                    }
+                // Avoid BeginDisabled(false): it makes the color picker transparent
+                // in this ImGui version (see the walk-navigation scope above).
+                const bool appearanceDisabled = viewImageMode == ViewImageMode::RawLinear;
+                if (appearanceDisabled) {
+                    ImGui::BeginDisabled();
+                }
+                if (ImGui::Checkbox("Force opacity = 1", &forceRenderOpacity)) {
+                    updateDisplayTexture();
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Hide the background behind contributing rays. Does not change surfel opacity or primal RGB.");
+                }
+                if (cameraSource == CameraSource::Viewport && ImGui::Checkbox("Show grid", &showViewportGrid)) {
+                    updateDisplayTexture();
+                }
+                if (ImGui::ColorEdit3("Background color", &viewportBackgroundColor.x)) {
+                    updateDisplayTexture();
                 }
                 if (ImGui::DragFloat("Exposure", &exposure, 0.01f, 0.001f, 100.0f, "%.3f")) {
                     renderRequested = true;
@@ -5485,6 +5547,9 @@ int main(int argc, char** argv) {
                 if (!useSrgbEncoding &&
                     ImGui::DragFloat("Gamma", &gamma, 0.01f, 0.1f, 5.0f, "%.3f")) {
                     renderRequested = true;
+                }
+                if (appearanceDisabled) {
+                    ImGui::EndDisabled();
                 }
 
             }
@@ -6076,6 +6141,15 @@ int main(int argc, char** argv) {
                     viewImageMode == ViewImageMode::DepthPositionGradient) {
                     ImGui::TextWrapped("Preview uses unit loss weight; colors rescale to each frame.");
                 }
+                if (viewImageMode == ViewImageMode::TerminalTransmittance) {
+                    if (ImGui::SliderFloat("Target attenuation", &terminalTargetAttenuation, 0.8f, 1.0f, "%.2f")) {
+                        debugDisplayBuffers.terminalTransmittanceValid = false;
+                        updateDisplayTexture();
+                    }
+                    ImGui::TextWrapped("Camera rays only. Loss = max(0, target - attenuation)^2. Empty rays and rays meeting the target are black. Magenta means traversal limit reached; escape is unknown.");
+                    ImGui::Text("Fixed loss color range: 0 to %.3f", terminalTargetAttenuation * terminalTargetAttenuation);
+                    ImGui::TextWrapped("Preview only: no opacity or training updates. Uses surfel footprints and slab compositing.");
+                }
                 int distortionDepthMode = settings.depthDistortionWorldSpace ? (settings.depthDistortionSquared ? 1 : 0) : 2;
                 const char* distortionDepthModes[] = {"World distance (absolute)", "World distance (squared)", "Normalized depth (squared)"};
                 if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 3)) {
@@ -6173,6 +6247,7 @@ int main(int argc, char** argv) {
                     viewImageMode == ViewImageMode::IntraSlabDepth ||
                     viewImageMode == ViewImageMode::IntraSlabRayDepth ||
                     viewImageMode == ViewImageMode::PositionPrimitiveScore ||
+                    viewImageMode == ViewImageMode::TerminalTransmittance ||
                     viewImageMode == ViewImageMode::SurfelDensity ||
                     viewImageMode == ViewImageMode::SurfaceOverlap ||
                     viewImageMode == ViewImageMode::TargetLoss ||

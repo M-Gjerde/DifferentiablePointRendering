@@ -8,8 +8,11 @@ namespace Pale {
     struct SensorGPU {
         CameraGPU camera; // camera parameters
         float4 *framebuffer = nullptr; // RAW framebuffer
-        // During RGB adjoint transport only: framebuffer.w holds the frozen
-        // per-pixel multiplier for the auxiliary densification signal.
+        bool alphaAdjointEnabled = false; // framebuffer.w is a camera-coverage cotangent during backward.
+        bool alphaLossOpacityOnly = false; // Detach footprint/intersection geometry for the alpha term only.
+        // Frozen per-pixel multiplier for auxiliary densification, independent
+        // of framebuffer alpha/adjoints. Allocated lazily by the owning sensor.
+        float *relativeDensificationWeightBuffer = nullptr;
         bool relativeDensification = false;
         bool densificationFullPosition = true;
         bool densificationImageSpace = false;

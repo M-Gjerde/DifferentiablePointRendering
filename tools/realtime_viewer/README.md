@@ -101,6 +101,20 @@ Snapshot navigation refreshes only the active run's `points` folder, including
 new snapshots written during training. It stays in that run until you use `R`
 or **Load latest run PLY** to search for the latest run again.
 
+### Background compositing
+
+The Rendered view composites the saved raw linear primal RGB as `C + (1-A)*B`,
+then applies display encoding. `C` already contains surfel attenuation; it is
+never multiplied by coverage again. Both viewport and scene cameras display an
+opaque composited texture, preventing a second blend in ImGui. Background/grid
+colors are display-referred UI colors, decoded for composition and kept stable
+when changing scene exposure.
+
+**Force opacity = 1** hides the background behind contributing rays without
+changing primal RGB or geometry. Over black with the grid off, toggling it has
+no effect on rendered RGB. The primal is captured before any backward pass
+reuses its framebuffer. Raw-linear preview and training loss are unchanged.
+
 ### Transparent screenshots
 
 Click **Save screenshot (PNG)** beside the render controls. Images are saved to
@@ -108,7 +122,11 @@ Click **Save screenshot (PNG)** beside the render controls. Images are saved to
 root; the full saved path appears below the button. Each capture gets a new name.
 
 The PNG uses the last displayed render's native resolution, RGB/exposure, and
-rendered surface alpha, including partial opacity at footprint edges. It excludes
+rendered surface alpha, including partial opacity at footprint edges. Rendered
+screenshots convert premultiplied linear RGB to straight alpha before encoding,
+so coverage is not baked into RGB twice. As with any 8-bit transparent PNG,
+straight HDR colors may clip; use raw EXRs for exact radiance. A viewer that
+blends PNGs in encoded rather than linear space can still display them differently. It excludes
 the gray viewport background, grid, gizmos, and UI. **Force opacity = 1** affects
 the viewport display only and is ignored for screenshots. Diagnostic views save
 their selected colors with the rendered surface alpha. If auto-render is off,
@@ -490,3 +508,33 @@ rule as inactive-transport pruning. It recomputes the current snapshot, rather
 than recovering historical training-cycle values: geometry changed during that
 cycle, and sampled shadow rays may differ. These scores measure direct camera and
 shadow support, not indirect-light importance or exact loss change on deletion.
+
+### Terminal transmittance loss preview
+
+Select **Terminal transmittance loss** in the display-mode menu (also available
+through `+`/`-` cycling). This traces only camera rays using surfel footprints and
+slab compositing; it does not change opacity or the training objective.
+
+The unit-weight loss is `max(0, target_attenuation - (1 - T_exit))^2`, with a
+90% target by default. **Display diagnostics → Target attenuation** adjusts it
+from 80% to 100%. Rays with no attenuation are ignored, including intersections
+with zero-opacity surfels. Empty rays, opaque mesh hits, and rays meeting the
+target are black. Other escaping rays use the scalar colormap on a fixed range
+from zero to the target squared: larger loss means more remaining transmission.
+Magenta marks rays that exhaust the traversal budget before escape can be
+established, rather than reporting a misleading loss. This diagnostic uses the
+ordinary surfel slab representation, including when inspecting experimental
+rendering modes.
+
+### Raw linear RGB preview
+
+Select **Raw linear RGB** under **Render & display → Display** to inspect primal
+RGB before exposure, sRGB/gamma encoding or alpha compositing. The framebuffer
+is captured before adjoint profiling can overwrite it. Values are mapped directly
+to an opaque 8-bit preview: 0.2 becomes 51/255, with no normalization. Only the
+preview clips values outside [0,1]; non-finite RGB is magenta. Appearance controls
+are disabled in this mode. PNG screenshots save this same opaque, clipped preview.
+
+For full-precision loss-input data, training's **s** snapshot writes
+`renders/linear_raw_final_<camera>.exr`. Enable `save_snapshot_linear_raw` in the
+training configuration (or `--save-snapshot-linear-raw`) for scheduled EXRs too.

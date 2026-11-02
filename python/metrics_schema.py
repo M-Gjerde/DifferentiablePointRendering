@@ -12,6 +12,7 @@ METRICS_COLUMNS = (
     "loss_average_is_complete",
     "loss_rgb_mean",
     "loss_rgb_l2_mean",
+    "loss_alpha_weighted_mean",
     "loss_depth_distortion_raw_mean",
     "loss_depth_distortion_weighted_mean",
     "loss_normal_consistency_raw_mean",

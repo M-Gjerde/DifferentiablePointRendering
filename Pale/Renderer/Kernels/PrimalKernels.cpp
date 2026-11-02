@@ -565,7 +565,7 @@ static void launchCameraRgbGatherKernel(RenderPackage &pkg, uint32_t cameraIndex
                         compositeWeight * diffuseBrdf * sharedIncident * surfaceCosine;
                 }
             }
-            if (slabOpacity > kAlphaEpsilon) { accumulatedRenderingWeight += renderingTransmittance * slabOpacity; }
+            accumulatedRenderingWeight += renderingTransmittance * slabOpacity;
             renderingTransmittance *= localLayer.transmission;
         };
 

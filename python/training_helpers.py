@@ -35,6 +35,7 @@ PARAMETER_NAMES = (
 LOSS_VALUE_KEYS = (
     "total_rgb_loss_value",
     "total_rgb_l2_loss_value",
+    "total_alpha_loss_weighted",
     "total_depth_distortion_loss_raw",
     "total_depth_distortion_loss_weighted",
     "total_normal_loss_raw",
@@ -823,6 +824,10 @@ def save_manual_snapshot(
     for camera_name in camera_ids:
         img_np = render.get_forward_rgb(final_images, camera_name)
         io_utils.save_render(renders_dir / f"render_final_{camera_name}.png", img_np)
+        io_utils.save_linear_raw_exr(
+            renders_dir / f"linear_raw_final_{camera_name}.exr",
+            render.get_forward_linear_rgb(final_images, camera_name),
+        )
 
         depth_np = render.get_forward_depth_distortion(final_images, camera_name)
         save_depth_distortion_snapshot(
@@ -874,7 +879,7 @@ def save_manual_snapshot(
 
     print_status(
         f"[Iter {iteration:04d}] Hotkey 's' pressed -> saved "
-        f"render_final_<camera>.png, depth_distortion_final_<camera>.png, "
+        f"render_final_<camera>.png, linear_raw_final_<camera>.exr, depth_distortion_final_<camera>.png, "
         f"median_depth_final_<camera>.png, visible_normal_final_<camera>.png, "
         f"normal_from_depth_final_<camera>.png, and points_final.ply"
     )
@@ -1069,6 +1074,8 @@ def compute_initial_losses_and_save_outputs(
         use_depth_distortion: bool,
         use_normal_consistency: bool,
         use_intra_slab_depth: bool,
+        save_linear_raw: bool = False,
+        alpha_loss_weighted: float = 0.0,
 ) -> tuple[float, ...]:
     initial_points_path = output_dir / "initial_points.ply"
     io_utils.save_gaussians_to_ply(
@@ -1095,6 +1102,8 @@ def compute_initial_losses_and_save_outputs(
         img_linear_np = render.get_forward_linear_rgb(initial_images, camera_name)
         (renders_dir / camera_name).mkdir(parents=True, exist_ok=True)
         io_utils.save_render(renders_dir / f"render_initial_{camera_name}.png", img_np)
+        if save_linear_raw:
+            io_utils.save_linear_raw_exr(renders_dir / f"linear_raw_initial_{camera_name}.exr", img_linear_np)
 
         if camera_name not in target_images:
             print_status(f"Warning: no target image found for camera '{camera_name}', skipping target save and loss.")
@@ -1144,6 +1153,7 @@ def compute_initial_losses_and_save_outputs(
 
     initial_total_loss = (
             initial_rgb_loss
+            + alpha_loss_weighted
             + initial_depth_distortion_loss_weighted
             + initial_normal_loss_weighted
             + initial_intra_slab_depth_loss_weighted
@@ -1158,6 +1168,7 @@ def compute_initial_losses_and_save_outputs(
         initial_intra_slab_depth_loss_raw,
         initial_intra_slab_depth_loss_weighted,
         initial_total_loss,
+        alpha_loss_weighted,
     )
 
 
@@ -1171,8 +1182,10 @@ def print_loss_summary(
         intra_slab_depth_loss_raw: float,
         intra_slab_depth_loss_weighted: float,
         total_loss: float,
+        alpha_loss_weighted: float = 0.0,
 ) -> None:
     print_status(f"{prefix} RGB loss                               : {rgb_loss:.6e}")
+    print_status(f"{prefix} alpha loss (weighted)                  : {alpha_loss_weighted:.6e}")
     print_status(f"{prefix} depth distortion loss (raw)            : {depth_distortion_loss_raw:.6e}")
     print_status(f"{prefix} depth distortion loss (weighted)       : {depth_distortion_loss_weighted:.6e}")
     print_status(f"{prefix} normal consistency loss (raw)          : {normal_loss_raw:.6e}")
@@ -1573,6 +1586,7 @@ def save_iteration_outputs(
         save_normal_from_depth: bool = False,
         save_grad: bool = False,
         force: bool = False,
+        save_linear_raw: bool = False,
 ) -> None:
     save_interval = int(save_interval)
 
@@ -1589,6 +1603,12 @@ def save_iteration_outputs(
     renders_dir = renders_output_dir(output_dir)
     for camera_name in all_camera_ids:
         camera_base_dir = renders_dir / camera_name
+
+        if save_linear_raw:
+            io_utils.save_linear_raw_exr(
+                camera_base_dir / "linear_raw" / f"{iteration:04d}_linear_raw.exr",
+                render.get_forward_linear_rgb(forward_out, camera_name),
+            )
 
         if save_rgb:
             camera_render_dir = camera_base_dir / "render"

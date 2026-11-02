@@ -6,6 +6,7 @@
 #include "AdjointGradientKernels.h"
 #include "Core/ScopedTimer.h"
 #include "IntersectionKernels.h"
+#include "CameraCoverage.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 #include "spdlog/fmt/bundled/base.h"
 #include <cmath>
@@ -689,11 +690,12 @@ namespace Pale {
 
     SYCL_EXTERNAL inline void setRelativeDensificationSignal(
         SurfelGradientRecord &record, const SensorGPU &sensor, uint32_t pathId) {
-        if (!sensor.relativeDensification || pathId >= sensor.width * sensor.height) return;
+        if (!sensor.relativeDensification || !sensor.relativeDensificationWeightBuffer ||
+            pathId >= sensor.width * sensor.height) return;
         // A path retains its originating pixel index through every bounce.
         // For half-MSE, q_D = q_photo / B^2. Weight each pixel's contribution
         // before the surfel/camera reduction, never the accumulated gradient.
-        const float weight = sensor.framebuffer[pathId].w();
+        const float weight = sensor.relativeDensificationWeightBuffer[pathId];
         if (sensor.densificationFullPosition) {
             record.cloneSignalX = record.gradPositionX;
             record.cloneSignalY = record.gradPositionY;
@@ -2824,6 +2826,98 @@ namespace Pale {
             gradient.tangentV += cross(barNormalRaw, tangentU);
         }
         return gradient;
+    }
+
+    void launchCameraCoverageBackwardKernel(RenderPackage &pkg, uint32_t cameraIndex) {
+        const auto sensor = pkg.sensors[cameraIndex];
+        if (!sensor.alphaAdjointEnabled) return;
+        requireCameraCoverageSupport(pkg.settings);
+        auto scene = pkg.scene;
+        scene.profileCounters = nullptr;
+        const auto settings = pkg.settings;
+        const auto gradients = pkg.gradients;
+        const bool writeDebugImages = settings.renderDebugGradientImages && pkg.debugImages != nullptr;
+        const DebugImages debug = writeDebugImages ? pkg.debugImages[cameraIndex] : DebugImages{};
+        auto event = pkg.queue.parallel_for<class CameraCoverageBackwardKernelTag>(
+            sycl::range<1>(sensor.width * sensor.height), [=](sycl::id<1> id) {
+                const auto pixel = static_cast<uint32_t>(id[0]);
+                const float barCoverage = sensor.framebuffer[pixel].w();
+                if (barCoverage == 0.0f) return;
+                const Ray ray = makePrimaryRayFromPixelJitteredFov(sensor.camera,
+                    float(pixel % sensor.width), float(pixel / sensor.width), 0.0f, 0.0f);
+                struct Record {
+                    LocalSurfelLayerHit hit;
+                    uint32_t instanceIndex;
+                    float alpha, prefix;
+                };
+                Record records[kMaxCameraOccluderRecords];
+                uint32_t count = 0u;
+                float prefix = 1.0f;
+                const auto result = traceCameraCoverage(ray, scene, settings,
+                    [&](const PointCloudLocalLayer &layer, uint32_t instanceIndex) {
+                        for (uint32_t i = 0u; i < layer.hitCount; ++i) {
+                            records[count++] = Record{layer.hits[i], instanceIndex, layer.alphaEff[i], prefix};
+                            prefix *= 1.0f - layer.alphaEff[i];
+                        }
+                    });
+                // A terminal opaque mesh absorbs all remaining transmission;
+                // coverage cannot change by adjusting earlier surfels.
+                if (result.opaqueMesh) return;
+                float barNextTransmission = -barCoverage;
+                for (uint32_t i = count; i > 0u; --i) {
+                    const auto &record = records[i - 1u];
+                    const float barAlpha = -record.prefix * barNextTransmission;
+                    barNextTransmission *= 1.0f - record.alpha;
+                    const auto primitive = record.hit.primitiveIndex;
+                    const Point &surfel = scene.points[primitive];
+                    const float rawAlpha = surfel.opacity * record.hit.alphaGeom;
+                    // Use the interior one-sided derivative at opacity 0 and 1;
+                    // zero-opacity geometric intersections must remain trainable.
+                    if (rawAlpha < 0.0f || rawAlpha > 1.0f) continue;
+                    SurfaceRegularizerConstituentGradient gradient{};
+                    float3 rotation{0.0f};
+                    if (sensor.alphaLossOpacityOnly) {
+                        // Same forward coverage and exact opacity derivative;
+                        // all other alpha dependencies are explicitly detached.
+                        gradient.opacity = barAlpha * record.hit.alphaGeom;
+                    } else {
+                        const auto &transform = scene.transforms[scene.instances[record.instanceIndex].transformIndex];
+                        const float4 localPosition = transform.worldToObject * float4{record.hit.hitPositionW, 1.0f};
+                        const Ray localRay = toObjectSpace(ray, transform);
+                        SurfaceRegularizerHitRecord hit{};
+                        hit.hitPositionW = float3{localPosition.x(), localPosition.y(), localPosition.z()};
+                        hit.uv = phiInverse(hit.hitPositionW, surfel);
+                        hit.alphaGeom = record.hit.alphaGeom;
+                        gradient = differentiateSurfaceRegularizerConstituent(
+                            surfel, hit, localRay.direction, float3{0.0f}, sensor.camera,
+                            barAlpha, 0.0f, float3{0.0f});
+                        rotation = computeLocalRotationGradientFromTangentGradients(
+                            surfel.tanU, surfel.tanV, gradient.tangentU, gradient.tangentV);
+                        atomicAddFloat3(gradients.gradPosition[primitive], gradient.position);
+                        atomicAddFloat3(gradients.gradRotation[primitive], rotation);
+                        atomicAddFloat2(gradients.gradScale[primitive], float2{gradient.scaleU, gradient.scaleV});
+                        atomicAddFloat(gradients.gradBeta[primitive], gradient.beta);
+                    }
+                    atomicAddFloat(gradients.gradOpacity[primitive], gradient.opacity);
+                    // Deliberately leave RGB-only densification statistics alone.
+                    if (writeDebugImages) {
+                        SurfelGradientRecord debugRecord{};
+                        debugRecord.primitiveIndex = primitive;
+                        debugRecord.gradPositionX = gradient.position.x();
+                        debugRecord.gradPositionY = gradient.position.y();
+                        debugRecord.gradPositionZ = gradient.position.z();
+                        debugRecord.gradRotationX = rotation.x();
+                        debugRecord.gradRotationY = rotation.y();
+                        debugRecord.gradRotationZ = rotation.z();
+                        debugRecord.gradScaleU = gradient.scaleU;
+                        debugRecord.gradScaleV = gradient.scaleV;
+                        debugRecord.gradEta = gradient.opacity;
+                        debugRecord.gradBeta = gradient.beta;
+                        accumulateDebugGradientIfSelected(debug, true, settings.surfelIndexForDebugImages, pixel, debugRecord);
+                    }
+                }
+            });
+        waitForAdjointKernelTiming(event);
     }
 
     void launchSurfaceRegularizersBackwardKernel(RenderPackage &pkg, uint32_t cameraIndex) {

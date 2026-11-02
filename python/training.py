@@ -380,19 +380,23 @@ def make_rgb_loss_state(
         "per_camera_loss_values": {},
     })
 
-    rgb_loss_values = adjoint_images.get("loss_values", {})
+    rgb_loss_values = adjoint_images.get("l2_loss_values", adjoint_images.get("loss_values", {}))
     rgb_l2_loss_values = adjoint_images.get("l2_loss_values", rgb_loss_values)
+    alpha_loss_values = adjoint_images.get("alpha_loss_values", {})
     for camera_name in active_training_camera_ids:
         rgb_loss_value = float(rgb_loss_values[camera_name])
         rgb_l2_loss_value = float(rgb_l2_loss_values[camera_name])
+        alpha_loss_value = float(alpha_loss_values.get(camera_name, 0.0))
         camera_loss_values = helpers.make_zero_loss_values()
         camera_loss_values["total_rgb_loss_value"] = rgb_loss_value
         camera_loss_values["total_rgb_l2_loss_value"] = rgb_l2_loss_value
-        camera_loss_values["total_loss_value"] = rgb_loss_value
+        camera_loss_values["total_alpha_loss_weighted"] = alpha_loss_value
+        camera_loss_values["total_loss_value"] = rgb_loss_value + alpha_loss_value
         loss_state["per_camera_loss_values"][camera_name] = camera_loss_values
         loss_state["total_rgb_loss_value"] += rgb_loss_value
         loss_state["total_rgb_l2_loss_value"] += rgb_l2_loss_value
-        loss_state["total_loss_value"] += rgb_loss_value
+        loss_state["total_alpha_loss_weighted"] += alpha_loss_value
+        loss_state["total_loss_value"] += rgb_loss_value + alpha_loss_value
 
     return loss_state
 
@@ -470,6 +474,8 @@ def make_device_training_step_options(
         "densification_relative_error": bool(config.densification_relative_error and
                                               (return_gradient_stats or accumulate_densification_stats)),
         "densification_radiance_floor": float(config.densification_radiance_floor),
+        "alpha_loss_weight": float(config.alpha_loss_weight),
+        "alpha_loss_opacity_only": bool(config.alpha_loss_opacity_only),
         "densification_full_position": bool(config.densification_full_position),
         "densification_image_space": bool(config.densification_image_space),
         "include_depth_distortion": include_depth_distortion,
@@ -530,6 +536,8 @@ def compute_iteration_gradients(
         # it with the complete position gradient, including transport derivatives.
         densification_full_position: bool = False,
         densification_image_space: bool = False,
+        alpha_loss_weight: float = 0.0,
+        alpha_loss_opacity_only: bool = False,
 ) -> IterationGradientResult:
     active_camera_name = active_camera_name_for_iteration(
         active_training_camera_ids,
@@ -542,6 +550,8 @@ def compute_iteration_gradients(
             "densification_radiance_floor": densification_radiance_floor,
             "densification_full_position": densification_full_position,
             "densification_image_space": densification_image_space,
+            "alpha_loss_weight": alpha_loss_weight,
+            "alpha_loss_opacity_only": alpha_loss_opacity_only,
         },
     )
     loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
@@ -689,6 +699,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     print_status(
         "Loss terms: "
         "rgb=half_MSE, "
+        f"alpha_weight={config.alpha_loss_weight:.3e}, "
         f"depth_distortion={use_depth_distortion} "
         f"base_weight={depth_distortion_base_weight:.3e} "
         f"start_iter={depth_distortion_start_iteration}, "
@@ -801,6 +812,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         start_iteration=normal_consistency_start_iteration,
     )
 
+    initial_alpha_loss = 0.0
+    if config.alpha_loss_weight > 0:
+        image_losses = renderer.evaluate_loss_from_current_forward(
+            list(training_camera_ids), {"alpha_loss_weight": float(config.alpha_loss_weight)})
+        initial_alpha_loss = sum(image_losses["alpha_loss_values"].values())
     initial_loss_tuple = helpers.compute_initial_losses_and_save_outputs(
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
         all_camera_ids=all_camera_ids, positions=positions, rotations=rotations,
@@ -811,6 +827,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         use_depth_distortion=use_depth_distortion,
         use_normal_consistency=use_normal_consistency,
         use_intra_slab_depth=use_intra_slab_depth,
+        save_linear_raw=config.save_snapshot_linear_raw,
+        alpha_loss_weighted=initial_alpha_loss,
     )
 
     del initial_images
@@ -1575,6 +1593,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             adjoint_images=snapshot_adjoint_images,
                             renderer_settings=renderer_settings,
                             save_rgb=config.save_snapshot_rgb,
+                            save_linear_raw=config.save_snapshot_linear_raw,
                             save_median_depth=config.save_snapshot_median_depth,
                             save_depth_distortion=config.save_snapshot_depth_distortion,
                             save_visible_normal=config.save_snapshot_visible_normal,
@@ -1667,6 +1686,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             averaged_loss_state["loss_metric_is_complete"],
                             averaged_loss_state["total_rgb_loss_value"],
                             averaged_loss_state["total_rgb_l2_loss_value"],
+                            averaged_loss_state["total_alpha_loss_weighted"],
                             averaged_loss_state["total_depth_distortion_loss_raw"],
                             averaged_loss_state["total_depth_distortion_loss_weighted"],
                             averaged_loss_state["total_normal_loss_raw"],
@@ -1776,6 +1796,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     intra_slab_depth_weight=intra_slab_depth_weight,
                     densification_relative_error=bool(config.densification_relative_error and densification_interval > 0),
                     densification_radiance_floor=float(config.densification_radiance_floor),
+                    alpha_loss_weight=float(config.alpha_loss_weight),
+                    alpha_loss_opacity_only=bool(config.alpha_loss_opacity_only),
                     densification_full_position=bool(config.densification_full_position),
                     densification_image_space=bool(config.densification_image_space),
                 )
@@ -2193,6 +2215,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         adjoint_images=snapshot_adjoint_images,
                         renderer_settings=renderer_settings,
                         save_rgb=config.save_snapshot_rgb,
+                        save_linear_raw=config.save_snapshot_linear_raw,
                         save_median_depth=config.save_snapshot_median_depth,
                         save_depth_distortion=config.save_snapshot_depth_distortion,
                         save_visible_normal=config.save_snapshot_visible_normal,
@@ -2265,6 +2288,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         averaged_loss_state["loss_metric_is_complete"],
                         averaged_loss_state["total_rgb_loss_value"],
                         averaged_loss_state["total_rgb_l2_loss_value"],
+                        averaged_loss_state["total_alpha_loss_weighted"],
                         averaged_loss_state["total_depth_distortion_loss_raw"],
                         averaged_loss_state["total_depth_distortion_loss_weighted"],
                         averaged_loss_state["total_normal_loss_raw"],
@@ -2379,7 +2403,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     final_normal_loss_weighted = 0.0
     final_intra_slab_depth_loss_raw = 0.0
     final_intra_slab_depth_loss_weighted = 0.0
-    final_total_loss = 0.0
+    final_alpha_loss = 0.0
+    if config.alpha_loss_weight > 0:
+        image_losses = renderer.evaluate_loss_from_current_forward(
+            list(training_camera_ids), {"alpha_loss_weight": float(config.alpha_loss_weight)})
+        final_alpha_loss = sum(image_losses["alpha_loss_values"].values())
+    final_total_loss = final_alpha_loss
 
     final_depth_distortion_weight = helpers.scheduled_regularizer_weight(
         depth_distortion_base_weight,
@@ -2405,6 +2434,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam
         io_utils.save_render(renders_dir / f"render_final_{camera_name}.png", img_np)
+        if config.save_snapshot_linear_raw:
+            io_utils.save_linear_raw_exr(renders_dir / f"linear_raw_final_{camera_name}.exr", img_linear_np)
 
         if use_depth_distortion:
             dist_np = render.get_forward_depth_distortion(final_images, camera_name)
@@ -2466,6 +2497,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         final_intra_slab_depth_loss_raw,
         final_intra_slab_depth_loss_weighted,
         final_total_loss,
+        final_alpha_loss,
     )
     refresh_current_densification_snapshot(helpers.scheduled_densification_grad_abs_min(
         initial_threshold=densification_grad_abs_min,

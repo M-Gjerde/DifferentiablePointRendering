@@ -255,6 +255,30 @@ def read_rgb_exr(
     return img
 
 
+def save_linear_raw_exr(path: Path, rgb: np.ndarray) -> None:
+    """Loss-input RGB as lossless FLOAT channels; no display/alpha conversion.
+
+    Preserve HDR, negative and non-finite samples and their original row order.
+    RGB only deliberately avoids automatic alpha compositing in EXR inspectors.
+    """
+    image = np.asarray(rgb, dtype=np.float32)
+    if image.ndim != 3 or image.shape[2] != 3 or min(image.shape[:2]) <= 0:
+        raise ValueError("Expected a nonempty HxWx3 linear RGB image")
+    height, width = image.shape[:2]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = OpenEXR.Header(width, height)
+    pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+    header["channels"] = {name: Imath.Channel(pixel_type) for name in "RGB"}
+    header["compression"] = Imath.Compression(Imath.Compression.ZIP_COMPRESSION)
+    output = OpenEXR.OutputFile(str(path), header)
+    try:
+        output.writePixels({name: np.ascontiguousarray(image[..., channel]).tobytes()
+                            for channel, name in enumerate("RGB")})
+    finally:
+        output.close()
+
+
 def save_render(path: Path, rgb: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     img = np.asarray(rgb, dtype=np.float32)

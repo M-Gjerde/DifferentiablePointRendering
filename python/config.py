@@ -95,11 +95,15 @@ class OptimizationConfig:
     # Decay duration independent of training length; hold final scales afterward.
     lr_decay_max_steps: int = 30000
 
-    depth_distort_weight: float = 0.001
+    depth_distort_weight: float = 0.02
+    # Camera coverage: weight * mean(0.5 * (A - 1)^2), excluding untouched/incomplete rays.
+    # Differentiates opacity and footprint geometry; zero disables this term.
+    alpha_loss_weight: float = 0.05
+    alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
     depth_distort_start_iteration: int = 2000
-    normal_consistency_weight: float = 2.5e-3
+    normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 3000
     normal_from_depth_use_mean_depth: bool = False
 
@@ -119,7 +123,7 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
     min_surfel_opacity: float = 0.05  # Strict opacity < threshold; 0 disables opacity pruning.
-    topology_freeze_last_iterations: int = 5000  # 0 disables the final densification/pruning freeze.
+    topology_freeze_last_iterations: int = 4000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
@@ -182,6 +186,7 @@ class OptimizationConfig:
     # densification, replacing periodic PLY saves. Interval 0 still disables saves.
     save_ply_before_densification: bool = False
     save_snapshot_rgb: bool = False
+    save_snapshot_linear_raw: bool = False  # Loss-input RGB in lossless float32 EXR.
     save_snapshot_median_depth: bool = False
     save_snapshot_depth_distortion: bool = False
     save_snapshot_visible_normal: bool = False
@@ -512,11 +517,16 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     objective = parser.add_argument_group("objective and regularizers")
+    _add_boolean_argument(
+        objective, "--alpha-loss-opacity-only",
+        help="Apply camera alpha loss only to stored opacity; detach all footprint geometry and beta for this loss.",
+    )
     _add_typed_fields(
         objective,
         float,
         "normal_consistency_weight",
         "depth_distort_weight",
+        "alpha_loss_weight",
         "intra_slab_depth_weight",
     )
     _add_boolean_argument(
@@ -657,6 +667,10 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     output = parser.add_argument_group("output and monitoring")
     _add_typed_fields(output, int, "log_interval", "save_interval", "save_ply_files_interval")
     _add_boolean_argument(
+        output, "--save-snapshot-linear-raw",
+        help="Save unmodified linear RGB as float32 EXR at image snapshots, initialization and completion.",
+    )
+    _add_boolean_argument(
         output, "--save-ply-before-densification",
         help="Save PLY one iteration before each scheduled densification instead of periodically; --save-ply-files-interval 0 disables these saves.",
     )
@@ -747,6 +761,8 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
         parser.error("--topology-freeze-last-iterations must be non-negative")
 
 
+    if not math.isfinite(config.alpha_loss_weight) or config.alpha_loss_weight < 0:
+        parser.error("--alpha-loss-weight must be finite and nonnegative")
     if not math.isfinite(config.densification_radiance_floor) or config.densification_radiance_floor <= 0:
         parser.error("--densification-radiance-floor must be finite and positive")
 

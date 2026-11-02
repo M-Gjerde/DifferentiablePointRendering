@@ -241,6 +241,9 @@ namespace Pale {
                                pkg.debugImages[cameraIndex].numPixels).wait();
             }
 
+            // Deterministic coverage is differentiated once, independently of
+            // the number of sampled radiance paths or secondary bounces.
+            launchCameraCoverageBackwardKernel(pkg, static_cast<uint32_t>(cameraIndex));
             const uint32_t samplesPerPixel = pkg.settings.adjointSamplesPerPixel;
 
             for (uint32_t spp = 0; spp < samplesPerPixel; ++spp) {

@@ -185,6 +185,28 @@ cameras. Pressing **S** during training also exports a GLB for that snapshot;
 scheduled mesh intervals remain PLY-only. See [glTF export](docs/gltf_export.md) for texture resolution, exporting
 existing meshes, and Blender import settings.
 
+### Inspect raw linear predictions
+
+Set `save_snapshot_linear_raw: bool = True` in `python/config.py`, or pass
+`--save-snapshot-linear-raw`, to save lossless 32-bit float RGB EXRs alongside
+scheduled image snapshots. This is independent of `save_snapshot_rgb` and uses
+its existing image-snapshot schedule (`save_interval > 0`). Files are written to
+`renders/<camera>/linear_raw/<iteration>_linear_raw.exr`, plus
+`renders/linear_raw_initial_<camera>.exr` and `renders/linear_raw_final_<camera>.exr`.
+Training's **s** + Enter manual snapshot always writes the final-named EXRs,
+even when the scheduled flag is off.
+
+These files contain the returned `raw[..., :3]` values with no clipping,
+normalization, exposure, sRGB/gamma encoding, alpha multiplication or division.
+They use RGB channels only so image inspectors do not apply coverage alpha a
+second time. Disable automatic exposure/tone mapping in your EXR inspector when
+examining numeric values. Snapshots follow the existing render timing: manual
+and scheduled snapshots may re-render the current parameters; they are not a
+capture of an earlier optimizer step's stochastic sample.
+
+The real-time viewer also offers **Display → Raw linear RGB**. Its screen/PNG
+preview clips to [0,1]; the training EXRs preserve the original float values.
+
 ### Monitor optimization metrics
 
 Inactive-transport pruning accumulates a combined camera and shadow support score
@@ -223,3 +245,49 @@ trail instead of repeating the Chamfer calculation:
 ```bash
 python python/main.py -s dataset -o output --metrics --gt ground_truth.ply
 ```
+
+### Camera coverage loss
+
+`alpha_loss_weight` (CLI `--alpha-loss-weight`; `0` disables it) adds
+`weight / (2*N) * sum(mask * (A - target_alpha)^2)` to the existing RGB
+half-MSE, which is averaged over `3*N` channel samples. Thus weight `1` gives
+alpha the same overall loss weight as averaged RGB; weight `1/3` gives it the
+same per-channel coefficient as R, G, or B. Choose a weight experimentally.
+
+`A` is the RAW framebuffer's physical camera coverage. RGB targets imply
+`target_alpha=1`; the native `upload_training_targets` API also accepts float32
+RGBA targets. Rays with no geometric surfel interaction are excluded, including
+ordinary background. Zero-opacity surfel intersections remain eligible.
+Incomplete traversals are excluded rather than treated as escape. Opaque meshes
+terminate coverage at one. The framebuffer's physical alpha is unchanged.
+
+The deterministic alpha adjoint differentiates the same camera slab transmission
+product through stored opacity, position, local rotation, both scales, and the
+`beta` footprint profile. The unused `shape` field has no forward dependence and
+therefore no derivative. Hit membership, slab membership, and traversal decisions
+are discrete; no boundary derivatives are introduced. This is a primary-camera
+term only, evaluated once regardless of adjoint sample or bounce counts. It
+requires photon mapping with `CameraGatherKernel2`; unsupported integrators fail
+explicitly when alpha adjoints are requested.
+
+Set `alpha_loss_opacity_only=True` (CLI `--alpha-loss-opacity-only`) to detach
+position, rotation, both scales, and beta **for the alpha term only**. The forward
+loss and its opacity derivative stay identical. RGB and other regularizers can
+still update geometry. Setting the option false retains full footprint
+gradients; `--no-alpha-loss-opacity-only` explicitly restores them. This option
+prevents this loss from directly expanding/moving footprints to increase coverage.
+It can still strengthen incorrect surfaces, and opacity saturation may leave a
+nonzero loss where footprint weights prevent full coverage.
+
+The loss can also improve coverage by moving/expanding footprints or strengthening
+incorrect geometry. It does not identify the correct surface or require each
+surfel on a ray to be opaque. Densification statistics retain their separate RGB
+signal. The implementation adds a camera traversal for eligibility and another
+for the alpha backward pass when enabled; neither performs lighting queries.
+
+Native loss results expose total image `loss_values`, RGB `l2_loss_values`, and
+weighted `alpha_loss_values`. Training CSVs record `loss_alpha_weighted_mean`.
+`evaluate_loss_from_current_forward` evaluates the current RAW framebuffer without
+replacing it with adjoints. Call it immediately after forward rendering.
+`render_backward` accepts RGB or RGBA cotangents; RGB inputs seed zero alpha,
+and explicit RGBA inputs differentiate physical coverage without the loss mask.
