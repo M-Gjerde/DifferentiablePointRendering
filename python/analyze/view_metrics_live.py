@@ -890,6 +890,7 @@ def draw_metrics_figure(
     weighted_regularizer_columns = get_first_available_columns(
         loss_dataframe,
         [
+            ("loss_alpha_weighted_mean",),
             (
                 "loss_depth_distortion_weighted_mean",
                 "loss_depth_distortion_weighted_sum",
@@ -1013,6 +1014,9 @@ def draw_metrics_figure(
         ),
         "loss_total_mean": dict(color="tab:orange", linewidth=2.0, alpha=0.95),
 
+        "loss_alpha_weighted_mean": dict(
+            color="tab:purple", linewidth=1.8, alpha=0.95,
+        ),
         "loss_depth_distortion_weighted_mean": dict(
             color="tab:red",
             linewidth=1.8,

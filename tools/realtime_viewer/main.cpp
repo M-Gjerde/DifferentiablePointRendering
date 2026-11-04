@@ -2268,6 +2268,7 @@ namespace {
         settings.numGatherPasses = 1u;
         settings.renderDebugGradientImages = false;
         settings.depthDistortionWorldSpace = true;
+        settings.medianDepthRetainLastHit = false;
         settings.enableAdjointDirectLight = true;
         settings.rendererDebugShareLocalLayerDirectLighting = true;
         settings.pointGeometrySupportRadius = 0.00f;

@@ -110,6 +110,7 @@ def print_run_configuration(
         ("depth_distort_weight", config.depth_distort_weight),
         ("depth_distort_world_space", config.depth_distort_world_space),
         ("depth_distort_squared", config.depth_distort_squared),
+        ("median_depth_retain_last_hit", config.median_depth_retain_last_hit),
         ("densification_interval", config.densification_interval),
         ("densification_relative_error", config.densification_relative_error),
         ("densification_radiance_floor", config.densification_radiance_floor),

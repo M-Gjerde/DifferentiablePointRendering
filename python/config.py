@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 16
+    adjoint_passes: int = 8
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -40,6 +40,7 @@ class RendererSettingsConfig:
             "depth_distort_squared": config.depth_distort_squared,
             "normal_consistency_weight": config.normal_consistency_weight,
             "normal_from_depth_use_mean_depth": config.normal_from_depth_use_mean_depth,
+            "median_depth_retain_last_hit": config.median_depth_retain_last_hit,
             "intra_slab_depth_weight": config.intra_slab_depth_weight,
             "share_local_layer_direct_lighting": config.share_local_layer_direct_lighting,
             "enable_primal_activity_tracking": (
@@ -93,19 +94,21 @@ class OptimizationConfig:
     position_lr_scale_final: float = 0.01
     lr_decay_start_iteration: int = 0
     # Decay duration independent of training length; hold final scales afterward.
-    lr_decay_max_steps: int = 30000
+    lr_decay_max_steps: int = 30_000
 
-    depth_distort_weight: float = 0.02
-    # Camera coverage: weight * mean(0.5 * (A - 1)^2), excluding untouched/incomplete rays.
-    # Differentiates opacity and footprint geometry; zero disables this term.
-    alpha_loss_weight: float = 0.05
-    alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
+    depth_distort_weight: float = 0.005
+
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
-    depth_distort_start_iteration: int = 2000
+    depth_distort_start_iteration: int = 2_000
     normal_consistency_weight: float = 1.0e-3
-    normal_consistency_start_iteration: int = 3000
+    normal_consistency_start_iteration: int = 3_000
     normal_from_depth_use_mean_depth: bool = False
+    median_depth_retain_last_hit: bool = False  # Training median depth and depth-derived normals: retain sub-threshold last hits.
+    # Differentiates opacity and footprint geometry; zero disables this term.
+    alpha_loss_weight: float = 0.01
+    alpha_loss_start_iteration: int = 15_000  # Global iteration at which alpha loss becomes active.
+    alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
 
     intra_slab_depth_weight: float = 0.0e-5
 
@@ -123,7 +126,7 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
     min_surfel_opacity: float = 0.05  # Strict opacity < threshold; 0 disables opacity pruning.
-    topology_freeze_last_iterations: int = 4000  # 0 disables the final densification/pruning freeze.
+    topology_freeze_last_iterations: int = 4_000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
@@ -156,13 +159,13 @@ class OptimizationConfig:
     densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_use_cloning: bool = True  # Small eligible surfels clone within their beta footprint; larger ones split.
-    densification_clone_scale_fraction: float = 0.005 # Clone when max(su,sv) <= this * training-camera extent.
+    densification_clone_scale_fraction: float = 0.0035 # Clone when max(su,sv) <= this * training-camera extent.
 
     rebuild_bvh_interval: int = densification_interval
     # Mesh extraction and evaluation
     mesh_extraction_interval: int = 1_000
     mesh_extraction_depth_key: str = "median_depth"
-    mesh_extraction_median_depth_retain_last_hit: bool = True
+    mesh_extraction_median_depth_retain_last_hit: bool = False
     mesh_extraction_mesh_res: int = 2048
     mesh_extraction_num_cluster: int = 0  # Keep all components with at least 50 triangles.
     mesh_albedo_texture_size: int = 1024
@@ -538,12 +541,18 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
         objective, "--depth-distort-squared",
         help="Square world-space depth differences (NDC always uses squared differences).",
     )
+    objective.add_argument("--alpha-loss-start-iteration", type=int)
     objective.add_argument("--depth-distort-start-iteration", type=int)
     objective.add_argument("--normal-consistency-start-iteration", type=int)
     _add_boolean_argument(
         objective,
         "--normal-from-depth-use-mean-depth",
         dest="normal_from_depth_use_mean_depth",
+    )
+
+    _add_boolean_argument(
+        objective, "--median-depth-retain-last-hit",
+        help="Retain sub-threshold last-hit depths during training, including median-depth normal regularization.",
     )
 
     rendering = parser.add_argument_group("rendering")

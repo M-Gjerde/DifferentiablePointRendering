@@ -71,11 +71,11 @@ def extract_mesh_from_point_cloud(
         command.append("--export-cameras" if config.mesh_export_cameras else "--no-export-cameras")
 
     extraction_description = "Mesh extraction and textured GLB export" if export_gltf else "Mesh extraction"
-    print_status(
-        f"{log_prefix} {extraction_description} started. This can take a few minutes. "
-        f"Progress log: {extraction_log_path}",
-        flush=True,
-    )
+    #print_status(
+    #    f"{log_prefix} {extraction_description} started. This can take a few minutes. "
+    #    f"Progress log: {extraction_log_path}",
+    #    flush=True,
+    #)
     extraction_start_time = time.perf_counter()
     with extraction_log_path.open("w", encoding="utf-8") as extraction_log:
         result = subprocess.run(
@@ -97,12 +97,12 @@ def extract_mesh_from_point_cloud(
     if not mesh_path.is_file():
         print_status(f"{log_prefix} Mesh extraction completed but did not create {mesh_path}")
         return None
-    print_status(
-        f"{log_prefix} {extraction_description} completed in "
-        f"{time.perf_counter() - extraction_start_time:.1f} s. "
-        f"Output: {mesh_output_dir / 'reconstruction.glb' if export_gltf else mesh_path}",
-        flush=True,
-    )
+    #print_status(
+    #    f"{log_prefix} {extraction_description} completed in "
+    #    f"{time.perf_counter() - extraction_start_time:.1f} s. "
+    #    f"Output: {mesh_output_dir / 'reconstruction.glb' if export_gltf else mesh_path}",
+    #    flush=True,
+    #)
     return mesh_path
 
 
@@ -700,6 +700,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         "Loss terms: "
         "rgb=half_MSE, "
         f"alpha_weight={config.alpha_loss_weight:.3e}, "
+        f"alpha_start_iter={config.alpha_loss_start_iteration}, "
         f"depth_distortion={use_depth_distortion} "
         f"base_weight={depth_distortion_base_weight:.3e} "
         f"start_iter={depth_distortion_start_iteration}, "
@@ -813,9 +814,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
 
     initial_alpha_loss = 0.0
-    if config.alpha_loss_weight > 0:
+    initial_alpha_loss_weight = helpers.scheduled_regularizer_weight(
+        config.alpha_loss_weight,
+        iteration=resume_iteration_offset,
+        start_iteration=config.alpha_loss_start_iteration,
+    )
+    if initial_alpha_loss_weight > 0:
         image_losses = renderer.evaluate_loss_from_current_forward(
-            list(training_camera_ids), {"alpha_loss_weight": float(config.alpha_loss_weight)})
+            list(training_camera_ids), {"alpha_loss_weight": initial_alpha_loss_weight})
         initial_alpha_loss = sum(image_losses["alpha_loss_values"].values())
     initial_loss_tuple = helpers.compute_initial_losses_and_save_outputs(
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
@@ -1111,6 +1117,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     config=config,
                 )
 
+                active_alpha_loss_weight = helpers.scheduled_regularizer_weight(
+                    config.alpha_loss_weight,
+                    iteration=global_iteration,
+                    start_iteration=config.alpha_loss_start_iteration,
+                )
                 active_depth_distortion_weight = helpers.scheduled_regularizer_weight(
                     depth_distortion_base_weight,
                     iteration=global_iteration,
@@ -1157,6 +1168,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         accumulate_densification_stats=accumulate_density,
                     )
                     device_step_options.update({
+                        "alpha_loss_weight": active_alpha_loss_weight,
                         "depth_distortion_weight": active_depth_distortion_weight,
                         "normal_consistency_weight": active_normal_consistency_weight,
                         "intra_slab_depth_weight": intra_slab_depth_weight,
@@ -1796,7 +1808,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     intra_slab_depth_weight=intra_slab_depth_weight,
                     densification_relative_error=bool(config.densification_relative_error and densification_interval > 0),
                     densification_radiance_floor=float(config.densification_radiance_floor),
-                    alpha_loss_weight=float(config.alpha_loss_weight),
+                    alpha_loss_weight=active_alpha_loss_weight,
                     alpha_loss_opacity_only=bool(config.alpha_loss_opacity_only),
                     densification_full_position=bool(config.densification_full_position),
                     densification_image_space=bool(config.densification_image_space),
@@ -2404,9 +2416,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     final_intra_slab_depth_loss_raw = 0.0
     final_intra_slab_depth_loss_weighted = 0.0
     final_alpha_loss = 0.0
-    if config.alpha_loss_weight > 0:
+    final_alpha_loss_weight = helpers.scheduled_regularizer_weight(
+        config.alpha_loss_weight,
+        iteration=final_global_iteration,
+        start_iteration=config.alpha_loss_start_iteration,
+    )
+    if final_alpha_loss_weight > 0:
         image_losses = renderer.evaluate_loss_from_current_forward(
-            list(training_camera_ids), {"alpha_loss_weight": float(config.alpha_loss_weight)})
+            list(training_camera_ids), {"alpha_loss_weight": final_alpha_loss_weight})
         final_alpha_loss = sum(image_losses["alpha_loss_values"].values())
     final_total_loss = final_alpha_loss
 
