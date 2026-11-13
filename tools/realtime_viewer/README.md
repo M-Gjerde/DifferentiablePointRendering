@@ -90,16 +90,23 @@ Controls:
 - `Add surfel`: create a camera-facing surfel at the current viewport focus and select it for editing
 - `Save as startup default`: save the currently edited surfels beside the original PLY and load them automatically on later runs
 - `Reset to original`: reload the original startup PLY and clear the saved startup override
-- `R`: load the latest optimization run PLY
+- Drop a training run, its `points` folder, or a parent such as `output/pbdr_blade`: load its latest checkpoint and anchor navigation to that run. A parent selects the run with the most recently updated `metrics.csv`.
+- `R`: refresh the latest checkpoint in the anchored run; without a folder anchor, search for the latest run in `python/OptimizationOutput`
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
 - Left/right arrows: step through snapshots in the active optimization run
-- Up/down arrows with a scene camera selected: next/previous scene camera, wrapping at either end
+- Up/down arrows with a scene camera selected: next/previous scene camera, wrapping at either end; hold to keep cycling once per frame
 - Up/down arrows with the viewport camera selected: next/previous optimization snapshot
 
 Snapshot navigation refreshes only the active run's `points` folder, including
-new snapshots written during training. It stays in that run until you use `R`
-or **Load latest run PLY** to search for the latest run again.
+new snapshots written during training. After dropping a folder, `R`, `F`, `L`,
+`N`/`M`, and snapshot arrows stay in the selected run even if another run starts.
+Up/down retain their scene-camera behavior when a scene camera is selected.
+An empty dropped folder stays anchored: press `R` or `F` after checkpoints appear.
+In **Scene files**, **Reset to OptimizationOutput** clears the anchor and performs
+the original global latest-run search. Loading another point-cloud PLY also clears
+the folder anchor. Without an anchor, `R` or **Load latest run PLY** searches for
+the latest run again.
 
 ### Background compositing
 

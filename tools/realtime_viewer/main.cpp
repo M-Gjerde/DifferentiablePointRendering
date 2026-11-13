@@ -36,6 +36,7 @@
 #include <stb_image.h>
 #include <yaml-cpp/yaml.h>
 #include "TrainingDebugDefaults.h"
+#include "OptimizationSnapshots.h"
 #include "TargetLossProjection.h"
 #include "TransportScores.h"
 
@@ -72,6 +73,10 @@ import Pale.Utils.ImageIO;
 #endif
 
 namespace {
+    using viewer::PointCloudSnapshot;
+    using viewer::listOptimizationPointCloudSnapshots;
+    using viewer::findLatestOptimizationPointCloud;
+
     // Walk mode drains input each frame instead of replaying old key states.
     // Preserve one-shot actions even when a press and release both arrived
     // during a slow render and the final held state is already released.
@@ -567,19 +572,13 @@ namespace {
     };
 
     struct DropState {
-        std::filesystem::path pendingPlyPath;
-        bool hasPendingPlyPath = false;
+        std::filesystem::path pendingPath;
+        bool hasPendingPath = false;
     };
 
     struct FileBrowserEntry {
         std::filesystem::path path;
         bool directory = false;
-    };
-
-    struct PointCloudSnapshot {
-        std::filesystem::path path;
-        uint64_t iteration = 0u;
-        std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
     };
 
     struct TimerAggregate {
@@ -1248,12 +1247,6 @@ namespace {
         return entries;
     }
 
-    [[nodiscard]] std::filesystem::file_time_type lastWriteTimeOrMin(const std::filesystem::path& path) {
-        std::error_code error;
-        const std::filesystem::file_time_type time = std::filesystem::last_write_time(path, error);
-        return error ? std::filesystem::file_time_type::min() : time;
-    }
-
     struct PlyFileSnapshot {
         std::uintmax_t size = 0u;
         std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
@@ -1394,137 +1387,6 @@ namespace {
         }
         return std::filesystem::absolute(lhs).lexically_normal() ==
                std::filesystem::absolute(rhs).lexically_normal();
-    }
-
-    [[nodiscard]] std::optional<uint64_t> parseIterationPointCloudFilename(const std::filesystem::path& path) {
-        const std::string filename = path.filename().string();
-        const std::string prefix = "iter_";
-        const std::string suffix = "_points.ply";
-        if (filename.rfind(prefix, 0u) != 0u ||
-            filename.size() <= prefix.size() + suffix.size() ||
-            filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) != 0) {
-            return std::nullopt;
-        }
-
-        uint64_t iteration = 0u;
-        for (std::size_t index = prefix.size(); index < filename.size() - suffix.size(); ++index) {
-            const char c = filename[index];
-            if (c < '0' || c > '9') {
-                return std::nullopt;
-            }
-            iteration = iteration * 10u + static_cast<uint64_t>(c - '0');
-        }
-        return iteration;
-    }
-
-    [[nodiscard]] std::vector<PointCloudSnapshot> listOptimizationPointCloudSnapshots(
-        const std::filesystem::path& pointsDirectory) {
-        std::vector<PointCloudSnapshot> snapshots;
-        std::error_code error;
-        if (!std::filesystem::is_directory(pointsDirectory, error)) {
-            return snapshots;
-        }
-
-        for (const auto& pointEntry : std::filesystem::directory_iterator(pointsDirectory, error)) {
-            if (error) {
-                break;
-            }
-            if (!pointEntry.is_regular_file(error) || error || !isPlyPath(pointEntry.path())) {
-                error.clear();
-                continue;
-            }
-
-            const std::optional<uint64_t> iteration = parseIterationPointCloudFilename(pointEntry.path());
-            if (!iteration) {
-                continue;
-            }
-            snapshots.push_back({
-                .path = pointEntry.path(),
-                .iteration = *iteration,
-                .writeTime = lastWriteTimeOrMin(pointEntry.path()),
-            });
-        }
-
-        std::sort(snapshots.begin(), snapshots.end(), [](const PointCloudSnapshot& lhs, const PointCloudSnapshot& rhs) {
-            if (lhs.iteration != rhs.iteration) {
-                return lhs.iteration < rhs.iteration;
-            }
-            if (lhs.writeTime != rhs.writeTime) {
-                return lhs.writeTime < rhs.writeTime;
-            }
-            return lhs.path.filename().string() < rhs.path.filename().string();
-        });
-        return snapshots;
-    }
-
-    [[nodiscard]] std::optional<std::filesystem::path> findLatestOptimizationPointCloud(
-        const std::filesystem::path& optimizationOutputDirectory) {
-        struct RunCandidate {
-            std::filesystem::path runDirectory;
-            std::filesystem::path metricsPath;
-            PointCloudSnapshot pointCloud;
-            std::filesystem::file_time_type metricsWriteTime = std::filesystem::file_time_type::min();
-        };
-
-        std::error_code error;
-        if (!std::filesystem::is_directory(optimizationOutputDirectory, error)) {
-            return std::nullopt;
-        }
-
-        std::optional<RunCandidate> bestRun;
-        std::filesystem::recursive_directory_iterator runEntry(
-            optimizationOutputDirectory,
-            std::filesystem::directory_options::skip_permission_denied,
-            error);
-        const std::filesystem::recursive_directory_iterator end;
-        while (runEntry != end) {
-            std::error_code entryError;
-            const std::filesystem::directory_entry entry = *runEntry;
-            const bool isMetricsFile =
-                entry.path().filename() == "metrics.csv" &&
-                entry.is_regular_file(entryError) &&
-                !entryError;
-
-            runEntry.increment(error);
-            if (error) {
-                error.clear();
-            }
-            if (!isMetricsFile) {
-                continue;
-            }
-
-            const std::filesystem::path metricsPath = entry.path();
-            const std::filesystem::path runDirectory = metricsPath.parent_path();
-            const std::filesystem::path pointsDirectory = runDirectory / "points";
-            std::error_code pointsError;
-            if (!std::filesystem::is_directory(pointsDirectory, pointsError) || pointsError) {
-                continue;
-            }
-
-            const std::vector<PointCloudSnapshot> snapshots = listOptimizationPointCloudSnapshots(pointsDirectory);
-            if (snapshots.empty()) {
-                continue;
-            }
-            const PointCloudSnapshot& bestPointCloud = snapshots.back();
-
-            RunCandidate candidate{
-                .runDirectory = runDirectory,
-                .metricsPath = metricsPath,
-                .pointCloud = bestPointCloud,
-                .metricsWriteTime = lastWriteTimeOrMin(metricsPath),
-            };
-            if (!bestRun ||
-                candidate.metricsWriteTime > bestRun->metricsWriteTime ||
-                (candidate.metricsWriteTime == bestRun->metricsWriteTime &&
-                 candidate.metricsPath.string() > bestRun->metricsPath.string())) {
-                bestRun = candidate;
-            }
-        }
-
-        if (!bestRun) {
-            return std::nullopt;
-        }
-        return bestRun->pointCloud.path;
     }
 
     [[nodiscard]] std::optional<std::filesystem::path> sceneXmlForOptimizationPointCloud(
@@ -2860,9 +2722,10 @@ namespace {
 
         for (int pathIndex = 0; pathIndex < count; ++pathIndex) {
             const std::filesystem::path path{paths[pathIndex]};
-            if (isPlyPath(path)) {
-                dropState->pendingPlyPath = path;
-                dropState->hasPendingPlyPath = true;
+            std::error_code error;
+            if (isPlyPath(path) || std::filesystem::is_directory(path, error)) {
+                dropState->pendingPath = path;
+                dropState->hasPendingPath = true;
                 return;
             }
         }
@@ -2932,6 +2795,7 @@ int main(int argc, char** argv) {
         copyPathToBuffer(currentPointCloudPath, pointCloudPathBuffer);
         std::string pointCloudStatus =
             "Loaded " + std::to_string(buildProducts.points.size()) + " surfels";
+        viewer::OptimizationFolderAnchor optimizationFolderAnchor;
         bool latestOptimizationMode = false;
         std::filesystem::path latestOptimizationPointsDirectory;
         std::vector<PointCloudSnapshot> latestOptimizationSnapshots;
@@ -3320,6 +3184,7 @@ int main(int argc, char** argv) {
             pointCloudStatus = "Loaded " + std::to_string(surfelCount) + " surfels";
             cameraDirty = true;
             if (!keepLatestOptimizationMode) {
+                optimizationFolderAnchor.clear();
                 latestOptimizationMode = false;
                 latestOptimizationPointsDirectory.clear();
                 latestOptimizationSnapshots.clear();
@@ -3400,6 +3265,7 @@ int main(int argc, char** argv) {
             cameraDirty = true;
 
             if (!keepLatestOptimizationMode) {
+                optimizationFolderAnchor.clear();
                 latestOptimizationMode = false;
                 latestOptimizationPointsDirectory.clear();
                 latestOptimizationSnapshots.clear();
@@ -3428,11 +3294,20 @@ int main(int argc, char** argv) {
         };
 
         auto refreshLatestOptimizationPointCloud = [&]() {
-            const std::optional<std::filesystem::path> latestPointCloud =
-                findLatestOptimizationPointCloud(optimizationOutputDirectory);
+            std::optional<std::filesystem::path> latestPointCloud;
+            if (optimizationFolderAnchor.active()) {
+                if (const auto pointsDirectory = optimizationFolderAnchor.resolve()) {
+                    const auto snapshots = listOptimizationPointCloudSnapshots(*pointsDirectory);
+                    if (!snapshots.empty()) latestPointCloud = snapshots.back().path;
+                }
+            } else {
+                latestPointCloud = findLatestOptimizationPointCloud(optimizationOutputDirectory);
+            }
             if (!latestPointCloud) {
-                pointCloudStatus =
-                    "No optimization point snapshot found in " + optimizationOutputDirectory.string();
+                const auto searchDirectory = optimizationFolderAnchor.active()
+                    ? optimizationFolderAnchor.pointsDirectory.value_or(optimizationFolderAnchor.folder)
+                    : optimizationOutputDirectory;
+                pointCloudStatus = "No optimization point snapshot found in " + searchDirectory.string();
                 return;
             }
 
@@ -3473,12 +3348,16 @@ int main(int argc, char** argv) {
                 offset < 0 ? static_cast<std::size_t>(-offset) : static_cast<std::size_t>(offset);
 
             if (!latestOptimizationMode || latestOptimizationPointsDirectory.empty()) {
-                pointCloudStatus = "Press R or Load latest run PLY before using snapshot navigation";
+                if (optimizationFolderAnchor.active()) {
+                    refreshLatestOptimizationPointCloud();
+                } else {
+                    pointCloudStatus = "Press R, drop a training folder, or Load latest run PLY before using snapshot navigation";
+                }
                 return;
             }
 
             // Refresh only this run so newly written snapshots remain visible.
-            // Discovering another run is an explicit R / Load latest run action.
+            // Folder anchors stay in their selected run until explicitly reset.
             std::vector<PointCloudSnapshot> snapshots =
                 listOptimizationPointCloudSnapshots(latestOptimizationPointsDirectory);
             if (snapshots.empty()) {
@@ -3505,8 +3384,8 @@ int main(int argc, char** argv) {
                 return;
             }
             if (direction > 0 && currentIndex + 1u >= snapshots.size()) {
-                latestOptimizationSnapshots = std::move(snapshots);
                 latestOptimizationSnapshotIndex = snapshots.size() - 1u;
+                latestOptimizationSnapshots = std::move(snapshots);
                 pointCloudStatus = "Already at latest optimization snapshot";
                 return;
             }
@@ -3570,7 +3449,13 @@ int main(int argc, char** argv) {
 
         auto jumpToOptimizationSnapshotBoundary = [&](bool latestSnapshot) {
             std::filesystem::path pointsDirectory;
-            if (latestOptimizationMode && !latestOptimizationPointsDirectory.empty()) {
+            if (optimizationFolderAnchor.active()) {
+                pointsDirectory = optimizationFolderAnchor.resolve().value_or(std::filesystem::path{});
+                if (pointsDirectory.empty()) {
+                    pointCloudStatus = "No optimization snapshots found in " + optimizationFolderAnchor.folder.string();
+                    return;
+                }
+            } else if (latestOptimizationMode && !latestOptimizationPointsDirectory.empty()) {
                 pointsDirectory = latestOptimizationPointsDirectory;
             } else if (currentPointCloudPath.has_parent_path()) {
                 const std::filesystem::path candidateDirectory = currentPointCloudPath.parent_path();
@@ -5125,11 +5010,21 @@ int main(int argc, char** argv) {
             }
             if (glfwWindowShouldClose(window)) { break; }
 
-            if (dropState.hasPendingPlyPath) {
-                const std::filesystem::path droppedPath = dropState.pendingPlyPath;
-                dropState.hasPendingPlyPath = false;
+            if (dropState.hasPendingPath) {
+                const std::filesystem::path droppedPath = dropState.pendingPath;
+                dropState.hasPendingPath = false;
                 finishWalkNavigation(false);
-                handleDroppedPly(droppedPath);
+                std::error_code error;
+                if (std::filesystem::is_directory(droppedPath, error)) {
+                    optimizationFolderAnchor.set(droppedPath);
+                    latestOptimizationMode = false;
+                    latestOptimizationPointsDirectory.clear();
+                    latestOptimizationSnapshots.clear();
+                    latestOptimizationSnapshotIndex = 0u;
+                    refreshLatestOptimizationPointCloud();
+                } else {
+                    handleDroppedPly(droppedPath);
+                }
             }
 
             if ((autoRender && cameraDirty) || renderRequested) {
@@ -5291,9 +5186,15 @@ int main(int argc, char** argv) {
                     stepLatestOptimizationSnapshot(1);
                 }
 
+                // Scene cameras cycle once per frame while held, like the
+                // horizontal snapshot arrows. Keep one-shot snapshot behavior
+                // for the viewport camera and preserve short camera-key taps.
+                const bool cycleSceneCameras = cameraSource == CameraSource::SceneXml;
                 const int verticalArrowStep =
-                    static_cast<int>(viewerKeyPressed(ImGuiKey_UpArrow)) -
-                    static_cast<int>(viewerKeyPressed(ImGuiKey_DownArrow));
+                    static_cast<int>(viewerKeyPressed(ImGuiKey_UpArrow) ||
+                        (cycleSceneCameras && ImGui::IsKeyDown(ImGuiKey_UpArrow))) -
+                    static_cast<int>(viewerKeyPressed(ImGuiKey_DownArrow) ||
+                        (cycleSceneCameras && ImGui::IsKeyDown(ImGuiKey_DownArrow)));
                 if (verticalArrowStep != 0) {
                     if (cameraSource == CameraSource::SceneXml) {
                         const int cameraCount = static_cast<int>(buildProducts.cameraGPUs.size());
@@ -5570,7 +5471,23 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("Browse##PointCloud")) {
                     plyBrowserOpen = true;
                 }
-                if (ImGui::Button("Load latest run PLY")) {
+                if (optimizationFolderAnchor.active()) {
+                    ImGui::TextWrapped("Training folder: %s", optimizationFolderAnchor.folder.string().c_str());
+                    if (optimizationFolderAnchor.pointsDirectory) {
+                        ImGui::TextWrapped("Anchored run: %s",
+                            optimizationFolderAnchor.pointsDirectory->parent_path().string().c_str());
+                    }
+                }
+                ImGui::TextDisabled("Drop a training folder to anchor checkpoint navigation.");
+                if (ImGui::Button("Reset to OptimizationOutput")) {
+                    optimizationFolderAnchor.clear();
+                    latestOptimizationMode = false;
+                    latestOptimizationPointsDirectory.clear();
+                    latestOptimizationSnapshots.clear();
+                    latestOptimizationSnapshotIndex = 0u;
+                    refreshLatestOptimizationPointCloud();
+                }
+                if (ImGui::Button(optimizationFolderAnchor.active() ? "Refresh latest checkpoint (R)" : "Load latest run PLY")) {
                     refreshLatestOptimizationPointCloud();
                 }
                 ImGui::SameLine();
