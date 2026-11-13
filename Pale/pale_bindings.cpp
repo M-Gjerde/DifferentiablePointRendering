@@ -183,6 +183,7 @@ class PythonRenderer
     {
         float alphaLossWeight = 0.0f;
         bool alphaLossOpacityOnly = false;
+        bool alphaLossAbsolute = false;
         bool relativeDensification = false;
         bool densificationFullPosition = true;
         bool densificationImageSpace = false;
@@ -5006,6 +5007,7 @@ private:
         RgbLossOptions options;
         options.alphaLossWeight = get_f(optionsDictionary, "alpha_loss_weight", 0.0f);
         options.alphaLossOpacityOnly = get_b(optionsDictionary, "alpha_loss_opacity_only", false);
+        options.alphaLossAbsolute = get_b(optionsDictionary, "alpha_loss_absolute", false);
         if (!std::isfinite(options.alphaLossWeight) || options.alphaLossWeight < 0.0f)
             throw std::invalid_argument("alpha_loss_weight must be finite and nonnegative");
         options.relativeDensification = get_b(optionsDictionary, "densification_relative_error", false);
@@ -6505,6 +6507,7 @@ private:
                 lossOut = target.loss,
                 camera = sensor.camera, coverageSettings, coverageScene,
                 alphaLossWeight = options.alphaLossWeight,
+                alphaLossAbsolute = options.alphaLossAbsolute,
                 invElementCount, relativeDensification = options.relativeDensification,
                 floorSquared, writeAdjoints](sycl::id<1> pixelId)
             {
@@ -6534,10 +6537,15 @@ private:
                     if (coverage.interacted && coverage.complete) {
                         const float diffAlpha = rendered.w() - targetPixel.w();
                         // RGB is a mean over 3N elements; alpha is a mean over N rays.
-                        barAlpha = alphaLossWeight * diffAlpha * (3.0f * invElementCount);
+                        const float alphaDerivative = alphaLossAbsolute
+                            ? (diffAlpha > 0.0f ? 1.0f : (diffAlpha < 0.0f ? -1.0f : 0.0f))
+                            : diffAlpha;
+                        barAlpha = alphaLossWeight * alphaDerivative * (3.0f * invElementCount);
                         auto alphaAtomic = sycl::atomic_ref<float, sycl::memory_order::relaxed,
                             sycl::memory_scope::device, sycl::access::address_space::global_space>(lossOut[1]);
-                        alphaAtomic.fetch_add(0.5f * diffAlpha * barAlpha);
+                        alphaAtomic.fetch_add(alphaLossAbsolute
+                            ? alphaLossWeight * sycl::fabs(diffAlpha) * (3.0f * invElementCount)
+                            : 0.5f * diffAlpha * barAlpha);
                     }
                 }
 

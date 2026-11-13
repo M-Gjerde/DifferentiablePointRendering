@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 8
+    adjoint_passes: int = 12
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -74,7 +74,7 @@ class OptimizationConfig:
     # Optimizer: base learning rates
     # Uniform multiplier applied to every component learning rate below.
     learning_rate: float = 1.0
-    learning_rate_position: float = 0.00015
+    learning_rate_position: float = 0.00016
     use_position_lr_scene_scale: bool = True  # Multiply position LR by 1.1 * training-camera radius.
     learning_rate_rotation: float = 0.005
     learning_rate_scale: float = 0.004
@@ -96,18 +96,18 @@ class OptimizationConfig:
     # Decay duration independent of training length; hold final scales afterward.
     lr_decay_max_steps: int = 30_000
 
-    depth_distort_weight: float = 0.005
-
+    depth_distort_weight: float = 0.05
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_squared: bool = False  # False: 2DGS squared depth distortion; True: absolute distance.
-    depth_distort_start_iteration: int = 2_000
+    depth_distort_squared: bool = True  # World-space only: True uses squared depth differences, False absolute; NDC always uses squared differences.
+    depth_distort_start_iteration: int = 1_000
     normal_consistency_weight: float = 1.0e-3
-    normal_consistency_start_iteration: int = 3_000
+    normal_consistency_start_iteration: int = 0
     normal_from_depth_use_mean_depth: bool = False
     median_depth_retain_last_hit: bool = False  # Training median depth and depth-derived normals: retain sub-threshold last hits.
     # Differentiates opacity and footprint geometry; zero disables this term.
-    alpha_loss_weight: float = 0.01
-    alpha_loss_start_iteration: int = 15_000  # Global iteration at which alpha loss becomes active.
+    alpha_loss_weight: float = 0.0005
+    alpha_loss_start_iteration: int = 10_000  # Global iteration at which alpha loss becomes active.
+    alpha_loss_absolute: bool = True  # True: absolute alpha error; False: half squared alpha error.
     alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
 
     intra_slab_depth_weight: float = 0.0e-5
@@ -125,7 +125,7 @@ class OptimizationConfig:
 
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
-    min_surfel_opacity: float = 0.05  # Strict opacity < threshold; 0 disables opacity pruning.
+    min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
     topology_freeze_last_iterations: int = 4_000  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
@@ -520,6 +520,10 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     objective = parser.add_argument_group("objective and regularizers")
+    _add_boolean_argument(
+        objective, "--alpha-loss-absolute",
+        help="Use absolute alpha error instead of half squared error (zero gradient at an exact match).",
+    )
     _add_boolean_argument(
         objective, "--alpha-loss-opacity-only",
         help="Apply camera alpha loss only to stored opacity; detach all footprint geometry and beta for this loss.",

@@ -476,6 +476,7 @@ def make_device_training_step_options(
         "densification_radiance_floor": float(config.densification_radiance_floor),
         "alpha_loss_weight": float(config.alpha_loss_weight),
         "alpha_loss_opacity_only": bool(config.alpha_loss_opacity_only),
+        "alpha_loss_absolute": bool(config.alpha_loss_absolute),
         "densification_full_position": bool(config.densification_full_position),
         "densification_image_space": bool(config.densification_image_space),
         "include_depth_distortion": include_depth_distortion,
@@ -538,6 +539,7 @@ def compute_iteration_gradients(
         densification_image_space: bool = False,
         alpha_loss_weight: float = 0.0,
         alpha_loss_opacity_only: bool = False,
+        alpha_loss_absolute: bool = False,
 ) -> IterationGradientResult:
     active_camera_name = active_camera_name_for_iteration(
         active_training_camera_ids,
@@ -552,6 +554,7 @@ def compute_iteration_gradients(
             "densification_image_space": densification_image_space,
             "alpha_loss_weight": alpha_loss_weight,
             "alpha_loss_opacity_only": alpha_loss_opacity_only,
+            "alpha_loss_absolute": alpha_loss_absolute,
         },
     )
     loss_state = make_rgb_loss_state(active_training_camera_ids, adjoint_images)
@@ -821,7 +824,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
     if initial_alpha_loss_weight > 0:
         image_losses = renderer.evaluate_loss_from_current_forward(
-            list(training_camera_ids), {"alpha_loss_weight": initial_alpha_loss_weight})
+            list(training_camera_ids), {"alpha_loss_weight": initial_alpha_loss_weight,
+                                        "alpha_loss_absolute": bool(config.alpha_loss_absolute)})
         initial_alpha_loss = sum(image_losses["alpha_loss_values"].values())
     initial_loss_tuple = helpers.compute_initial_losses_and_save_outputs(
         output_dir=config.output_dir, initial_images=initial_images, target_images=target_images,
@@ -1810,6 +1814,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     densification_radiance_floor=float(config.densification_radiance_floor),
                     alpha_loss_weight=active_alpha_loss_weight,
                     alpha_loss_opacity_only=bool(config.alpha_loss_opacity_only),
+                    alpha_loss_absolute=bool(config.alpha_loss_absolute),
                     densification_full_position=bool(config.densification_full_position),
                     densification_image_space=bool(config.densification_image_space),
                 )
@@ -2423,7 +2428,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
     if final_alpha_loss_weight > 0:
         image_losses = renderer.evaluate_loss_from_current_forward(
-            list(training_camera_ids), {"alpha_loss_weight": final_alpha_loss_weight})
+            list(training_camera_ids), {"alpha_loss_weight": final_alpha_loss_weight,
+                                        "alpha_loss_absolute": bool(config.alpha_loss_absolute)})
         final_alpha_loss = sum(image_losses["alpha_loss_values"].values())
     final_total_loss = final_alpha_loss
 
