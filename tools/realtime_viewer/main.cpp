@@ -63,6 +63,7 @@
 #include "MeshExportControls.h"
 #include "SceneTree.h"
 #include "ViewportLayout.h"
+#include "ViewportShortcuts.h"
 #include "ViewportOverlayCache.h"
 #include "InspectorInputHandoff.h"
 #include "LivePacketLease.h"
@@ -1118,7 +1119,7 @@ namespace {
 
         output << "ply\n"
                << "format binary_little_endian 1.0\n"
-               << "comment Saved by Pale Reconstruction Viewer\n"
+               << "comment Saved by PBdR\n"
                << "element vertex " << pointCount << "\n"
                << "property float x\nproperty float y\nproperty float z\n"
                << "property float rot_w\nproperty float rot_x\nproperty float rot_y\nproperty float rot_z\n"
@@ -2631,7 +2632,7 @@ int main(int argc, char** argv) {
         std::filesystem::path workingDirectory, workingSourceScene;
         uint64_t workingIteration = 0;
         bool hasWorkingSnapshot = false;
-        auto modelReadOnly = [&]() { return training.process.launched() && training.view != viewer::TrainingView::Snapshot; };
+        auto modelReadOnly = [&]() { return training.hasRun() && training.view != viewer::TrainingView::Snapshot; };
 
         uint32_t renderWidth = args.width;
         uint32_t renderHeight = args.height;
@@ -2861,6 +2862,7 @@ int main(int argc, char** argv) {
         bool busyHasWorkspace=false;
         std::filesystem::path loadedTrainingSceneRun;
         std::optional<ViewImageMode> queuedView;
+        viewer::ViewportModeShortcuts viewportModeShortcuts;
         std::optional<viewer::TrainingView> queuedSceneSource;
         bool editLatestRequested=false,returnToEditsRequested=false;
         std::optional<int> queuedCamera;
@@ -2938,7 +2940,7 @@ int main(int argc, char** argv) {
         GLFWwindow* window = glfwCreateWindow(
             initialWindowSize[0],
             initialWindowSize[1],
-            "Pale Reconstruction Viewer",
+            viewer::ui::appName,
             nullptr,
             nullptr);
         if (!window) {
@@ -3333,7 +3335,8 @@ int main(int argc, char** argv) {
             return true;
         };
         auto enterTrainingView = [&](viewer::TrainingView view) {
-            if (!training.process.launched()) return;
+            if (!training.hasRun()) return;
+            if(view==viewer::TrainingView::Live&&(training.openedReconstruction||!training.process.active()))view=viewer::TrainingView::Saved;
             if (!modelReadOnly()) {
                 if(!saveWorkingSnapshot())return;
                 loadedTrainingSceneRun.clear();
@@ -3346,7 +3349,7 @@ int main(int argc, char** argv) {
             plyBrowserOpen = meshBrowserOpen = false;
         };
         auto editLatestSavedSnapshot = [&]() {
-            if (!training.process.launched()) return;
+            if (!training.hasRun()) return;
             const auto snapshot = training.latestSavedSnapshot();
             if (!snapshot) { training.message = "Waiting for the first saved snapshot"; return; }
             if (!modelReadOnly() && !saveWorkingSnapshot()) return;
@@ -3361,11 +3364,16 @@ int main(int argc, char** argv) {
             if (saveWorkingSnapshot()) restoreWorkingSnapshot();
         };
         const auto navigateCheckpoints=[&] {
-            if(!training.process.launched()) {training.checkpointNavigation.reset();training.checkpointSelection.reset();return;}
             const auto direction=training.checkpointNavigation;
             const auto selection=training.checkpointSelection;
             training.checkpointNavigation.reset();training.checkpointSelection.reset();
-            if(direction&&*direction==0) {enterTrainingView(viewer::TrainingView::Live);return;}
+            if(direction&&*direction==0) {
+                if(training.hasRun()&&!training.openedReconstruction)enterTrainingView(viewer::TrainingView::Live);
+                else try {training.requestLatestReconstruction(optimizationFolderAnchor.active()?optimizationFolderAnchor.folder:std::filesystem::path{});}
+                catch(const std::exception& error) {training.message=error.what();}
+                return;
+            }
+            if(!training.hasRun())return;
             const auto saved=training.checkpoints();
             if(saved.empty()) {training.message="Waiting for the first saved checkpoint";return;}
             const uint64_t current=training.view==viewer::TrainingView::History?training.historyIteration:training.viewedIteration;
@@ -3379,8 +3387,8 @@ int main(int argc, char** argv) {
         std::filesystem::path previewSettingsRun, framedTrainingRun;
         std::chrono::steady_clock::time_point lastTrainingViewPoll{};
         auto pollTrainingScene = [&]() {
-            if (training.process.launched() && previewSettingsRun != training.process.directory && training.status["scene"].IsScalar()) {
-                const auto savedRun = viewer::readJson(training.process.runDirectory / "run_config.json");
+            if (training.hasRun() && previewSettingsRun != training.runIdentity() && training.status["scene"].IsScalar()) {
+                const auto savedRun = viewer::readJson(training.runDirectory() / "run_config.json");
                 const auto saved = savedRun["renderer_settings"];
                 if (saved.IsMap()) {
                     settings = Pale::PathTracerSettings{};
@@ -3406,7 +3414,7 @@ int main(int argc, char** argv) {
                     if (saved["local_layer_depth_mode"])
                         settings.rendererDebugLocalLayerDepthMode = saved["local_layer_depth_mode"].as<std::string>() == "normal_distance"
                             ? Pale::LocalLayerDepthMode::NormalDistance : Pale::LocalLayerDepthMode::SymmetricRayDepth;
-                    previewSettingsRun = training.process.directory;
+                    previewSettingsRun = training.runIdentity();
                     tracerDirty = renderRequested = true;
                 }
             }
@@ -3434,7 +3442,7 @@ int main(int argc, char** argv) {
                     path=training.historyPath;step=training.historyIteration;generation=step+1;scenePath=training.status["scene"].as<std::string>();
                 }
                 if (path.empty() || generation == training.loadedGeneration) return;
-                const auto run=training.process.directory;
+                const auto run=training.runIdentity();
                 std::shared_ptr<const viewer::LivePacketLease> packetLease;
                 if(training.view==viewer::TrainingView::Live) {
                     // Pin the owned immutable packet before slow scene loading.
@@ -3455,7 +3463,7 @@ int main(int argc, char** argv) {
                     }
                 },[&,loaded,generation,step,run,packetLease] {
                     if(*loaded)loadedLivePacket=packetLease;
-                    if(training.process.directory!=run)return;
+                    if(training.runIdentity()!=run)return;
                     if(*loaded) {loadedTrainingSceneRun=run;training.loadedGeneration=generation;pendingViewedIteration=std::make_pair(run,step);}
                     else throw std::runtime_error("Scene update failed: "+pointCloudStatus);
                 },"Updating training scene");
@@ -4849,20 +4857,15 @@ int main(int argc, char** argv) {
             }
         };
 
-        const auto cycleViewImageMode = [&](int direction) {
-            const std::size_t modeCount = kViewImageModeCycleOrder.size();
-            std::size_t currentIndex = 0u;
-            for (std::size_t index = 0u; index < modeCount; ++index) {
-                if (kViewImageModeCycleOrder[index] == viewImageMode) {
-                    currentIndex = index;
-                    break;
-                }
+        const auto handleViewportModeShortcuts = [&](bool busy) {
+            const auto selected=busy?queuedView.value_or(viewImageMode):viewImageMode;
+            const auto current=static_cast<std::size_t>(std::find(
+                kViewImageModeCycleOrder.begin(),kViewImageModeCycleOrder.end(),selected)-
+                kViewImageModeCycleOrder.begin());
+            if(const auto index=viewportModeShortcuts.readFrame(current,kViewImageModeCycleOrder.size())) {
+                const auto requested=kViewImageModeCycleOrder[*index];
+                if(busy)queuedView=requested;else setViewImageMode(requested);
             }
-
-            const std::size_t nextIndex = direction > 0
-                ? (currentIndex + 1u) % modeCount
-                : (currentIndex + modeCount - 1u) % modeCount;
-            setViewImageMode(kViewImageModeCycleOrder[nextIndex]);
         };
 
         auto ensureViewerAdjointGradients = [&]() {
@@ -5334,7 +5337,7 @@ int main(int argc, char** argv) {
         const auto drawApplicationMenu=[&](bool busy) {
             bool start=false;
             if (ImGui::BeginMainMenuBar()) {
-                ImGui::TextColored(kUiAccent,"pale"); ImGui::Spacing();
+                ImGui::TextColored(kUiAccent,"%s",viewer::ui::appName); ImGui::Spacing();
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("Save editable snapshot", nullptr, false, !busy && !modelReadOnly())) saveWorkingSnapshot();
                     if (ImGui::MenuItem("Export mesh..."))showMeshExport=true;
@@ -5344,6 +5347,8 @@ int main(int argc, char** argv) {
                     if (ImGui::MenuItem("Training setup")) {
                         if(busy)inspectorPage=viewer::ui::Inspector::Reconstruction;else selectTrainingTab=true;
                     }
+                    if(ImGui::MenuItem("Open previous reconstruction...",nullptr,false,!training.process.active()&&!training.openingSaved()))
+                        training.openReconstructionBrowser();
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Window")) {
@@ -5354,7 +5359,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
                     ImGui::EndMenu();
                 }
-                ImGui::SameLine(); ImGui::TextDisabled("JOINT PBdR");
+                ImGui::SameLine(); ImGui::TextDisabled("RECONSTRUCTION");
                 ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX()+20,ImGui::GetWindowWidth()-380));
                 ImGui::Checkbox("Auto preview",&autoRender); ImGui::SameLine();
                 if(viewer::ui::iconButton("Refresh preview",viewer::ui::Icon::Refresh,false,ImVec2(25,ImGui::GetFrameHeight()))) {
@@ -5371,7 +5376,7 @@ int main(int argc, char** argv) {
             // Work begins and ends many times during a single gesture. Keep the
             // visible guidance unchanged and expose transient details on hover.
             ImGui::TextDisabled("%s  ·  %u surfels  ·  %s",
-                modelReadOnly()?"Read-only training view":"Editable snapshot",
+                modelReadOnly()?(training.openedReconstruction?"Read-only saved reconstruction":"Read-only training view"):"Editable snapshot",
                 busy?busyPointCount:sceneGpu.pointCount,
                 walkNavigationActive?"WASD walk · Enter to finish":"Drag orbit · RMB pan · Wheel zoom");
             if(ImGui::IsItemHovered()) {
@@ -5396,14 +5401,14 @@ int main(int argc, char** argv) {
                 ImGui::EndCombo();
             }
             ImGui::SameLine();
-            if (training.process.launched()) {
+            if (training.hasRun()) {
                 ImGui::SetNextItemWidth(168);
-                const char* source = training.view==viewer::TrainingView::Live ? "Live training" : training.view==viewer::TrainingView::Saved ? "Follow saved" : training.view==viewer::TrainingView::History ? "Checkpoint history" : "Editable snapshot";
+                const char* source = training.view==viewer::TrainingView::Live ? "Live training" : training.view==viewer::TrainingView::Saved ? (training.openedReconstruction?"Saved reconstruction":"Follow saved") : training.view==viewer::TrainingView::History ? "Checkpoint history" : "Editable snapshot";
                 if(ImGui::BeginCombo("##SceneSource",source)) {
-                    if(ImGui::Selectable("Live training",training.view==viewer::TrainingView::Live)) {
+                    if(!training.openedReconstruction&&training.process.active()&&ImGui::Selectable("Live training",training.view==viewer::TrainingView::Live)) {
                         if(busy)queuedSceneSource=viewer::TrainingView::Live;else enterTrainingView(viewer::TrainingView::Live);
                     }
-                    if(ImGui::Selectable("Follow saved",training.view==viewer::TrainingView::Saved)) {
+                    if(ImGui::Selectable(training.openedReconstruction?"Latest saved":"Follow saved",training.view==viewer::TrainingView::Saved)) {
                         if(busy)queuedSceneSource=viewer::TrainingView::Saved;else enterTrainingView(viewer::TrainingView::Saved);
                     }
                     if(ImGui::Selectable("Browse checkpoints...")) {training.requestedMonitorTab=2;showTrainingProgress=true;}
@@ -5416,7 +5421,25 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::SameLine(); ImGui::TextDisabled("%s",modelReadOnly()?"Read-only":"Editable");
+                // The viewed iteration belongs to the published image. Keep
+                // it visible while a different checkpoint loads/renders.
+                std::optional<uint64_t> requestedIteration;
+                if(training.view==viewer::TrainingView::History)requestedIteration=training.historyIteration;
+                else if(pendingViewedIteration&&pendingViewedIteration->first==training.runIdentity())
+                    requestedIteration=pendingViewedIteration->second;
+                std::string iterationLabel="Iteration "+std::to_string(training.viewedIteration);
+                if(requestedIteration&&*requestedIteration!=training.viewedIteration)
+                    iterationLabel+=" → "+std::to_string(*requestedIteration)+" (loading)";
+                ImGui::SameLine();ImGui::TextColored(kUiAccent,"%s",iterationLabel.c_str());
+                if(ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("Displayed surfel iteration: %llu",static_cast<unsigned long long>(training.viewedIteration));
+                    if(requestedIteration&&*requestedIteration!=training.viewedIteration)
+                        ImGui::Text("Loading checkpoint: %llu",static_cast<unsigned long long>(*requestedIteration));
+                    ImGui::Text("Run iteration: %llu",static_cast<unsigned long long>(training.integer("iteration")));
+                    ImGui::TextUnformatted(modelReadOnly()?"Read-only inspection":"Editable snapshot");
+                    ImGui::EndTooltip();
+                }
                 ImGui::SameLine();
             }
             const float overlayWidth = 164;
@@ -5466,7 +5489,7 @@ int main(int argc, char** argv) {
             displayedExportMetadata=captureExportMetadata();
             displayedExportRunConfig.clear();
             if(training.status["scene"].IsScalar()&&currentScenePath==std::filesystem::path(training.status["scene"].as<std::string>()))
-                displayedExportRunConfig=training.process.runDirectory/"run_config.json";
+                displayedExportRunConfig=training.runDirectory()/"run_config.json";
             displayedLivePacket=livePacketLeases.retain(currentPointCloudPath);
             refreshLightMarkerMetadata();displayedLightMarkers.clear();
             auto lights=collectAreaLights(scene);
@@ -5598,9 +5621,10 @@ int main(int argc, char** argv) {
             // CPU snapshots and UI-owned training state, never in-flight buffers.
             ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();
             io.ConfigInputTrickleEventQueue=true;ImGui::NewFrame();
+            handleViewportModeShortcuts(true);
             bool start=launchTrainingRequested;
             launchTrainingRequested=false;
-            if(!io.WantTextInput&&!io.KeyCtrl&&!io.KeyAlt&&!io.KeySuper) {
+            if(!io.WantTextInput&&!io.KeyCtrl&&!io.KeyAlt&&!io.KeySuper&&!ImGui::GetTopMostPopupModal()) {
                 if(ImGui::IsKeyPressed(ImGuiKey_R))training.checkpointNavigation=0;
                 if(ImGui::IsKeyPressed(ImGuiKey_N))training.checkpointNavigation=-2;
                 if(ImGui::IsKeyPressed(ImGuiKey_M))training.checkpointNavigation=2;
@@ -5608,7 +5632,7 @@ int main(int argc, char** argv) {
             start=drawApplicationMenu(true)||start;
             auto* viewport=ImGui::GetMainViewport();const auto dock=ImHashStr("PaleRealtimeViewerDockSpace");
             if(!dockLayoutInitialized) {viewer::ui::defaultDockLayout(dock,viewport);dockLayoutInitialized=true;}
-            ImGui::DockSpaceOverViewport(dock,viewport,ImGuiDockNodeFlags_PassthruCentralNode);ImGuizmo::BeginFrame();ImGuizmo::Enable(true);
+            ImGui::DockSpaceOverViewport(dock,viewport,ImGuiDockNodeFlags_PassthruCentralNode);ImGuizmo::BeginFrame();ImGuizmo::Enable(!ImGui::GetTopMostPopupModal());
             if(auto pick=sceneTree.draw(cachedSceneName,cachedSceneGroups,showSceneTree)) {
                 // A scene replacement may renumber rows; preserve selection only
                 // for a render of the same immutable scene.
@@ -5710,7 +5734,7 @@ int main(int argc, char** argv) {
                     gizmoCapturing=gizmoCapturing||ImGuizmo::IsViewManipulateHovered()||ImGuizmo::IsUsingViewManipulate();
                 }
                 if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))viewportGizmoMouseCapture=false;
-                if((imageHovered||(busyCameraSource==CameraSource::SceneXml&&ImGui::IsMouseHoveringRect(canvas,canvasMax)))&&!previewNoticeHovered&&!toolsHovered&&!hoveredMarker&&!gizmoCapturing&&!io.WantTextInput&&!walkNavigationActive) {
+                if((imageHovered||(busyCameraSource==CameraSource::SceneXml&&ImGui::IsMouseHoveringRect(canvas,canvasMax)))&&!previewNoticeHovered&&!toolsHovered&&!hoveredMarker&&!gizmoCapturing&&!io.WantTextInput&&!walkNavigationActive&&!ImGui::GetTopMostPopupModal()) {
                     const bool orbitInput=ImGui::IsMouseDragging(ImGuiMouseButton_Left);
                     const bool panInput=ImGui::IsMouseDragging(ImGuiMouseButton_Right)||ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
                     if(busyCameraSource==CameraSource::SceneXml&&!orbitInput) {
@@ -5740,7 +5764,7 @@ int main(int argc, char** argv) {
                 }
             }
             drawViewportStatus(true);
-            ImGui::End();training.drawProgress(showTrainingProgress);
+            ImGui::End();training.drawProgress(showTrainingProgress);training.drawReconstructionBrowser();
             if(drawProfilingWindow(showProfilingWindow,busyTimerProfilingEnabled,busyGpuCounterProfilingEnabled,
                 busyRenderMs,busyFrameTimes,busyCamera.width,busyCamera.height,busyProfilingScene,busyProfilingCounters,busyTimerRecords))
                 queuedProfilingSettings=true;
@@ -5834,6 +5858,25 @@ int main(int argc, char** argv) {
             }
             if(previewWork.busy()&&previewWatchdog.reportDue())recordLongPreview();
             if(previewWork.busy()) {drawBusyFrame();continue;}
+            if(training.preparedReconstruction) {
+                if(!modelReadOnly()&&!saveWorkingSnapshot()) {
+                    training.preparedReconstruction.reset();training.message="Could not preserve the editable scene before opening a reconstruction";
+                } else {
+                    const bool sameRun=training.openedReconstruction&&
+                        training.runDirectory()==training.preparedReconstruction->entry.directory;
+                    const bool preserveScene=sameRun&&modelReadOnly();
+                    finishWalkNavigation(false);
+                    training.openPreparedReconstruction();invalidateSceneMaterials();
+                    if(!preserveScene)loadedTrainingSceneRun.clear();
+                    if(!sameRun) {previewSettingsRun.clear();framedTrainingRun.clear();}
+                    pendingViewedIteration.reset();loadedLivePacket.reset();lastTrainingViewPoll={};
+                    if(!sameRun) {
+                        selectedSurfelEditorIndex=-1;selectedSurfelLightIndex=-1;selectedLightIndex=0;
+                        sceneSelectionKind=viewer::SceneItemKind::Geometry;selectedTreeEntity.clear();
+                    }
+                    showTrainingProgress=true;sceneTreeDirty=true;previewRecovery.manualRetry();
+                }
+            }
             if (walkNavigationActive && !glfwGetWindowAttrib(window, GLFW_FOCUSED)) {
                 finishWalkNavigation(true);
             }
@@ -5867,6 +5910,7 @@ int main(int argc, char** argv) {
             if(inspectorInput.pending())inspectorHandoffFrames=std::max(inspectorHandoffFrames,2);
             inspectorInput.deliver(static_cast<int>(inspectorPage),inspectorContextKey(inspectorPage),glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS);
             ImGui::NewFrame();
+            handleViewportModeShortcuts(false);
             // Snapshot the actual object representation to detect every settings
             // control without coupling cache invalidation to individual widgets.
             std::array<unsigned char, sizeof(settings)> settingsBeforeUi;
@@ -5874,7 +5918,7 @@ int main(int argc, char** argv) {
 
             bool navigationInputCaptured = walkNavigationActive;
             const bool navigationShortcutAllowed =
-                !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper;
+                !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeySuper && !ImGui::GetTopMostPopupModal();
             if ((walkNavigationActive || navigationShortcutAllowed) &&
                 viewerKeyPressed(ImGuiKey_Space)) {
                 resetOrbitView();
@@ -5930,7 +5974,7 @@ int main(int argc, char** argv) {
                 cameraDirty = true;
                 tracerDirty = true;
                 renderRequested = true;
-            } else if (viewerKeyPressed(ImGuiKey_Escape)) {
+            } else if (!ImGui::GetTopMostPopupModal() && viewerKeyPressed(ImGuiKey_Escape)) {
                 Pale::Log::PA_INFO("Viewer close requested by Escape");
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
@@ -5961,36 +6005,34 @@ int main(int argc, char** argv) {
             if (!io.WantTextInput &&
                 !io.KeyCtrl &&
                 !io.KeyAlt &&
-                !io.KeySuper) {
+                !io.KeySuper && !ImGui::GetTopMostPopupModal()) {
                 if (viewerKeyPressed(ImGuiKey_R)) {
-                    if (training.process.launched()) {
-                        enterTrainingView(viewer::TrainingView::Live);
-                    } else refreshLatestOptimizationPointCloud();
+                    training.checkpointNavigation=0;
                 }
 
-                if (!training.process.launched() && viewerKeyPressed(ImGuiKey_F)) {
+                if (!training.hasRun() && viewerKeyPressed(ImGuiKey_F)) {
                     jumpToOptimizationSnapshotBoundary(false);
                 }
 
-                if (!training.process.launched() && viewerKeyPressed(ImGuiKey_L)) {
+                if (!training.hasRun() && viewerKeyPressed(ImGuiKey_L)) {
                     jumpToOptimizationSnapshotBoundary(true);
                 }
 
                 if (viewerKeyPressed(ImGuiKey_N)) {
-                    if(training.process.launched())training.checkpointNavigation=-2;
+                    if(training.hasRun())training.checkpointNavigation=-2;
                     else stepLatestOptimizationSnapshot(-1,kSnapshotIterationStep);
                 }
 
                 if (viewerKeyPressed(ImGuiKey_M)) {
-                    if(training.process.launched())training.checkpointNavigation=2;
+                    if(training.hasRun())training.checkpointNavigation=2;
                     else stepLatestOptimizationSnapshot(1,kSnapshotIterationStep);
                 }
 
-                if (!training.process.launched() && ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
+                if (!training.hasRun() && ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
                     stepLatestOptimizationSnapshot(-1);
                 }
 
-                if (!training.process.launched() && ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
+                if (!training.hasRun() && ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
                     stepLatestOptimizationSnapshot(1);
                 }
 
@@ -6013,45 +6055,11 @@ int main(int argc, char** argv) {
                             tracerDirty = true;
                             renderRequested = true;
                         }
-                    } else if (!training.process.launched()) {
+                    } else if (!training.hasRun()) {
                         stepLatestOptimizationSnapshot(verticalArrowStep);
                     }
                 }
 
-                // The first ten menu/cycle entries map to 1..9, then 0.
-                constexpr std::array<ImGuiKey, 10> viewImageModeShortcutKeys = {
-                    ImGuiKey_1,
-                    ImGuiKey_2,
-                    ImGuiKey_3,
-                    ImGuiKey_4,
-                    ImGuiKey_5,
-                    ImGuiKey_6,
-                    ImGuiKey_7,
-                    ImGuiKey_8,
-                    ImGuiKey_9,
-                    ImGuiKey_0,
-                };
-
-                for (std::size_t shortcutIndex = 0;
-                     shortcutIndex < viewImageModeShortcutKeys.size();
-                     ++shortcutIndex) {
-                    if (viewerKeyPressed(viewImageModeShortcutKeys[shortcutIndex])) {
-                        setViewImageMode(kViewImageModeCycleOrder[shortcutIndex]);
-                        break;
-                    }
-                }
-
-                const bool nextViewModePressed =
-                    viewerKeyPressed(ImGuiKey_KeypadAdd) ||
-                    (io.KeyShift && viewerKeyPressed(ImGuiKey_Equal));
-                const bool previousViewModePressed =
-                    viewerKeyPressed(ImGuiKey_KeypadSubtract) ||
-                    viewerKeyPressed(ImGuiKey_Minus);
-                if (nextViewModePressed) {
-                    cycleViewImageMode(1);
-                } else if (previousViewModePressed) {
-                    cycleViewImageMode(-1);
-                }
             }
             std::vector<Pale::Entity> areaLights = collectAreaLights(scene);
             if (areaLights.empty()) {
@@ -7669,7 +7677,7 @@ int main(int argc, char** argv) {
                     draw->PopClipRect();
                 }
                 const bool lightMarkerInput = (hoveredLightMarker || pressedLightMarker) && !ImGuizmo::IsUsingAny();
-                ImGuizmo::Enable(!lightMarkerInput);
+                ImGuizmo::Enable(!lightMarkerInput&&!ImGui::GetTopMostPopupModal());
                 bool viewportGizmoHovered = false;
                 bool viewportGizmoUsing = false;
                 const int firstHandleIndex=ImGui::GetWindowDrawList()->IdxBuffer.Size;
@@ -7765,7 +7773,7 @@ int main(int argc, char** argv) {
                     viewportGizmoHovered=displayedSelectedHandles.contains(io.MousePos,imageMin,imageSize);
                 }
                 if(overlayMatchesScene)displayedSelectedHandles.capture(*ImGui::GetWindowDrawList(),firstHandleIndex,imageMin,imageSize);
-                ImGuizmo::Enable(true);
+                ImGuizmo::Enable(!ImGui::GetTopMostPopupModal());
                 if (!navigationInputCaptured && cameraSource == CameraSource::Viewport) {
                     glm::mat4 viewGizmoMatrix = orbit.viewMatrix();
                     const ImVec2 viewGizmoSize{92.0f, 92.0f};
@@ -7851,7 +7859,7 @@ int main(int argc, char** argv) {
                     }
                     viewportPickArmed = false;
                 }
-                if ((imageHovered || (cameraSource==CameraSource::SceneXml&&cameraCanvasHovered)) && !viewportCameraInputBlocked && !hoveredLightMarker && !pressedLightMarker) {
+                if ((imageHovered || (cameraSource==CameraSource::SceneXml&&cameraCanvasHovered)) && !viewportCameraInputBlocked && !hoveredLightMarker && !pressedLightMarker && !ImGui::GetTopMostPopupModal()) {
                     const bool orbitDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
                     const bool panDragging =
                         ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
@@ -7886,7 +7894,7 @@ int main(int argc, char** argv) {
                 if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) pressedLightMarker.reset();
                 ImGui::PopClipRect();viewer::finishViewportCanvas(viewportCanvas);
             } else {
-                ImGui::TextWrapped("%s", modelReadOnly() ? "Waiting for the launched training run to publish a scene. See Run monitor for initialization or errors." : "No preview yet");
+                ImGui::TextWrapped("%s", training.openedReconstruction?"Loading saved reconstruction...":modelReadOnly() ? "Waiting for the launched training run to publish a scene. See Run monitor for initialization or errors." : "No preview yet");
             }
             drawViewportStatus(false);
             ImGui::End();
@@ -7903,6 +7911,7 @@ int main(int argc, char** argv) {
                 }
             }
             training.drawProgress(showTrainingProgress);
+            training.drawReconstructionBrowser();
             if(meshExport.draw(showMeshExport,displayedExportMetadata.IsMap(),displayedOverlayPointCloud.filename().string()))meshExportRequested=true;
             launchMeshExport(false);
 
@@ -7961,7 +7970,7 @@ int main(int argc, char** argv) {
                         updateDisplayTexture();publishDisplayedOverlays();lastPreviewInteractive=interactivePreview;
                         previewRecovery.succeeded();
                         if(pendingViewedIteration) {
-                            if(pendingViewedIteration->first==training.process.directory&&modelReadOnly())training.viewedIteration=pendingViewedIteration->second;
+                            if(pendingViewedIteration->first==training.runIdentity()&&modelReadOnly())training.viewedIteration=pendingViewedIteration->second;
                             pendingViewedIteration.reset();
                         }
                     },"Rendering / compiling preview kernels");

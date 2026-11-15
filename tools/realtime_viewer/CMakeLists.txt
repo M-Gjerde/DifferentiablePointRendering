@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 project(PaleRealtimeViewer
         VERSION 1.0.0
-        DESCRIPTION "ImGui realtime viewer for Pale renderer"
+        DESCRIPTION "Real-time workspace for joint PBdR reconstruction"
         LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -311,6 +311,18 @@ target_compile_options(PaleViewerViewportLayout PRIVATE -UNDEBUG)
 target_include_directories(PaleViewerViewportLayout PRIVATE "${PALE_ROOT}")
 target_link_libraries(PaleViewerViewportLayout PRIVATE imgui)
 
+add_executable(PaleViewerShortcuts EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_viewport_shortcuts.cpp")
+target_compile_options(PaleViewerShortcuts PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerShortcuts PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerShortcuts PRIVATE imgui)
+
+add_executable(PaleViewerReconstructionLibrary EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_reconstruction_library.cpp")
+target_compile_options(PaleViewerReconstructionLibrary PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerReconstructionLibrary PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerReconstructionLibrary PRIVATE yaml-cpp imgui)
+
 add_executable(PaleViewerLivePacketLease EXCLUDE_FROM_ALL
         "${PALE_ROOT}/test/test_viewer_live_packet_lease.cpp")
 target_compile_options(PaleViewerLivePacketLease PRIVATE -UNDEBUG)
@@ -321,6 +333,12 @@ add_executable(PaleViewerMetricsAxes EXCLUDE_FROM_ALL
 target_compile_options(PaleViewerMetricsAxes PRIVATE -UNDEBUG)
 target_include_directories(PaleViewerMetricsAxes PRIVATE "${PALE_ROOT}")
 target_link_libraries(PaleViewerMetricsAxes PRIVATE imgui)
+
+add_executable(PaleViewerMetricsPlots EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_training_metrics_plots.cpp")
+target_compile_options(PaleViewerMetricsPlots PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerMetricsPlots PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerMetricsPlots PRIVATE imgui)
 
 foreach(check IN ITEMS responsive_work preview_recovery)
     add_executable(PaleViewer_${check} EXCLUDE_FROM_ALL "${PALE_ROOT}/test/test_viewer_${check}.cpp")

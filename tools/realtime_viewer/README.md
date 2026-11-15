@@ -1,4 +1,4 @@
-# Pale Realtime Viewer
+# PBdR
 
 The v1 reconstruction workspace launches the existing Python PBdR optimizer,
 inspects its current scene, tunes supported hyperparameters, and edits independent
@@ -63,13 +63,43 @@ python main.py -s ~/ValeDrive/phd/pbdr/datasets/pbdr_synthetic/teapot_pbdr \
   -o OptimizationOutput/teapot
 ```
 
+Use **Open previous reconstruction...** in the Reconstruction panel or menu to
+reopen a saved run. **App outputs** lists reconstructions beneath the configured
+output root, including nested run folders, newest creation time first. The table
+shows dataset, creation time, run folder and available loss/GT histories. Filter
+by dataset or folder, or choose a dataset from the dropdown; click headers to
+sort. A single click selects a row. Use **Open selected reconstruction**, Enter,
+or a double-click to open it; Up/Down moves the selection. **Choose folder** opens
+outputs saved elsewhere and lists folders by creation time, newest first. Dates
+use local time; `*` marks modification time on filesystems without creation time.
+Folder navigation keeps the dialog open. Select the run
+folder containing `run_config.json`, `scene.xml`, `metrics.csv` and its saved
+PLYs (a `points/` folder is also accepted).
+
+Opening restores the latest saved PLY, all available loss and regularizer
+history, population/runtime metrics, and recorded Chamfer, accuracy and completion
+evaluations from `geometry_metrics.csv`. Logs are restored when retained. Run
+monitor selects **Metrics** automatically; **Checkpoints** and `M`/`N` browse the
+saved scene history, while `R` reloads the selected run's newest saved PLY and
+metrics, preserving the camera. With no run selected, `R` selects the newest
+loadable reconstruction under the configured output root (or anchored folder).
+Incomplete output folders are skipped. The source is
+read-only until an edit creates a private working snapshot. Missing GT metrics
+are reported explicitly; opening a run does not recompute them.
+
+The browser and history loading run in the background. Opening a saved run does
+not launch, resume or control an optimizer, or replace the dataset/configuration
+selected for the next reconstruction. Finish or stop an active reconstruction
+before opening another output. Starting a new reconstruction returns to live
+inspection and clears the older run's plots.
+
 Both CLI training and the viewer discover dataset-local `gt.ply`. Disable
 **Evaluate with dataset ground truth** to skip evaluation (CLI:
 `--no-dataset-ground-truth`). An explicit `--gt` still overrides discovery.
 **Run options** contains output root, library location, custom-folder fallback,
 and checkpoint/live-publication cadence. Select the interpreter
 and working directory under **Python environment**; the working directory must
-contain this repository's updated `main.py`. If needed, set **pale module
+contain this repository's updated `main.py`. If needed, set **Native module
 directory** to the directory containing the compatible `pale.so`. An empty value
 inherits `PYTHONPATH`. The interpreter needs the same dependencies as CLI training.
 The initial setup prefers an active virtual environment, an existing repository
@@ -112,6 +142,10 @@ The viewport's scene-source dropdown offers these modes:
   optimization continues and the list grows. The previous image stays visible until
   the chosen checkpoint has rendered, and browsing preserves the camera. **R**
   returns to current live data.
+- The viewport toolbar always shows the displayed surfel iteration, including
+  while the Run monitor is on Metrics. During a checkpoint change it shows, for
+  example, **Iteration 6000 → 7000 (loading)** until the new image is displayed.
+  Hover the label for the displayed, requested and current run iterations.
 - **Edit latest saved snapshot** copies the latest checkpoint into a private
   editable workspace. Geometry, material, and emitter edits do not pause or alter
   training. Switching to a training view preserves the edits; **Return to edits**
@@ -140,7 +174,7 @@ emitter power learning rates at zero; this UI preserves that behavior. Editable
 emitter changes can seed a new run.
 
 **Run monitor → Progress** shows training/viewed/saved iterations, objective history,
-update time with iterations per second,
+update time with iterations per second, a larger objective plot,
 the output directory and log, and acknowledged **Pause**, **Continue**, **Stop
 training**, and **Save checkpoint** actions. Stop finishes the current update and
 saves the result; initialization and finalization can take time. **Metrics** retains the complete objective and image-loss history, with an optional
@@ -150,14 +184,20 @@ left (normal) and right (depth) Y-axes. Alpha/slab losses have their own plot un
 CSV fields are available below. GT Chamfer distance, accuracy and completion
 appear after mesh evaluations, at the cadence set by `mesh_extraction_interval`
 in `config.py`; these describe the evaluated mesh, not every live update.
+Hover any metrics plot to inspect the nearest recorded iteration and each
+curve's original value, including values on separate Y axes or a logarithmic
+scale. A vertical guide and point markers identify the inspected samples.
+**Cumulative pruning** sums area, opacity and transport removals from the start
+of the run; a rolling window crops the visible iterations without resetting
+those totals.
 **Log** interprets tqdm carriage returns/terminal line updates. Drag to select
 text and use Ctrl+C, or use **Copy log**. A selection stays stable while new output
 arrives; clearing it resumes display updates.
 
-Dataset selection remains available while stopping. **Start reconstruction** stays
-disabled with a spinner beside its label while a reconstruction is starting,
-running, paused, stopping or finalizing. It becomes available after the process
-exits. New reconstructions cannot be queued; starting the next one always requires
+Dataset selection remains available while stopping. After launch, **Start
+reconstruction** becomes **Reconstructing...** with a spinner and remains disabled.
+It shows **Paused**, **Stopping...** or **Finalizing...** during those stages, then
+returns to **Start reconstruction** after the process exits. New reconstructions cannot be queued; starting the next one always requires
 another click. Editing never sends a pause command. No command forcibly kills an
 unrelated process.
 
@@ -257,7 +297,7 @@ Controls:
 - `Add surfel`: create a camera-facing surfel at the current viewport focus and select it for editing
 - **File → Save editable snapshot** saves the private working scene without overwriting the source PLY
 - Drop a training run, its `points` folder, or a parent such as `output/pbdr_blade`: load its latest checkpoint and anchor navigation to that run. A parent selects the run with the most recently updated `metrics.csv`.
-- `R`: return to latest live data for a viewer-launched run. In standalone file inspection, refresh the latest checkpoint in the anchored run; without an anchor, search `python/OptimizationOutput`.
+- `R`: load the selected run's latest scene (live while its owned optimizer is active; newest saved PLY otherwise). With no selected run, open the newest loadable reconstruction beneath the configured output root or anchored folder, including its plots.
 - `N` / `M`: jump to the saved checkpoint nearest the previous/next 1,000-iteration boundary
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
@@ -272,8 +312,9 @@ Up/down retain their scene-camera behavior when a scene camera is selected.
 An empty dropped folder stays anchored: press `R` or `F` after checkpoints appear.
 In **Scene files**, **Reset to OptimizationOutput** clears the anchor and performs
 the original global latest-run search. Loading another point-cloud PLY also clears
-the folder anchor. Without an anchor, `R` or **Load latest run PLY** searches for
-the latest run again.
+the folder anchor. Without an anchor, `R` opens the newest usable full
+reconstruction from the configured output root. **Load latest run PLY** retains
+the standalone PLY search.
 
 These file-loading shortcuts inspect saved files in the standalone editable
 workspace. For a viewer-launched run, **N/M** and the Checkpoints panel browse that run
@@ -288,6 +329,8 @@ clang++-22 -std=c++20 -O2 -pthread -I. test/test_viewer_training_process.cpp \
 /tmp/pale_training_process_test
 cmake --build build-realtime --target PaleViewerTrainingIntegration -j4
 ./build-realtime/PaleViewerTrainingIntegration "$PWD"
+cmake --build build-realtime --target PaleViewerReconstructionLibrary -j4
+./build-realtime/PaleViewerReconstructionLibrary
 # Optional: render production UI components with Mesa EGL, no display required.
 cmake --build build-realtime --target PaleViewerWorkspacePreview -j4
 ./build-realtime/PaleViewerWorkspacePreview "$PWD" /tmp/workspace.png selection 1440 900
@@ -405,6 +448,10 @@ Number keys select the first ten display modes: **1** Rendered, **2** Median dep
 **7** Median depth normal, **8** Surface overlap, **9** Position primitive
 score, and **0** Intra-slab mean ray depth. Other diagnostics remain available
 in **Display** and the **+/-** cycle.
+Shortcuts remain active while rendering or orbiting. Rapid selections are
+processed in order and the latest choice takes effect at the renderer handoff;
+the viewport mode dropdown immediately reflects that choice. Numeric text fields
+retain keyboard input while being edited.
 
 ### Comparing intra-slab losses
 

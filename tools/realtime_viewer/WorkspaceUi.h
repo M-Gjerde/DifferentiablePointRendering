@@ -8,7 +8,8 @@
 #include <tuple>
 
 namespace viewer::ui {
-    // Pale workspace tokens from the approved Figma / supplied SVG.
+    inline constexpr const char* appName="PBdR";
+    // PBdR workspace tokens from the approved Figma / supplied SVG.
     inline constexpr ImVec4 canvas{.145f, .157f, .176f, 1};
     inline constexpr ImVec4 panel{.114f, .125f, .141f, 1};
     inline constexpr ImVec4 bar{.145f, .161f, .180f, 1};
@@ -56,6 +57,7 @@ namespace viewer::ui {
         c[ImGuiCol_ResizeGrip] = panel; c[ImGuiCol_ResizeGripHovered] = border; c[ImGuiCol_ResizeGripActive] = accent;
         c[ImGuiCol_DockingPreview] = ImVec4(accent.x,accent.y,accent.z,.35f);
         c[ImGuiCol_TextSelectedBg] = selection; c[ImGuiCol_NavCursor] = accent;
+        c[ImGuiCol_ModalWindowDimBg] = ImVec4(.02f,.025f,.03f,.65f);
     }
     inline void loadFont() {
         // Prefer the mockup family when installed; use a readable system family otherwise.
@@ -145,7 +147,8 @@ namespace viewer::ui {
         const float rightFraction=std::clamp(344.f/viewport->WorkSize.x,.20f,.30f);
         ImGui::DockBuilderSplitNode(id,ImGuiDir_Right,rightFraction,&right,&main);
         ImGui::DockBuilderSplitNode(right,ImGuiDir_Up,.30f,&tree,&inspector);
-        ImGui::DockBuilderSplitNode(main,ImGuiDir_Down,.16f,&monitor,&main);
+        const float monitorFraction=std::clamp(230.f/viewport->WorkSize.y,.18f,.30f);
+        ImGui::DockBuilderSplitNode(main,ImGuiDir_Down,monitorFraction,&monitor,&main);
         ImGui::DockBuilderDockWindow("Scene Collection",tree); ImGui::DockBuilderDockWindow("Properties",inspector);
         ImGui::DockBuilderDockWindow("Run monitor",monitor); ImGui::DockBuilderDockWindow("Viewport",main);
         ImGui::DockBuilderGetNode(main)->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;

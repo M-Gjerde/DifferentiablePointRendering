@@ -5,6 +5,7 @@
 #include "WorkspaceUi.h"
 #include "TrainingLog.h"
 #include "TrainingMetrics.h"
+#include "ReconstructionBrowser.h"
 #include <imgui.h>
 #include <yaml-cpp/yaml.h>
 #include <cmath>
@@ -100,7 +101,10 @@ namespace viewer {
         bool rollingMetrics=false,logMetrics=false;
         int metricWindow=1000;
         int requestedMonitorTab=-1;
-        TrainingMetrics metrics,geometryMetrics;
+        TrainingMetrics metrics,geometryMetrics,statusLossMetrics;
+        ReconstructionBrowser reconstructionBrowser;
+        std::optional<SavedReconstruction> openedReconstruction,preparedReconstruction;
+        std::future<SavedReconstruction> reconstructionLoad;
         std::filesystem::path historyPath;
         uint64_t historyIteration=0;
         // Navigation is consumed by the UI at a renderer handoff; it never
@@ -186,12 +190,71 @@ namespace viewer {
             try { return status["state"].as<std::string>(); } catch (...) { return process.active() ? "starting" : "idle"; }
         }
         [[nodiscard]] bool pending() const { return process.active() && process.commandSequence > integer("ack"); }
+        [[nodiscard]] bool hasRun() const {return openedReconstruction.has_value()||process.launched();}
+        [[nodiscard]] bool openingSaved() const {return reconstructionLoad.valid()||preparedReconstruction.has_value();}
+        [[nodiscard]] const std::filesystem::path& runDirectory() const {
+            return openedReconstruction?openedReconstruction->entry.directory:process.runDirectory;
+        }
+        [[nodiscard]] const std::filesystem::path& runIdentity() const {
+            return openedReconstruction?openedReconstruction->entry.directory:process.directory;
+        }
+        void openReconstructionBrowser() {
+            try {
+                const auto cwd=expandedPath(workingDirectory.data(),std::filesystem::current_path());
+                reconstructionBrowser.open(expandedPath(output.data(),cwd),hasRun()?runDirectory():std::filesystem::path{});
+            }catch(const std::exception& error) {message=error.what();}
+        }
+        void requestOpenReconstruction(const std::filesystem::path& folder) {
+            if(process.active())throw std::runtime_error("Stop the current reconstruction before opening a saved run");
+            if(openingSaved())throw std::runtime_error("A saved reconstruction is already loading");
+            reconstructionLoad=std::async(std::launch::async,[folder] {return loadSavedReconstruction(folder);});
+            message="Loading saved reconstruction...";
+        }
+        void requestLatestReconstruction(const std::filesystem::path& folder={}) {
+            // Repeated R presses coalesce; they never queue scene loads.
+            if(openingSaved())return;
+            if(openedReconstruction) {requestOpenReconstruction(runDirectory());return;}
+            if(process.launched()) {checkpointNavigation=0;return;}
+            const auto cwd=expandedPath(workingDirectory.data(),std::filesystem::current_path());
+            const auto root=folder.empty()?expandedPath(output.data(),cwd):folder;
+            reconstructionLoad=std::async(std::launch::async,[root] {return loadLatestSavedReconstruction(root);});
+            message="Finding the latest reconstruction...";
+        }
+        void drawReconstructionBrowser() {
+            if(const auto folder=reconstructionBrowser.draw(!process.active()&&!openingSaved())) {
+                try {requestOpenReconstruction(*folder);}catch(const std::exception& error) {message=error.what();}
+            }
+        }
+        // The UI calls this only at a renderer handoff, after preserving edits.
+        void openPreparedReconstruction() {
+            if(!preparedReconstruction||process.active())return;
+            const bool sameRun=openedReconstruction&&runDirectory()==preparedReconstruction->entry.directory;
+            openedReconstruction=std::move(preparedReconstruction);preparedReconstruction.reset();
+            auto& saved=*openedReconstruction;
+            metrics=std::move(saved.metrics);geometryMetrics=std::move(saved.geometryMetrics);
+            status=YAML::Node(YAML::NodeType::Map);live=YAML::Node();
+            status["state"]="saved";status["scene"]=saved.scene.string();status["run_dir"]=runDirectory().string();
+            status["iteration"]=jsonNumber(saved.iteration);status["target_iteration"]=jsonNumber(saved.targetIteration);
+            status["saved_iteration"]=jsonNumber(saved.checkpoints.back().iteration);
+            status["ground_truth"]=reconstructionSetting(saved.config,"ground_truth");
+            const float time=metrics.latest("iteration_time_sec");
+            if(std::isfinite(time))status["iteration_ms"]=jsonNumber(static_cast<double>(time)*1000.);
+            losses.clear();statusLossMetrics.reset();plottedIteration=0;loadedGeneration=0;parametersInitialized=true;stopRequested=false;
+            checkpointNavigation.reset();checkpointSelection.reset();historyPath.clear();historyIteration=0;
+            logReader.reset();log=std::move(saved.log);selectableLog.clear();logScrollInput=logScrollWindow=0;
+            view=TrainingView::Saved;useWorkingSnapshot=false;if(!sameRun)requestedMonitorTab=1;
+            message="Opened "+saved.entry.label+" · "+std::to_string(metrics.iterations.size())+" loss samples · "+
+                std::to_string(geometryMetrics.iterations.size())+" geometry evaluations";
+        }
         [[nodiscard]] std::vector<PointCloudSnapshot> checkpoints() const {
+            if(openedReconstruction)return openedReconstruction->checkpoints;
             auto result=listOptimizationPointCloudSnapshots(process.runDirectory/"points");
             if(auto latest=latestSavedSnapshot();latest && (result.empty()||latest->path!=result.back().path))result.push_back(*latest);
             return result;
         }
         [[nodiscard]] std::optional<PointCloudSnapshot> latestSavedSnapshot() const {
+            if(openedReconstruction)return openedReconstruction->checkpoints.empty()?std::nullopt:
+                std::optional<PointCloudSnapshot>(openedReconstruction->checkpoints.back());
             const auto snapshots = listOptimizationPointCloudSnapshots(process.runDirectory / "points");
             std::optional<PointCloudSnapshot> latest;
             if (!snapshots.empty()) latest = snapshots.back();
@@ -206,6 +269,11 @@ namespace viewer {
         }
         void poll() {
             process.poll();
+            if(reconstructionLoad.valid()&&reconstructionLoad.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+                try {preparedReconstruction=reconstructionLoad.get();}
+                catch(const std::exception& error) {message="Could not open reconstruction: "+std::string(error.what());}
+            }
+            if(openedReconstruction)return;
             const auto now = std::chrono::steady_clock::now();
             if (!process.launched() || now - lastPoll < std::chrono::milliseconds(250)) return;
             lastPoll = now;
@@ -217,7 +285,14 @@ namespace viewer {
                 parametersInitialized = true;
             }
             if (integer("iteration") != plottedIteration && status["loss"].IsScalar()) {
-                try { losses.push_back(status["loss"].as<float>()); } catch (...) {}
+                try {
+                    const auto loss=status["loss"].as<float>();
+                    if(std::isfinite(loss)) {
+                        losses.push_back(loss);
+                        statusLossMetrics.iterations.push_back(static_cast<float>(integer("iteration")));
+                        statusLossMetrics.columns["loss_total_mean"].push_back(loss);
+                    }
+                } catch (...) {}
                 plottedIteration = integer("iteration");
             }
             if(logReader.update(process.directory / "training.log"))log=logReader.text();
@@ -245,6 +320,7 @@ namespace viewer {
         }
         void launch(const std::filesystem::path& workspace = {}) {
             if(process.active())throw std::runtime_error("A reconstruction is already running");
+            if(openingSaved())throw std::runtime_error("Wait for the saved reconstruction to finish loading");
             const auto cwd = expandedPath(workingDirectory.data(), std::filesystem::current_path());
             const auto input = expandedPath(dataset.data(), cwd);
             if (!std::filesystem::is_directory(input / "images")) throw std::runtime_error("Dataset needs an images/ directory");
@@ -288,8 +364,9 @@ namespace viewer {
                 args.insert(args.end(), {flag, trainingNumber(parameters[i])});
             }
             process.launch(expandedPath(output.data(), cwd), cwd, args);
+            openedReconstruction.reset();
             status = YAML::Node(); live = YAML::Node(); losses.clear(); parametersInitialized = false;
-            metrics.reset();geometryMetrics.reset();stopRequested=false;
+            metrics.reset();geometryMetrics.reset();statusLossMetrics.reset();stopRequested=false;
             logReader.reset();log.clear();selectableLog.clear();
             checkpointNavigation.reset();checkpointSelection.reset();historyPath.clear();
             plottedIteration = viewedIteration = loadedGeneration = 0; view = TrainingView::Live;
@@ -342,7 +419,7 @@ namespace viewer {
                 ImGui::SetNextItemWidth(-1);
                 ui::pathInput("Python executable",python);
                 ui::pathInput("Working directory",workingDirectory);
-                ui::pathInput("pale module directory",moduleDirectory);
+                ui::pathInput("Native module directory",moduleDirectory);
                 if(ImGui::Button("Use detected environment")) {
                     set(python,detectedPython); set(moduleDirectory,detectedModuleDirectory);
                 }
@@ -386,6 +463,11 @@ namespace viewer {
                 ImGui::TreePop();
             }
             start=drawStartButton(ImVec2(-1,32),previewBusy&&useWorkingSnapshot);
+            if(process.active()||openingSaved())ImGui::BeginDisabled();
+            if(ImGui::Button("Open previous reconstruction...",ImVec2(-1,0)))openReconstructionBrowser();
+            if(process.active()||openingSaved())ImGui::EndDisabled();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",process.active()?
+                "Stop the current reconstruction before opening a saved run.":"Restore a saved scene, loss history and GT metrics from an output folder.");
             if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
             return start;
         }
@@ -398,21 +480,19 @@ namespace viewer {
                     if(ImGui::BeginTable("RunOverview",3,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_BordersInnerV)) {
                         ImGui::TableNextColumn();
                         ImGui::TextDisabled("Reconstruction objective");
-                        if(!metrics.iterations.empty())metrics.plot("Objective",{{"loss_total_mean","Total"}},rollingMetrics,metricWindow,logMetrics,44);
+                        if(!metrics.iterations.empty())metrics.plot("Objective",{{"loss_total_mean","Total"}},rollingMetrics,metricWindow,logMetrics,100);
                         else if(!losses.empty()) {
-                            ImGui::SameLine(); ImGui::TextColored(ui::green,"%.6g",losses.back());
-                            const int count=rollingMetrics?std::min(static_cast<int>(losses.size()),metricWindow):static_cast<int>(losses.size());
-                            ImGui::PlotLines("##loss",losses.data()+losses.size()-count,count,0,nullptr,FLT_MAX,FLT_MAX,ImVec2(-1,44));
+                            statusLossMetrics.plot("Objective",{{"loss_total_mean","Total"}},rollingMetrics,metricWindow,logMetrics,100);
                         } else ImGui::TextWrapped("Start a reconstruction to track its objective here.");
                         ImGui::TableNextColumn();
                         ImGui::Text("Iteration %llu / %llu",static_cast<unsigned long long>(integer("iteration")),static_cast<unsigned long long>(integer("target_iteration")));
                         const float progress=integer("target_iteration") ? static_cast<float>(integer("iteration"))/integer("target_iteration") : 0;
                         ImGui::ProgressBar(progress,ImVec2(-1,7),"");
                         ImGui::TextDisabled("Viewing %llu  ·  Saved %llu",static_cast<unsigned long long>(viewedIteration),static_cast<unsigned long long>(integer("saved_iteration")));
-                        ImGui::TextDisabled("%s",view==TrainingView::Snapshot?"Editable snapshot · training independent":"Read-only training view");
+                        ImGui::TextDisabled("%s",view==TrainingView::Snapshot?"Editable snapshot · training independent":openedReconstruction?"Read-only saved reconstruction":"Read-only training view");
                         ImGui::TableNextColumn();
                         ImGui::TextColored(process.active()?ui::green:ui::muted,"%s",state().c_str());
-                        if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\nClosing this viewer stops its reconstruction.",process.runDirectory.string().c_str());
+                        if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\n%s",runDirectory().string().c_str(),openedReconstruction?"Saved output opened for inspection.":"Closing this viewer stops its reconstruction.");
                         const bool disabled=!process.active()||pending()||stopRequested||state()=="finalizing";
                         if(disabled)ImGui::BeginDisabled();
                         if(ImGui::Button(state()=="paused"?"Continue":"Pause"))send(state()=="paused"?"resume":"pause");
@@ -420,7 +500,7 @@ namespace viewer {
                         ImGui::SameLine(); if(ImGui::Button("Save checkpoint"))send("save");
                         if(disabled)ImGui::EndDisabled();
                         if(pending())ImGui::TextDisabled("Waiting for iteration boundary");
-                        else if(process.exitCode)ImGui::TextDisabled("Process exited: %d",*process.exitCode);
+                        else if(!openedReconstruction&&process.exitCode)ImGui::TextDisabled("Process exited: %d",*process.exitCode);
                         else if(status["iteration_ms"].IsScalar()) {
                             try {
                                 const float milliseconds=status["iteration_ms"].as<float>();
@@ -435,16 +515,21 @@ namespace viewer {
                     if(ImGui::SmallButton("Metrics..."))requestedMonitorTab=1;
                     ImGui::SameLine();
                     if(std::isfinite(geometryMetrics.latest("cd")))ImGui::Text("CD %.5g  Accuracy %.5g  Completion %.5g",geometryMetrics.latest("cd"),geometryMetrics.latest("accuracy"),geometryMetrics.latest("completion"));
-                    if(process.exitCode&&*process.exitCode!=0)ImGui::TextWrapped("%s",message.c_str());
+                    if(!openedReconstruction&&process.exitCode&&*process.exitCode!=0)ImGui::TextWrapped("%s",message.c_str());
                     ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Metrics",nullptr,requested==1?ImGuiTabItemFlags_SetSelected:0)) {drawMetrics();ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Checkpoints",nullptr,requested==2?ImGuiTabItemFlags_SetSelected:0)) {drawCheckpoints();ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Log",nullptr,requested==3?ImGuiTabItemFlags_SetSelected:0)) {
                     if(ImGui::Button("Copy log"))ImGui::SetClipboardText(log.c_str());
-                    ImGui::SameLine(); if(ImGui::Button("Copy launch command"))ImGui::SetClipboardText(shellDisplay(process.arguments).c_str());
-                    ImGui::SameLine(); ImGui::TextDisabled("%s",process.directory.filename().string().c_str());
-                    if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",process.directory.string().c_str());
+                    ImGui::SameLine();
+                    const bool hasCommand=openedReconstruction?!openedReconstruction->launchCommand.empty():!process.arguments.empty();
+                    if(!hasCommand)ImGui::BeginDisabled();
+                    if(ImGui::Button("Copy launch command"))ImGui::SetClipboardText(openedReconstruction?openedReconstruction->launchCommand.c_str():shellDisplay(process.arguments).c_str());
+                    if(!hasCommand)ImGui::EndDisabled();
+                    ImGui::SameLine(); ImGui::TextDisabled("%s",runDirectory().filename().string().c_str());
+                    if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",runDirectory().string().c_str());
+                    if(openedReconstruction&&log.empty())ImGui::TextDisabled("No training log was retained for this reconstruction.");
                     drawLogText(); ImGui::EndTabItem();
                 }
                 ImGui::EndTabBar();
@@ -482,16 +567,22 @@ namespace viewer {
             }
         }
         bool drawStartButton(ImVec2 size, bool previewBlocked=false) {
-            const bool running=process.active(),disabled=running||previewBlocked;
+            const bool running=process.active(),disabled=running||previewBlocked||openingSaved();
+            const auto phase=running?state():std::string{};
+            const char* caption=!running?"Start reconstruction":
+                phase=="stopping"?"Stopping...":
+                phase=="finalizing"||phase=="completed"||phase=="stopped"?"Finalizing...":
+                phase=="paused"?"Paused":"Reconstructing...";
+            const std::string label=std::string(caption)+"###StartReconstruction";
             if(disabled)ImGui::BeginDisabled();
             ImGui::PushStyleColor(ImGuiCol_Button,ui::accent);
             ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(.13f,.11f,.09f,1));
-            const bool pressed=ImGui::Button("Start reconstruction",size);
+            const bool pressed=ImGui::Button(label.c_str(),size);
             ImGui::PopStyleColor(2);
             const auto min=ImGui::GetItemRectMin(),max=ImGui::GetItemRectMax();
             if(disabled)ImGui::EndDisabled();
             if(running) {
-                const float text=ImGui::CalcTextSize("Start reconstruction").x;
+                const float text=ImGui::CalcTextSize(caption).x;
                 const ImVec2 center(min.x+std::max(9.f,(max.x-min.x-text)*.5f-12.f),(min.y+max.y)*.5f);
                 const float angle=static_cast<float>(ImGui::GetTime())*5.f;
                 auto* draw=ImGui::GetWindowDrawList();
@@ -499,14 +590,14 @@ namespace viewer {
                 draw->PathStroke(ImGui::GetColorU32(ui::accent),0,2.f);
             }
             if(disabled&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s",running?"A reconstruction is running. Start becomes available after it exits.":"Wait for the current preview before starting from an edited snapshot.");
+                ImGui::SetTooltip("%s",running?"A reconstruction is running. Start becomes available after it exits.":openingSaved()?"A saved reconstruction is loading.":"Wait for the current preview before starting from an edited snapshot.");
             return pressed&&!disabled;
         }
         void drawCheckpoints() {
-            if(!process.launched()) {ImGui::TextWrapped("Start a reconstruction to browse its saved checkpoints.");return;}
+            if(!hasRun()) {ImGui::TextWrapped("Start or open a reconstruction to browse its saved checkpoints.");return;}
             const auto saved=checkpoints();
             ImGui::Text("Viewing iteration %llu · training %llu",static_cast<unsigned long long>(viewedIteration),static_cast<unsigned long long>(integer("iteration")));
-            if(ImGui::Button("Live (R)"))checkpointNavigation=0;
+            if(ImGui::Button(process.active()&&!openedReconstruction?"Live (R)":"Latest (R)"))checkpointNavigation=0;
             ImGui::SameLine();if(ImGui::Button("-1000 (N)"))checkpointNavigation=-2;
             ImGui::SameLine();if(ImGui::Button("Previous"))checkpointNavigation=-1;
             ImGui::SameLine();if(ImGui::Button("Next"))checkpointNavigation=1;
@@ -524,7 +615,7 @@ namespace viewer {
                     for(std::size_t i=0;i<saved.size();++i)if(ImGui::Selectable((std::to_string(saved[i].iteration)+"###checkpoint"+std::to_string(i)).c_str(),view==TrainingView::History&&historyIteration==saved[i].iteration))checkpointSelection=i;
                     ImGui::EndCombo();
                 }
-                ImGui::TextDisabled("%zu saved checkpoints · browsing leaves optimization running",saved.size());
+                ImGui::TextDisabled("%zu saved checkpoints · %s",saved.size(),openedReconstruction?"saved output inspection":"browsing leaves optimization running");
             }
         }
         void drawMetrics() {
@@ -539,14 +630,15 @@ namespace viewer {
                 if(!geometryMetrics.iterations.empty()) {
                     geometryMetrics.plot("Ground truth distances",{{"cd","Chamfer"},{"accuracy","Accuracy"},{"completion","Completion"}},rollingMetrics,metricWindow,logMetrics);
                     ImGui::TextDisabled("Evaluated mesh at iteration %.0f · evaluation distance units",geometryMetrics.iterations.back());
-                } else if(status.IsMap()&&status["ground_truth"].IsNull())ImGui::TextWrapped("GT evaluation is disabled for this run.");
+                } else if(openedReconstruction)ImGui::TextWrapped("No Chamfer, accuracy or completion evaluations were saved for this reconstruction.");
+                else if(status.IsMap()&&status["ground_truth"].IsNull())ImGui::TextWrapped("GT evaluation is disabled for this run.");
                 else ImGui::TextWrapped("GT Chamfer, accuracy and completion appear after mesh checkpoint evaluation. Configure mesh_extraction_interval in config.py to control evaluation cadence.");
                 ImGui::EndTable();
             }
             if(ImGui::TreeNodeEx("Geometry / density / runtime",ImGuiTreeNodeFlags_DefaultOpen)) {
                 if(ImGui::BeginTable("PopulationPanels",3,ImGuiTableFlags_SizingStretchSame)) {
                     ImGui::TableNextColumn();metrics.plot("Primitive population",{{"num_points","Surfels"},{"densification_clone_points_active","Clones"},{"densification_split_points_active","Splits"}},rollingMetrics,metricWindow,false,120,false,true);
-                    ImGui::TableNextColumn();metrics.plot("Pruning events",{{"prune_scale_area_points","Area"},{"prune_opacity_points","Opacity"},{"prune_inactive_transport_points","Transport"}},rollingMetrics,metricWindow);
+                    ImGui::TableNextColumn();metrics.plot("Cumulative pruning",{{"prune_scale_area_points","Area"},{"prune_opacity_points","Opacity"},{"prune_inactive_transport_points","Transport"}},rollingMetrics,metricWindow,false,120,false,true,true);
                     ImGui::TableNextColumn();metrics.plot("Iteration runtime (seconds)",{{"iteration_time_sec","Update"}},rollingMetrics,metricWindow);
                     ImGui::EndTable();
                 }

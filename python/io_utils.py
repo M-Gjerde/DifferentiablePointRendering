@@ -595,6 +595,9 @@ def save_run_config(
 
     optimization_config_dict = asdict(config) if is_dataclass(config) else dict(config)
     renderer_settings_dict = renderer_settings.as_dict(config)
+    # Persist the actual renderer value, rather than the optional input
+    # override's None sentinel. Leave the caller's defaults untouched.
+    optimization_config_dict["adjoint_spp"] = renderer_settings_dict["adjoint_passes"]
 
     run_config = {
         "run_folder_name": run_folder_name,
