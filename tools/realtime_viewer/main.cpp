@@ -9,6 +9,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -17,6 +18,8 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <tuple>
+#include <type_traits>
 #include <vector>
 
 #include <GLFW/glfw3.h>
@@ -44,15 +47,25 @@
 #include "Renderer/RenderPackage.h"
 #include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
+#include "Core/DeviceAllocation.h"
 #include "SurfelDensity.h"
 #include "TerminalTransmittance.h"
 #include "SurfaceOverlap.h"
 #include "Renderer/SurfaceOverlapScene.h"
 #include "ResponsiveWork.h"
 #include "ViewportScreenshot.h"
+#include "ViewportTexture.h"
 #include "RawLinearImage.h"
 #include "LinearCompositing.h"
 #include "ViewportPicking.h"
+#include "ViewportGrid.h"
+#include "TrainingControls.h"
+#include "MeshExportControls.h"
+#include "SceneTree.h"
+#include "ViewportLayout.h"
+#include "ViewportOverlayCache.h"
+#include "InspectorInputHandoff.h"
+#include "LivePacketLease.h"
 #include "spdlog/spdlog.h"
 
 import Pale.Assets;
@@ -111,10 +124,10 @@ namespace {
 
     const glm::vec3 kWorldUp{0.0f, 0.0f, 1.0f};
     const glm::vec3 kDefaultLookAt{0.0f, 0.0f, 0.2f};
-    constexpr ImVec4 kBlenderViewportBackground{0.215f, 0.215f, 0.215f, 1.0f};
+    constexpr ImVec4 kBlenderViewportBackground = viewer::ui::canvas;
     constexpr uint32_t kDefaultViewportImageExtent = 500u;
-    constexpr float kSidebarDockFraction = 0.38f;
-    constexpr ImVec4 kUiAccent{0.90f, 0.70f, 0.38f, 1.0f};
+    constexpr float kSidebarDockFraction = 0.22f;
+    constexpr ImVec4 kUiAccent = viewer::ui::accent;
 
     // Collapsing headers do not indent their contents automatically. Keep each
     // section's controls and nested headers one level below its heading.
@@ -141,6 +154,7 @@ namespace {
         uint32_t width = 0;
         uint32_t height = 0;
         bool sharedSlabs = false;
+        bool sceneInputSpecified = false;
     };
 
     struct SceneBounds {
@@ -204,11 +218,11 @@ namespace {
     };
 
     constexpr std::array<const char*, 22> kViewImageModeLabels = {
-        "1 Rendered",
-        "2 Median depth",
+        "Prediction",
+        "Median depth",
         "3 Depth distortion",
         "4 Mean depth",
-        "5 Visible normal",
+        "Surface normals",
         "6 Mean depth normal",
         "7 Median depth normal",
         "8 Surface overlap (world space)",
@@ -517,59 +531,7 @@ namespace {
         }
     };
 
-    struct Texture2D {
-        GLuint id = 0;
-        uint32_t width = 0;
-        uint32_t height = 0;
-
-        void update(const std::vector<uint8_t>& rgba, uint32_t newWidth, uint32_t newHeight) {
-            if (id == 0) {
-                glGenTextures(1, &id);
-            }
-
-            glBindTexture(GL_TEXTURE_2D, id);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-            if (width != newWidth || height != newHeight) {
-                width = newWidth;
-                height = newHeight;
-                glTexImage2D(
-                    GL_TEXTURE_2D,
-                    0,
-                    GL_RGBA8,
-                    static_cast<GLsizei>(width),
-                    static_cast<GLsizei>(height),
-                    0,
-                    GL_RGBA,
-                    GL_UNSIGNED_BYTE,
-                    rgba.data());
-            } else {
-                glTexSubImage2D(
-                    GL_TEXTURE_2D,
-                    0,
-                    0,
-                    0,
-                    static_cast<GLsizei>(width),
-                    static_cast<GLsizei>(height),
-                    GL_RGBA,
-                    GL_UNSIGNED_BYTE,
-                    rgba.data());
-            }
-        }
-
-        void destroy() {
-            if (id != 0) {
-                glDeleteTextures(1, &id);
-                id = 0;
-            }
-            width = 0;
-            height = 0;
-        }
-    };
+    using Texture2D = viewer::Texture2D;
 
     struct DropState {
         std::filesystem::path pendingPath;
@@ -1148,38 +1110,47 @@ namespace {
 
         std::filesystem::path temporary = destination;
         temporary += ".tmp";
-        std::ofstream output(temporary, std::ios::trunc);
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output) {
             reason = "could not open " + temporary.string();
             return false;
         }
 
         output << "ply\n"
-               << "format ascii 1.0\n"
-               << "comment Saved by Pale Realtime Viewer\n"
+               << "format binary_little_endian 1.0\n"
+               << "comment Saved by Pale Reconstruction Viewer\n"
                << "element vertex " << pointCount << "\n"
                << "property float x\nproperty float y\nproperty float z\n"
                << "property float rot_w\nproperty float rot_x\nproperty float rot_y\nproperty float rot_z\n"
                << "property float su\nproperty float sv\n"
                << "property float albedo_r\nproperty float albedo_g\nproperty float albedo_b\n"
                << "property float opacity\nproperty float beta\nproperty float shape\nproperty float power\n"
-               << "end_header\n"
-               << std::setprecision(9);
-
+               << "property float densification_origin\nproperty float primitive_age\n"
+               << "property float densification_position_signal\nproperty float densification_position_sample_count\nproperty float densification_position_threshold\n"
+               << "end_header\n";
+        std::vector<float> block;
+        block.reserve(8192*21);
+        const auto flush=[&] {
+            output.write(reinterpret_cast<const char*>(block.data()),static_cast<std::streamsize>(block.size()*sizeof(float)));
+            block.clear();
+        };
         for (const Pale::PointGeometry& geometry : pointAsset.points) {
             for (std::size_t index = 0u; index < geometry.positions.size(); ++index) {
                 const glm::vec3& position = geometry.positions[index];
                 const glm::quat rotation = normalizeQuaternionOrIdentity(geometry.quat[index]);
                 const glm::vec2& scale = geometry.scales[index];
                 const glm::vec3& albedo = geometry.albedos[index];
-                output << position.x << ' ' << position.y << ' ' << position.z << ' '
-                       << rotation.w << ' ' << rotation.x << ' ' << rotation.y << ' ' << rotation.z << ' '
-                       << scale.x << ' ' << scale.y << ' '
-                       << albedo.r << ' ' << albedo.g << ' ' << albedo.b << ' '
-                       << geometry.opacities[index] << ' ' << geometry.betas[index] << ' '
-                       << geometry.shapes[index] << ' ' << geometry.powers[index] << '\n';
+                block.insert(block.end(),{position.x,position.y,position.z,rotation.w,rotation.x,rotation.y,rotation.z,
+                    scale.x,scale.y,albedo.r,albedo.g,albedo.b,geometry.opacities[index],geometry.betas[index],geometry.shapes[index],geometry.powers[index],
+                    index<geometry.densificationOrigins.size()?static_cast<float>(geometry.densificationOrigins[index]):0.f,
+                    index<geometry.primitiveAges.size()?static_cast<float>(geometry.primitiveAges[index]):0.f,
+                    index<geometry.densificationPositionSignals.size()?geometry.densificationPositionSignals[index]:0.f,
+                    index<geometry.densificationPositionSampleCounts.size()?static_cast<float>(geometry.densificationPositionSampleCounts[index]):0.f,
+                    index<geometry.densificationPositionThresholds.size()?geometry.densificationPositionThresholds[index]:0.f});
+                if(block.size()>=8192*21)flush();
             }
         }
+        if(!block.empty())flush();
         output.close();
         if (!output) {
             reason = "writing " + temporary.string() + " failed";
@@ -1709,8 +1680,10 @@ namespace {
                 args.assetsDir = requireValue("--assets");
             } else if (arg == "--pointcloud") {
                 args.pointCloudPath = requireValue("--pointcloud");
+                args.sceneInputSpecified = true;
             } else if (arg == "--scene") {
                 args.scenePath = requireValue("--scene");
+                args.sceneInputSpecified = true;
             } else if (arg == "--width") {
                 args.width = static_cast<uint32_t>(std::max(1, std::stoi(requireValue("--width"))));
             } else if (arg == "--height") {
@@ -1724,6 +1697,7 @@ namespace {
 
         if (!positional.empty()) {
             args.pointCloudPath = positional[0];
+            args.sceneInputSpecified = true;
         }
         if (positional.size() > 1) {
             args.scenePath = positional[1];
@@ -1881,31 +1855,33 @@ namespace {
 
         const std::size_t pixelCount =
             static_cast<std::size_t>(sensor.width) * static_cast<std::size_t>(sensor.height);
-        sensor.framebuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        sensor.outputFramebuffer = sycl::malloc_device<sycl::uchar4>(pixelCount, queue);
-        sensor.ldrFramebuffer = sycl::malloc_device<float>(pixelCount * 4u, queue);
-        sensor.depthDistortionBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.depthDistortionAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.intraSlabDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.intraSlabRayDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.intraSlabDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.intraSlabDepthActiveSlabCountBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
-        sensor.visiblePrimitiveIndexBuffer = sycl::malloc_device<std::uint32_t>(pixelCount, queue);
-        sensor.medianDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.meanDepthBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.medianDepthAdjointBuffer = sycl::malloc_device<float>(pixelCount, queue);
-        sensor.medianWorldPositionBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        sensor.visibleNormalBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        sensor.normalFromDepthBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        sensor.normalFromDepthAdjointBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        sensor.visibleNormalAdjointBuffer = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-
-        if (!sensor.framebuffer || !sensor.outputFramebuffer || !sensor.ldrFramebuffer ||
-            !sensor.intraSlabDepthBuffer || !sensor.intraSlabRayDepthBuffer ||
-            !sensor.intraSlabDepthAdjointBuffer ||
-            !sensor.intraSlabDepthActiveSlabCountBuffer || !sensor.visiblePrimitiveIndexBuffer) {
-            throw std::runtime_error("Failed to allocate realtime sensor framebuffers");
-        }
+        if(pixelCount == 0 || pixelCount > std::numeric_limits<std::size_t>::max()/sizeof(Pale::float4))
+            throw std::runtime_error("Invalid realtime sensor resolution");
+        const auto release=[&](void* pointer) { sycl::free(pointer, queue); };
+        Pale::detail::AllocationBatch<18, decltype(release)> pending(release);
+        const auto allocate=[&](auto*& pointer, std::size_t count) {
+            using Element=std::remove_pointer_t<std::remove_reference_t<decltype(pointer)>>;
+            pointer=pending.add(sycl::malloc_device<Element>(count, queue));
+        };
+        allocate(sensor.framebuffer, pixelCount);
+        allocate(sensor.outputFramebuffer, pixelCount);
+        allocate(sensor.ldrFramebuffer, pixelCount * 4u);
+        allocate(sensor.depthDistortionBuffer, pixelCount);
+        allocate(sensor.depthDistortionAdjointBuffer, pixelCount);
+        allocate(sensor.intraSlabDepthBuffer, pixelCount);
+        allocate(sensor.intraSlabRayDepthBuffer, pixelCount);
+        allocate(sensor.intraSlabDepthAdjointBuffer, pixelCount);
+        allocate(sensor.intraSlabDepthActiveSlabCountBuffer, pixelCount);
+        allocate(sensor.visiblePrimitiveIndexBuffer, pixelCount);
+        allocate(sensor.medianDepthBuffer, pixelCount);
+        allocate(sensor.meanDepthBuffer, pixelCount);
+        allocate(sensor.medianDepthAdjointBuffer, pixelCount);
+        allocate(sensor.medianWorldPositionBuffer, pixelCount);
+        allocate(sensor.visibleNormalBuffer, pixelCount);
+        allocate(sensor.normalFromDepthBuffer, pixelCount);
+        allocate(sensor.normalFromDepthAdjointBuffer, pixelCount);
+        allocate(sensor.visibleNormalAdjointBuffer, pixelCount);
+        pending.commit();
         return sensor;
     }
 
@@ -2171,20 +2147,6 @@ namespace {
         return settings;
     }
 
-    ImVec2 fitImageSize(ImVec2 available, uint32_t width, uint32_t height) {
-        if (width == 0 || height == 0 || available.x <= 1.0f || available.y <= 1.0f) {
-            return ImVec2(1.0f, 1.0f);
-        }
-        const float imageAspect = static_cast<float>(width) / static_cast<float>(height);
-        float drawWidth = available.x;
-        float drawHeight = drawWidth / imageAspect;
-        if (drawHeight > available.y) {
-            drawHeight = available.y;
-            drawWidth = drawHeight * imageAspect;
-        }
-        return ImVec2(std::max(drawWidth, 1.0f), std::max(drawHeight, 1.0f));
-    }
-
     [[nodiscard]] uint32_t renderExtentFromAvailable(float available) {
         return static_cast<uint32_t>(std::clamp(
             static_cast<int>(std::floor(std::max(available, 1.0f))),
@@ -2209,188 +2171,32 @@ namespace {
         };
     }
 
-    [[nodiscard]] float chooseGridSpacing(float extent) {
-        const float rawSpacing = std::max(extent / 80.0f, 0.001f);
-        const float magnitude = std::pow(10.0f, std::floor(std::log10(rawSpacing)));
-        const float normalized = rawSpacing / magnitude;
-        if (normalized <= 1.0f) {
-            return magnitude;
-        }
-        if (normalized <= 2.0f) {
-            return 2.0f * magnitude;
-        }
-        if (normalized <= 5.0f) {
-            return 5.0f * magnitude;
-        }
-        return 10.0f * magnitude;
-    }
-
-    struct GridLineStyle {
-        glm::vec3 color{1.0f};
-        float alpha = 1.0f;
-        float thickness = 1.0f;
-    };
-
-    [[nodiscard]] uint8_t channelToByte(float value) {
-        return static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
-    }
-
-    void blendPixel(std::vector<uint8_t>& rgba, std::size_t pixelIndex, const GridLineStyle& style, float coverage) {
-        const float alpha = std::clamp(style.alpha * coverage, 0.0f, 1.0f);
-        if (alpha <= 0.0f) {
-            return;
-        }
-
-        const std::size_t baseIndex = pixelIndex * 4u;
-        const float invAlpha = 1.0f - alpha;
-        rgba[baseIndex + 0u] = channelToByte(
-            static_cast<float>(rgba[baseIndex + 0u]) / 255.0f * invAlpha + style.color.r * alpha);
-        rgba[baseIndex + 1u] = channelToByte(
-            static_cast<float>(rgba[baseIndex + 1u]) / 255.0f * invAlpha + style.color.g * alpha);
-        rgba[baseIndex + 2u] = channelToByte(
-            static_cast<float>(rgba[baseIndex + 2u]) / 255.0f * invAlpha + style.color.b * alpha);
-        rgba[baseIndex + 3u] = 255u;
-    }
-
-    void blendGridSample(
-        std::vector<uint8_t>& rgba,
-        std::size_t pixelIndex,
-        float distanceToLine,
-        float worldPerPixel,
-        const GridLineStyle& style) {
-        const float antialiasWidth = std::max(worldPerPixel, 1.0e-6f);
-        const float halfWidth = std::max(style.thickness * 0.5f, 0.5f) * antialiasWidth;
-        const float coverage = std::clamp((halfWidth + antialiasWidth - distanceToLine) / antialiasWidth, 0.0f, 1.0f);
-        blendPixel(rgba, pixelIndex, style, coverage);
-    }
-
-    [[nodiscard]] const GridLineStyle& gridLineStyleForIndex(
-        int index,
-        const GridLineStyle& axisLine,
-        const GridLineStyle& majorLine,
-        const GridLineStyle& minorLine) {
-        if (index == 0) {
-            return axisLine;
-        }
-        if (index % 10 == 0) {
-            return majorLine;
-        }
-        return minorLine;
-    }
-
-    void shadeViewportBackground(
-        std::vector<uint8_t>& rgba,
-        const OrbitCamera& orbit,
-        const SceneBounds& bounds,
-        uint32_t renderWidth,
-        uint32_t renderHeight,
-        bool showViewportGrid,
-        const ImVec4& backgroundColor) {
-        const float extent = std::max(
-            10.0f,
-            std::max(bounds.radius * 2.5f, orbit.distance * 2.5f));
-        const float spacing = chooseGridSpacing(extent);
-        const GridLineStyle minorLine{{0.29f, 0.29f, 0.29f}, 0.42f, 1.0f};
-        const GridLineStyle majorLine{{0.38f, 0.38f, 0.38f}, 0.57f, 1.15f};
-        const GridLineStyle xAxisLine{{0.75f, 0.29f, 0.29f}, 0.82f, 1.8f};
-        const GridLineStyle yAxisLine{{0.32f, 0.59f, 0.32f}, 0.82f, 1.8f};
-        const glm::mat4 cameraFromWorld = glm::inverse(orbit.viewMatrix());
-        const glm::mat3 worldFromCameraDirection{cameraFromWorld};
-        const glm::vec3 cameraPosition = glm::vec3(cameraFromWorld[3]);
-        const glm::vec3 cameraForward = glm::normalize(orbit.target - cameraPosition);
-        const float width = static_cast<float>(std::max(renderWidth, 1u));
-        const float height = static_cast<float>(std::max(renderHeight, 1u));
-        const float fy = 0.5f * height / std::tan(0.5f * glm::radians(orbit.fovyDegrees));
-        const float fx = fy * (width / height);
-        const std::size_t pixelCount =
-            static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
-        const uint8_t backgroundR = channelToByte(backgroundColor.x);
-        const uint8_t backgroundG = channelToByte(backgroundColor.y);
-        const uint8_t backgroundB = channelToByte(backgroundColor.z);
-
-        for (int y = 0; y < static_cast<int>(renderHeight); ++y) {
-            for (uint32_t x = 0; x < renderWidth; ++x) {
-                const std::size_t pixelIndex =
-                    static_cast<std::size_t>(y) * static_cast<std::size_t>(renderWidth) + static_cast<std::size_t>(x);
-                if (pixelIndex >= pixelCount) {
-                    continue;
-                }
-
-                const std::size_t baseIndex = pixelIndex * 4u;
-                rgba[baseIndex + 0u] = backgroundR;
-                rgba[baseIndex + 1u] = backgroundG;
-                rgba[baseIndex + 2u] = backgroundB;
-                rgba[baseIndex + 3u] = 255u;
-                if (!showViewportGrid) {
-                    continue;
-                }
-
-                const float u = static_cast<float>(x) + 0.5f;
-                const float v = static_cast<float>(y) + 0.5f;
-                const float vFlipped = height - v;
-                const float ndcX = 2.0f * u / width - 1.0f;
-                const float ndcY = 2.0f * vFlipped / height - 1.0f;
-                const glm::vec3 cameraDirection = glm::normalize(glm::vec3{
-                    ndcX * (0.5f * width) / fx,
-                    ndcY * (0.5f * height) / fy,
-                    -1.0f,
-                });
-                const glm::vec3 rayDirection = glm::normalize(worldFromCameraDirection * cameraDirection);
-                if (std::abs(rayDirection.z) <= 1.0e-6f) {
-                    continue;
-                }
-
-                const float t = -cameraPosition.z / rayDirection.z;
-                if (t <= orbit.nearClip) {
-                    continue;
-                }
-
-                const glm::vec3 hit = cameraPosition + rayDirection * t;
-                const float forwardDepth = glm::dot(hit - cameraPosition, cameraForward);
-                if (forwardDepth <= orbit.nearClip) {
-                    continue;
-                }
-
-                const float worldPerPixel =
-                    std::max(2.0f * std::tan(0.5f * glm::radians(orbit.fovyDegrees)) * forwardDepth / height, 1.0e-6f);
-                const int xIndex = static_cast<int>(std::round(hit.x / spacing));
-                const int yIndex = static_cast<int>(std::round(hit.y / spacing));
-                const float xDistance = std::abs(hit.x - static_cast<float>(xIndex) * spacing);
-                const float yDistance = std::abs(hit.y - static_cast<float>(yIndex) * spacing);
-
-                blendGridSample(
-                    rgba,
-                    pixelIndex,
-                    xDistance,
-                    worldPerPixel,
-                    gridLineStyleForIndex(xIndex, yAxisLine, majorLine, minorLine));
-                blendGridSample(
-                    rgba,
-                    pixelIndex,
-                    yDistance,
-                    worldPerPixel,
-                    gridLineStyleForIndex(yIndex, xAxisLine, majorLine, minorLine));
-            }
-        }
-    }
+    using viewer::channelToByte;
 
     void composeViewportPixels(
         const std::vector<float>& rawRenderPixels,
         const viewer::DisplayTransform& displayTransform,
         const OrbitCamera& orbit,
+        const Pale::CameraGPU& displayedCamera,
         const SceneBounds& bounds,
         uint32_t renderWidth,
         uint32_t renderHeight,
         bool showViewportGrid,
         bool forceRenderOpacity,
         const ImVec4& backgroundColor,
+        viewer::ViewportBackgroundCache& backgroundCache,
         std::vector<uint8_t>& displayPixels) {
         const std::size_t pixelCount =
             static_cast<std::size_t>(renderWidth) * static_cast<std::size_t>(renderHeight);
         if (rawRenderPixels.size() != pixelCount * 4u) return;
-        displayPixels.assign(pixelCount * 4u, 0u);
-        shadeViewportBackground(displayPixels, orbit, bounds, renderWidth, renderHeight,
-                                showViewportGrid, backgroundColor);
+        const bool intrinsics=displayedCamera.hasPinholeIntrinsics && displayedCamera.fx>0 && displayedCamera.fy>0;
+        const float focal=0.5f*displayedCamera.height/std::tan(0.5f*glm::radians(displayedCamera.fovy));
+        const viewer::GridProjection projection{syclMatrixToGlm(displayedCamera.invView),
+            intrinsics?displayedCamera.fx:focal,intrinsics?displayedCamera.fy:focal,
+            intrinsics?displayedCamera.cx:0.5f*displayedCamera.width,
+            intrinsics?displayedCamera.cy:0.5f*displayedCamera.height};
+        displayPixels = backgroundCache.get(orbit, bounds, renderWidth, renderHeight,
+                                            showViewportGrid, backgroundColor, projection);
         viewer::compositeLinearOverBackground(rawRenderPixels, displayPixels,
                                              displayTransform, forceRenderOpacity);
     }
@@ -2738,10 +2544,20 @@ namespace {
 
 int main(int argc, char** argv) {
     try {
-        const AppArgs args = parseArgs(argc, argv);
+        AppArgs args = parseArgs(argc, argv);
         const std::filesystem::path assetsDirectory =
             std::filesystem::absolute(args.assetsDir).lexically_normal();
-        const std::filesystem::path repositoryRoot = assetsDirectory.parent_path();
+        const std::filesystem::path repositoryRoot = std::filesystem::path(PALE_DEFAULT_ASSET_DIR).parent_path();
+        viewer::TrainingControls training(repositoryRoot);
+        viewer::MeshExportControls meshExport(repositoryRoot);
+        bool showMeshExport=false,meshExportRequested=false;
+        YAML::Node displayedExportMetadata;
+        std::filesystem::path displayedExportRunConfig;
+        if (!args.sceneInputSpecified && !training.datasets.empty()) {
+            args.scenePath = std::filesystem::path(training.dataset.data()) / "scene.xml";
+            args.pointCloudPath = std::filesystem::path(training.dataset.data()) / "points.ply";
+        }
+        training.datasetChanged = false; // The startup scene is loaded below.
         const std::filesystem::path optimizationOutputDirectory =
             repositoryRoot / "python" / "OptimizationOutput";
         std::filesystem::current_path(assetsDirectory);
@@ -2812,6 +2628,10 @@ int main(int argc, char** argv) {
             currentPointCloudPath.has_parent_path() ? currentPointCloudPath.parent_path()
                                                     : std::filesystem::current_path();
         DropState dropState;
+        std::filesystem::path workingDirectory, workingSourceScene;
+        uint64_t workingIteration = 0;
+        bool hasWorkingSnapshot = false;
+        auto modelReadOnly = [&]() { return training.process.launched() && training.view != viewer::TrainingView::Snapshot; };
 
         uint32_t renderWidth = args.width;
         uint32_t renderHeight = args.height;
@@ -2852,7 +2672,7 @@ int main(int argc, char** argv) {
         double walkCursorX = 0.0;
         double walkCursorY = 0.0;
         bool forceRenderOpacity = false;
-        bool showViewportGrid = false;
+        bool showViewportGrid = true;
         ImVec4 viewportBackgroundColor = kBlenderViewportBackground;
         ViewImageMode viewImageMode = ViewImageMode::Rendered;
         ScalarColorMap scalarColorMap = ScalarColorMap::Viridis;
@@ -2911,6 +2731,21 @@ int main(int argc, char** argv) {
         int primitiveAgeColdAfterIterations = 1000;
         int selectedLightIndex = 0;
         bool showLightGizmo = true;
+        bool gizmosEnabled = true;
+        int viewportTool = 1;
+        bool showLightMarkers = true;
+        bool openLightControls = false;
+        bool openSurfelControls = false;
+        std::vector<glm::vec3> lightLocalCenters;
+        struct SurfelLightMarker { glm::vec3 worldCenter; int editorIndex; };
+        std::vector<SurfelLightMarker> surfelLightMarkers;
+        bool lightMarkersDirty = true;
+        struct LightMarkerSelection {
+            int areaIndex = -1;
+            int surfelIndex = -1;
+            bool operator==(const LightMarkerSelection&) const = default;
+        };
+        std::optional<LightMarkerSelection> pressedLightMarker;
         ImGuizmo::OPERATION lightGizmoOperation = ImGuizmo::TRANSLATE;
         ImGuizmo::MODE lightGizmoMode = ImGuizmo::WORLD;
         int selectedSurfelLightIndex = 0;
@@ -2955,6 +2790,7 @@ int main(int argc, char** argv) {
         std::vector<float> rawRenderPixels;
         viewer::DisplayTransform displayedTransform;
         std::vector<uint8_t> pixels;
+        viewer::ViewportBackgroundCache viewportBackgroundCache;
         std::vector<uint8_t> screenshotPixels;
         std::string screenshotStatus;
         uint64_t screenshotSequence = 0;
@@ -2966,13 +2802,112 @@ int main(int argc, char** argv) {
         Pale::CameraGPU displayedCamera = orbit.makeGpuCamera(renderWidth, renderHeight);
         uint32_t displayedRenderWidth = renderWidth;
         uint32_t displayedRenderHeight = renderHeight;
+        struct PublishedPreviewState {
+            std::vector<uint8_t> render,linear,pixels,screenshot;
+            std::vector<float> raw,adjoint;
+            bool adjointValid;
+            DebugDisplayBuffers debug;
+            viewer::DisplayTransform transform;
+            OrbitCamera orbit;
+            SceneBounds bounds;
+            CameraSource source;
+            Pale::CameraGPU camera;
+            uint32_t width,height;
+        };
+        viewer::PreviewPublication<PublishedPreviewState> previewPublication;
+        const auto restorePublishedPreview=[&](PublishedPreviewState prior) {
+            renderPixels=std::move(prior.render);rawLinearPixels=std::move(prior.linear);
+            pixels=std::move(prior.pixels);screenshotPixels=std::move(prior.screenshot);
+            rawRenderPixels=std::move(prior.raw);viewerAdjointImage=std::move(prior.adjoint);viewerAdjointImageValid=prior.adjointValid;
+            debugDisplayBuffers=std::move(prior.debug);
+            displayedTransform=prior.transform;displayedOrbit=prior.orbit;displayedBounds=prior.bounds;
+            displayedCameraSource=prior.source;displayedCamera=prior.camera;
+            displayedRenderWidth=prior.width;displayedRenderHeight=prior.height;
+        };
         Texture2D texture;
+        bool showTrainingProgress = true;
+        bool selectTrainingTab = false;
+        bool showSceneTree = true;
+        constexpr bool showAdvancedTools = true;
+        bool launchTrainingRequested = false;
+        viewer::ui::Inspector inspectorPage = viewer::ui::Inspector::Reconstruction;
+        viewer::SceneTree sceneTree;
+        viewer::SceneItemKind sceneSelectionKind = viewer::SceneItemKind::Geometry;
+        std::string selectedTreeEntity;
+        bool sceneTreeDirty = true;
+        bool sceneUploadPending = false;
+        viewer::CameraImageView cameraImageView;
+        std::string cameraImageKey;
+        std::chrono::steady_clock::time_point lastNavigationInput{};
+        bool interactivePreview=false,lastPreviewInteractive=false;
+        bool fastEmitterEditing=true,fastSurfelEditing=false;
+        viewer::PreviewWork previewWork;
+        viewer::PreviewRecovery previewRecovery;
+        viewer::PreviewWatchdog previewWatchdog;
+        const auto previewFailureLog=repositoryRoot/"output"/"viewer_diagnostics"/
+            ("preview_"+std::to_string(std::chrono::system_clock::now().time_since_epoch().count())+".jsonl");
+        std::function<void()> previewCompletion;
+        std::function<void(std::function<void()>,std::function<void()>,const char*)> startPreviewJob;
+        std::vector<viewer::SceneTreeGroup> cachedSceneGroups;
+        std::optional<viewer::SceneTreeItem> queuedScenePick;
+        std::string cachedSceneName,previewActivity;
+        std::filesystem::path previewJobScene,previewJobPointCloud;
+        std::string previewJobView;
+        OrbitCamera queuedOrbit=orbit;
+        SceneBounds busyBounds=bounds;
+        Pale::CameraGPU busyCamera=displayedCamera;
+        CameraSource busyCameraSource=cameraSource;
+        bool queuedOrbitChanged=false,queuedRefresh=false,followLaunchAfterPreview=false;
+        bool busyHasWorkspace=false;
+        std::filesystem::path loadedTrainingSceneRun;
+        std::optional<ViewImageMode> queuedView;
+        std::optional<viewer::TrainingView> queuedSceneSource;
+        bool editLatestRequested=false,returnToEditsRequested=false;
+        std::optional<int> queuedCamera;
+        std::optional<std::pair<std::filesystem::path,uint64_t>> pendingViewedIteration;
+        std::optional<bool> queuedWalkFinish;
+        uint32_t busyPointCount=0;
+        double busyRenderMs=0;
+        std::vector<std::string> busyCameraNames;
+        std::string busySelectionName;
+        glm::vec3 busySelectionPosition{},busySelectionColor{};
+        bool busyHasSelection=false,queuedSelectionChanged=false;
+        viewer::SceneItemKind busySelectionKind=viewer::SceneItemKind::Geometry;
+        int busySelectionIndex=-1;
+        glm::vec3 busySelectionRotation{},busySelectionScale{1},busyLightCenter{};
+        glm::mat4 busyPointCloudTransform{1};
+        float busySelectionPower=0,busySelectionOpacity=1,busySelectionBeta=0;
+        struct DisplayedLightMarker {glm::vec3 center;LightMarkerSelection selection;std::string name;};
+        std::vector<DisplayedLightMarker> displayedLightMarkers;
+        std::filesystem::path displayedOverlayPointCloud,displayedOverlayScene;
+        viewer::LivePacketLeaseCache livePacketLeases;
+        std::shared_ptr<const viewer::LivePacketLease> loadedLivePacket,displayedLivePacket;
+        viewer::ViewportOverlayCache displayedSelectedHandles;
+        bool busyOverlayMatchesScene=false;
+        int busySelectedLightIndex=0;
+        std::optional<std::pair<LightMarkerSelection,std::filesystem::path>> queuedLightMarkerPick;
+        struct InspectorBodyCache {
+            viewer::ViewportOverlayCache geometry;
+            ImVec2 position{},size{};float scroll=0,contentHeight=0;
+            std::string key;bool valid=false;
+        };
+        std::array<InspectorBodyCache,6> inspectorBodies;
+        viewer::InspectorInputHandoff inspectorInput;
+        viewer::ui::Inspector lastDrawnInspector=inspectorPage;
+        bool holdPreviewForInspector=false;
+        int inspectorHandoffFrames=0;
+        std::vector<std::size_t> sceneTreeEmitterIndices;
         bool showProfilingWindow = false;
         bool timerProfilingEnabled = true;
         bool gpuCounterProfilingEnabled = false;
         bool dockLayoutInitialized = false;
         Pale::RenderProfilingCounters lastProfilingCounters{};
         std::vector<Pale::ScopedTimerRecord> lastTimerRecords;
+        Pale::GPUSceneBuffers busyProfilingScene{};
+        Pale::RenderProfilingCounters busyProfilingCounters{};
+        std::vector<Pale::ScopedTimerRecord> busyTimerRecords;
+        std::vector<float> busyFrameTimes;
+        bool busyTimerProfilingEnabled=true,busyGpuCounterProfilingEnabled=false,queuedProfilingSettings=false;
         Pale::RenderProfilingCounters* deviceProfilingCounters =
             sycl::malloc_device<Pale::RenderProfilingCounters>(1, queue);
         if (deviceProfilingCounters == nullptr) {
@@ -3003,7 +2938,7 @@ int main(int argc, char** argv) {
         GLFWwindow* window = glfwCreateWindow(
             initialWindowSize[0],
             initialWindowSize[1],
-            "Pale Realtime Viewer",
+            "Pale Reconstruction Viewer",
             nullptr,
             nullptr);
         if (!window) {
@@ -3023,67 +2958,17 @@ int main(int argc, char** argv) {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        ImGui::StyleColorsDark();
-        ImGuiStyle& style = ImGui::GetStyle();
-        style.WindowPadding = ImVec2(14.0f, 12.0f);
-        style.FramePadding = ImVec2(8.0f, 5.0f);
-        style.ItemSpacing = ImVec2(8.0f, 8.0f);
-        style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
-        style.FrameRounding = 4.0f;
-        style.ChildRounding = 6.0f;
-        style.PopupRounding = 6.0f;
-        style.ScrollbarRounding = 6.0f;
-        style.GrabRounding = 3.0f;
-        style.WindowBorderSize = 0.0f;
-        style.FrameBorderSize = 0.0f;
-        // Warm graphite surfaces with restrained amber highlights.
-        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.12f, 0.12f, 0.11f, 1.0f);
-        style.Colors[ImGuiCol_ChildBg] = style.Colors[ImGuiCol_WindowBg];
-        style.Colors[ImGuiCol_PopupBg] = ImVec4(0.16f, 0.16f, 0.14f, 1.0f);
-        style.Colors[ImGuiCol_Text] = ImVec4(0.94f, 0.92f, 0.87f, 1.0f);
-        style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.63f, 0.62f, 0.57f, 1.0f);
-        style.Colors[ImGuiCol_Border] = ImVec4(0.32f, 0.31f, 0.27f, 0.65f);
-        style.Colors[ImGuiCol_FrameBg] = ImVec4(0.20f, 0.20f, 0.18f, 1.0f);
-        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.28f, 0.27f, 0.22f, 1.0f);
-        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.34f, 0.30f, 0.23f, 1.0f);
-        style.Colors[ImGuiCol_Button] = ImVec4(0.27f, 0.26f, 0.22f, 1.0f);
-        style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.38f, 0.33f, 0.24f, 1.0f);
-        style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.46f, 0.37f, 0.23f, 1.0f);
-        style.Colors[ImGuiCol_Header] = ImVec4(0.23f, 0.23f, 0.20f, 1.0f);
-        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.32f, 0.30f, 0.24f, 1.0f);
-        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.39f, 0.33f, 0.23f, 1.0f);
-        style.Colors[ImGuiCol_TitleBg] = ImVec4(0.15f, 0.15f, 0.13f, 1.0f);
-        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.25f, 0.24f, 0.20f, 1.0f);
-        style.Colors[ImGuiCol_TitleBgCollapsed] = style.Colors[ImGuiCol_TitleBg];
-        style.Colors[ImGuiCol_MenuBarBg] = style.Colors[ImGuiCol_TitleBg];
-        style.Colors[ImGuiCol_Tab] = style.Colors[ImGuiCol_TitleBg];
-        style.Colors[ImGuiCol_TabHovered] = style.Colors[ImGuiCol_HeaderHovered];
-        style.Colors[ImGuiCol_TabSelected] = style.Colors[ImGuiCol_Header];
-        style.Colors[ImGuiCol_TabSelectedOverline] = kUiAccent;
-        style.Colors[ImGuiCol_TabDimmed] = style.Colors[ImGuiCol_TitleBg];
-        style.Colors[ImGuiCol_TabDimmedSelected] = style.Colors[ImGuiCol_Header];
-        style.Colors[ImGuiCol_TabDimmedSelectedOverline] = style.Colors[ImGuiCol_Border];
-        style.Colors[ImGuiCol_CheckMark] = kUiAccent;
-#if IMGUI_VERSION_NUM >= 19300
-        style.Colors[ImGuiCol_CheckboxSelectedBg] = style.Colors[ImGuiCol_FrameBgActive];
-#endif
-        style.Colors[ImGuiCol_TableHeaderBg] = style.Colors[ImGuiCol_Header];
-        style.Colors[ImGuiCol_TextLink] = kUiAccent;
-        style.Colors[ImGuiCol_SliderGrab] = kUiAccent;
-        style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.98f, 0.79f, 0.48f, 1.0f);
-        style.Colors[ImGuiCol_Separator] = style.Colors[ImGuiCol_Border];
-        style.Colors[ImGuiCol_SeparatorHovered] = kUiAccent;
-        style.Colors[ImGuiCol_SeparatorActive] = kUiAccent;
-        style.Colors[ImGuiCol_ResizeGrip] = ImVec4(0.90f, 0.70f, 0.38f, 0.20f);
-        style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.90f, 0.70f, 0.38f, 0.60f);
-        style.Colors[ImGuiCol_ResizeGripActive] = kUiAccent;
-        style.Colors[ImGuiCol_DockingPreview] = ImVec4(0.90f, 0.70f, 0.38f, 0.40f);
-        style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.90f, 0.70f, 0.38f, 0.30f);
-        style.Colors[ImGuiCol_NavCursor] = kUiAccent;
+        viewer::ui::applyStyle();
+        viewer::ui::loadFont();
         ImGui_ImplGlfw_InitForOpenGL(window, true);
         ImGui_ImplOpenGL3_Init(glslVersion);
 
         auto rebuildSceneGpu = [&]() {
+            sceneTreeDirty = true;
+            lightLocalCenters.clear();
+            surfelLightMarkers.clear();
+            lightMarkersDirty = true;
+            pressedLightMarker.reset();
             transportDirty = true;
             transportViews.clear();
             transportScores.clear();
@@ -3093,9 +2978,9 @@ int main(int argc, char** argv) {
             surfaceOverlapScoresValid = false;
             debugDisplayBuffers.surfaceOverlapValid = false;
             buildProducts = Pale::SceneBuild::build(scene, assetAccessor, buildOptions);
-            Pale::SceneUpload::uploadOrReallocate(buildProducts, sceneGpu, queue);
-            sceneGpu.profileCounters =
-                gpuCounterProfilingEnabled ? deviceProfilingCounters : nullptr;
+            // GPU uploads can JIT compile kernels. The preview worker owns that
+            // handoff; rebuilding the CPU scene must not block on a GPU queue.
+            sceneUploadPending = true;
             renderBuildProducts = buildProducts;
             renderBuildProducts.cameraGPUs.clear();
             bounds = computeSceneBounds(buildProducts);
@@ -3160,8 +3045,10 @@ int main(int argc, char** argv) {
                 pointCloudStatus = "PLY contained no surfels: " + requestedPath.string();
                 return false;
             }
+            if(selectedSurfelEditorIndex>=0&&static_cast<std::size_t>(selectedSurfelEditorIndex)>=surfelCount)selectedSurfelEditorIndex=-1;
 
             std::vector<Pale::Entity> pointCloudEntities;
+            const auto previousPointCloudHandle=firstPointCloudHandle(scene);
             for (auto [entityHandle, pointCloudComponent] :
                  scene->getAllEntitiesWith<Pale::PointCloudComponent>().each()) {
                 (void)pointCloudComponent;
@@ -3175,6 +3062,10 @@ int main(int argc, char** argv) {
             pointCloudEntity.addComponent<Pale::PointCloudComponent>().pointCloudID = pointCloudAssetHandle;
 
             rebuildSceneGpu();
+            // Live generations have distinct immutable paths. Do not let the
+            // asset LRU retain hundreds of full historical point-cloud arrays.
+            if(previousPointCloudHandle && *previousPointCloudHandle!=pointCloudAssetHandle)
+                assetManager.invalidate(*previousPointCloudHandle);
             currentPointCloudPath = requestedPath;
             copyPathToBuffer(currentPointCloudPath, pointCloudPathBuffer);
             if (currentPointCloudPath.has_parent_path()) {
@@ -3243,6 +3134,7 @@ int main(int argc, char** argv) {
                 preservedCameraSource = CameraSource::Viewport;
             }
 
+            const auto previousPointCloudHandle=firstPointCloudHandle(scene);
             scene = std::move(nextScene);
             currentScenePath = requestedScenePath;
             currentPointCloudPath = requestedPointCloudPath;
@@ -3258,6 +3150,8 @@ int main(int argc, char** argv) {
             surfelLightStatus.clear();
             surfelEditorStatus.clear();
             rebuildSceneGpu();
+            if(previousPointCloudHandle && previousPointCloudHandle!=firstPointCloudHandle(scene))
+                assetManager.invalidate(*previousPointCloudHandle);
             initialOrbit = makeInitialOrbitCamera(buildProducts, bounds);
             orbit = preservedOrbit;
             orbit.farClip = std::max(orbit.farClip, std::max(1000.0f, bounds.radius * 20.0f));
@@ -3291,6 +3185,281 @@ int main(int argc, char** argv) {
                 pointCloudStatus += "; no scene.xml found beside optimization run";
             }
             return loaded;
+        };
+
+        bool snapshotEditPending=false;
+        auto beginSnapshotEdit=[&] {
+            const bool emitter=sceneSelectionKind==viewer::SceneItemKind::Emitter||sceneSelectionKind==viewer::SceneItemKind::SurfelEmitter;
+            if(emitter?fastEmitterEditing:fastSurfelEditing)
+                lastNavigationInput=std::chrono::steady_clock::now();
+            followLaunchAfterPreview=false;
+            if(!modelReadOnly())return;
+            training.view=viewer::TrainingView::Snapshot;
+            workingDirectory.clear();workingSourceScene=std::filesystem::absolute(currentScenePath);
+            workingIteration=training.viewedIteration;hasWorkingSnapshot=false;snapshotEditPending=true;
+            training.message="Editing a private copy of iteration "+std::to_string(workingIteration);
+        };
+        auto saveWorkingSnapshot = [&]() -> bool {
+            if (modelReadOnly()) return hasWorkingSnapshot;
+            const auto handle = firstPointCloudHandle(scene);
+            const auto points = handle ? assetAccessor.getPointCloud(*handle) : nullptr;
+            if (!points) { training.message = "No editable point cloud to save"; return false; }
+            try {
+                if (workingDirectory.empty()) workingDirectory = viewer::reserveDirectory(repositoryRoot / "output/viewer_snapshots", "snapshot_");
+                if (workingSourceScene.empty()) workingSourceScene = std::filesystem::absolute(currentScenePath);
+                std::string failure;
+                bool written=false;
+                viewer::runWithEventPump([&] { written=writePointCloudPly(*points, workingDirectory / "points.ply", failure); },[] { glfwPollEvents(); });
+                if (!written) throw std::runtime_error(failure);
+                YAML::Node state;
+                state["source_scene"] = workingSourceScene.string();
+                state["pointcloud"] = (workingDirectory / "points.ply").string();
+                state["asset_root"] = assetsDirectory.string();
+                state["iteration"] = viewer::jsonNumber(workingIteration);
+                for (auto [id, mesh, transform, tag] : scene->getAllEntitiesWith<Pale::MeshComponent, Pale::TransformComponent, Pale::TagComponent>().each()) {
+                    Pale::Entity entity(id, scene.get());
+                    YAML::Node item;
+                    item["name"] = tag.tag;
+                    for (int axis = 0; axis < 3; ++axis) {
+                        item["translation"].push_back(viewer::jsonNumber(transform.translation[axis]));
+                        item["scale"].push_back(viewer::jsonNumber(transform.scale[axis]));
+                    }
+                    for (float value : {transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w}) item["rotation_xyzw"].push_back(viewer::jsonNumber(value));
+                    if (auto meta = assetManager.registry().meta(mesh.meshID)) item["mesh_file"] = std::filesystem::absolute(meta->path).string();
+                    if (entity.hasComponent<Pale::AreaLightComponent>()) {
+                        auto& light = entity.getComponent<Pale::AreaLightComponent>();
+                        glm::vec3 color = light.radiance; float power = light.flux;
+                        if (entity.hasComponent<Pale::MaterialComponent>()) {
+                            if (auto material = assetManager.get<Pale::Material>(entity.getComponent<Pale::MaterialComponent>().materialID)) {
+                                color = material->baseColor; power = material->power;
+                            }
+                        }
+                        for (int axis = 0; axis < 3; ++axis) item["emitter"]["color"].push_back(viewer::jsonNumber(color[axis]));
+                        item["emitter"]["power"] = viewer::jsonNumber(power);
+                    }
+                    state["entities"].push_back(item);
+                }
+                if (!state["entities"]) state["entities"] = YAML::Node(YAML::NodeType::Sequence);
+                viewer::writeJsonAtomic(workingDirectory / "workspace.json", state);
+                hasWorkingSnapshot = true;
+                training.message = "Saved editable snapshot: " + workingDirectory.string();
+                return true;
+            } catch (const std::exception& error) { training.message = error.what(); return false; }
+        };
+        const auto captureExportMetadata=[&] {
+            YAML::Node state;
+            state["source_scene"]=std::filesystem::absolute(currentScenePath).string();
+            state["asset_root"]=assetsDirectory.string();
+            state["pointcloud"]=std::filesystem::absolute(currentPointCloudPath).string();
+            state["entities"]=YAML::Node(YAML::NodeType::Sequence);
+            for(auto [id,mesh,transform,tag]:scene->getAllEntitiesWith<Pale::MeshComponent,Pale::TransformComponent,Pale::TagComponent>().each()) {
+                Pale::Entity entity(id,scene.get());YAML::Node item;
+                item["name"]=tag.tag;
+                for(int axis=0;axis<3;++axis) {
+                    item["translation"].push_back(viewer::jsonNumber(transform.translation[axis]));
+                    item["scale"].push_back(viewer::jsonNumber(transform.scale[axis]));
+                }
+                for(float value:{transform.rotation.x,transform.rotation.y,transform.rotation.z,transform.rotation.w})item["rotation_xyzw"].push_back(viewer::jsonNumber(value));
+                if(auto meta=assetManager.registry().meta(mesh.meshID))item["mesh_file"]=std::filesystem::absolute(meta->path).string();
+                if(entity.hasComponent<Pale::AreaLightComponent>()) {
+                    const auto& light=entity.getComponent<Pale::AreaLightComponent>();
+                    auto color=light.radiance;float power=light.flux;
+                    if(entity.hasComponent<Pale::MaterialComponent>())
+                        if(auto material=assetManager.get<Pale::Material>(entity.getComponent<Pale::MaterialComponent>().materialID)) {color=material->baseColor;power=material->power;}
+                    for(int axis=0;axis<3;++axis)item["emitter"]["color"].push_back(viewer::jsonNumber(color[axis]));
+                    item["emitter"]["power"]=viewer::jsonNumber(power);
+                }
+                state["entities"].push_back(item);
+            }
+            return state;
+        };
+        const auto launchMeshExport=[&](bool busy) {
+            if(!showMeshExport)meshExportRequested=false;
+            if(!meshExportRequested||meshExport.process.active()||(busy&&!modelReadOnly()))return;
+            meshExportRequested=false;
+            try {
+                std::filesystem::path workspace,runConfig=displayedExportRunConfig;
+                if(modelReadOnly()) {
+                    if(!displayedExportMetadata.IsMap())throw std::runtime_error("Wait for the first scene preview before exporting");
+                    const auto input=viewer::reserveDirectory(repositoryRoot/"output/viewer_snapshots","export_");
+                    workspace=input/"workspace.json";
+                    viewer::writeJsonAtomic(workspace,displayedExportMetadata);
+                } else {
+                    if(!saveWorkingSnapshot())throw std::runtime_error(training.message);
+                    workspace=workingDirectory/"workspace.json";
+                }
+                meshExport.launch(training,workspace,runConfig);
+            } catch(const std::exception& error) {meshExport.message=error.what();}
+        };
+        auto invalidateSceneMaterials = [&]() {
+            for (auto [id, material] : scene->getAllEntitiesWith<Pale::MaterialComponent>().each()) {
+                (void)id; assetManager.invalidate(material.materialID);
+            }
+        };
+        auto restoreWorkingSnapshot = [&]() -> bool {
+            if (!hasWorkingSnapshot) return false;
+            const auto state = viewer::readJson(workingDirectory / "workspace.json");
+            if (!state.IsMap()) return false;
+            invalidateSceneMaterials();
+            if (!replaceSceneAndPointCloud(state["source_scene"].as<std::string>(), state["pointcloud"].as<std::string>(), true)) return false;
+            for (const auto& item : state["entities"]) {
+                Pale::Entity entity;
+                for (auto [id, tag] : scene->getAllEntitiesWith<Pale::TagComponent>().each()) {
+                    if (tag.tag == item["name"].as<std::string>()) { entity = Pale::Entity(id, scene.get()); break; }
+                }
+                if (!entity && item["mesh_file"]) {
+                    entity = scene->createEntity(item["name"].as<std::string>());
+                    entity.addComponent<Pale::MeshComponent>().meshID = importPathAsType(assetManager.registry(), item["mesh_file"].as<std::string>(), Pale::AssetType::Mesh);
+                }
+                if (!entity) continue;
+                auto& transform = entity.getComponent<Pale::TransformComponent>();
+                for (int axis = 0; axis < 3; ++axis) {
+                    transform.translation[axis] = item["translation"][axis].as<float>();
+                    transform.scale[axis] = item["scale"][axis].as<float>();
+                }
+                transform.setRotationQuaternion(glm::quat(item["rotation_xyzw"][3].as<float>(), item["rotation_xyzw"][0].as<float>(), item["rotation_xyzw"][1].as<float>(), item["rotation_xyzw"][2].as<float>()));
+                if (item["emitter"] && entity.hasComponent<Pale::AreaLightComponent>()) {
+                    auto& light = entity.getComponent<Pale::AreaLightComponent>();
+                    for (int axis = 0; axis < 3; ++axis) light.radiance[axis] = item["emitter"]["color"][axis].as<float>();
+                    light.flux = item["emitter"]["power"].as<float>();
+                    if (entity.hasComponent<Pale::MaterialComponent>()) if (auto material = assetManager.get<Pale::Material>(entity.getComponent<Pale::MaterialComponent>().materialID)) {
+                        material->baseColor = light.radiance; material->power = light.flux;
+                    }
+                }
+            }
+            rebuildSceneGpu();
+            training.view = viewer::TrainingView::Snapshot;
+            training.viewedIteration = workingIteration;
+            return true;
+        };
+        auto enterTrainingView = [&](viewer::TrainingView view) {
+            if (!training.process.launched()) return;
+            if (!modelReadOnly()) {
+                if(!saveWorkingSnapshot())return;
+                loadedTrainingSceneRun.clear();
+            }
+            invalidateSceneMaterials();
+            // Keep the published image and its iteration until the requested
+            // scene has actually rendered. Loading a checkpoint is not an empty
+            // viewport state.
+            training.view = view; training.loadedGeneration = 0;
+            plyBrowserOpen = meshBrowserOpen = false;
+        };
+        auto editLatestSavedSnapshot = [&]() {
+            if (!training.process.launched()) return;
+            const auto snapshot = training.latestSavedSnapshot();
+            if (!snapshot) { training.message = "Waiting for the first saved snapshot"; return; }
+            if (!modelReadOnly() && !saveWorkingSnapshot()) return;
+            const auto latest = *snapshot;
+            if (!training.status["scene"].IsScalar()) return;
+            invalidateSceneMaterials();
+            if (!replaceSceneAndPointCloud(training.status["scene"].as<std::string>(), latest.path, true)) return;
+            training.view = viewer::TrainingView::Snapshot;
+            workingDirectory.clear(); workingSourceScene = std::filesystem::absolute(currentScenePath);
+            workingIteration = latest.iteration; training.viewedIteration = workingIteration;
+            hasWorkingSnapshot = false;
+            if (saveWorkingSnapshot()) restoreWorkingSnapshot();
+        };
+        const auto navigateCheckpoints=[&] {
+            if(!training.process.launched()) {training.checkpointNavigation.reset();training.checkpointSelection.reset();return;}
+            const auto direction=training.checkpointNavigation;
+            const auto selection=training.checkpointSelection;
+            training.checkpointNavigation.reset();training.checkpointSelection.reset();
+            if(direction&&*direction==0) {enterTrainingView(viewer::TrainingView::Live);return;}
+            const auto saved=training.checkpoints();
+            if(saved.empty()) {training.message="Waiting for the first saved checkpoint";return;}
+            const uint64_t current=training.view==viewer::TrainingView::History?training.historyIteration:training.viewedIteration;
+            std::size_t index=0;
+            if(selection)index=std::min(*selection,saved.size()-1);
+            else if(direction)index=viewer::checkpointNavigationIndex(saved,current,*direction);
+            else return;
+            enterTrainingView(viewer::TrainingView::History);
+            training.historyPath=saved[index].path;training.historyIteration=saved[index].iteration;
+        };
+        std::filesystem::path previewSettingsRun, framedTrainingRun;
+        std::chrono::steady_clock::time_point lastTrainingViewPoll{};
+        auto pollTrainingScene = [&]() {
+            if (training.process.launched() && previewSettingsRun != training.process.directory && training.status["scene"].IsScalar()) {
+                const auto savedRun = viewer::readJson(training.process.runDirectory / "run_config.json");
+                const auto saved = savedRun["renderer_settings"];
+                if (saved.IsMap()) {
+                    settings = Pale::PathTracerSettings{};
+                    settings.integratorKind = Pale::IntegratorKind::photonMapping;
+                    settings.cameraGatherKernelKind = Pale::CameraGatherKernelKind::CameraGatherKernel2;
+                    settings.pointGeometrySupportRadius = 0.1f;
+                    settings.pointGeometryReconstructionLength = 0.0f;
+                    settings.pointGeometryCoverageScale = 1.01f;
+#define VIEWER_RUN_SETTING(key, member, type) if (saved[key]) settings.member = saved[key].as<type>()
+                    VIEWER_RUN_SETTING("local_layer_depth_epsilon", rendererDebugLocalLayerDepthEpsilon, float);
+                    VIEWER_RUN_SETTING("local_layer_normal_cosine_threshold", rendererDebugLocalLayerNormalCosineThreshold, float);
+                    VIEWER_RUN_SETTING("share_local_layer_direct_lighting", rendererDebugShareLocalLayerDirectLighting, bool);
+                    VIEWER_RUN_SETTING("primal_shadow_rays", numShadowRays, uint32_t);
+                    VIEWER_RUN_SETTING("bounces", maxBounces, uint32_t);
+                    VIEWER_RUN_SETTING("forward_passes", numForwardPasses, uint32_t);
+                    VIEWER_RUN_SETTING("max_splat_events_per_ray", rendererDebugMaxSplatEventsPerRay, int);
+                    VIEWER_RUN_SETTING("max_local_surfel_hits", rendererDebugMaxLocalSurfelHits, int);
+                    VIEWER_RUN_SETTING("point_hit_batch_size", rendererDebugPointHitBatchSize, int);
+                    VIEWER_RUN_SETTING("point_hit_batch_lookahead", rendererDebugPointHitBatchLookahead, bool);
+                    VIEWER_RUN_SETTING("median_depth_retain_last_hit", medianDepthRetainLastHit, bool);
+#undef VIEWER_RUN_SETTING
+                    if (saved["photons"]) settings.photonsPerLaunch = static_cast<uint32_t>(saved["photons"].as<double>());
+                    if (saved["local_layer_depth_mode"])
+                        settings.rendererDebugLocalLayerDepthMode = saved["local_layer_depth_mode"].as<std::string>() == "normal_distance"
+                            ? Pale::LocalLayerDepthMode::NormalDistance : Pale::LocalLayerDepthMode::SymmetricRayDepth;
+                    previewSettingsRun = training.process.directory;
+                    tracerDirty = renderRequested = true;
+                }
+            }
+            if (!modelReadOnly()) return;
+            // Do not replace the model beneath a transform gesture that began
+            // against the displayed snapshot. The first real edit forks it.
+            if(ImGuizmo::IsUsingAny()||viewportGizmoMouseCapture)return;
+            const auto now = std::chrono::steady_clock::now();
+            if (now - lastTrainingViewPoll < std::chrono::milliseconds(500)) return;
+            lastTrainingViewPoll = now;
+            try {
+                std::filesystem::path path, scenePath;
+                uint64_t generation = 0, step = 0;
+                if (training.view == viewer::TrainingView::Live && training.live.IsMap()) {
+                    generation = training.live["generation"].as<uint64_t>();
+                    step = training.live["iteration"].as<uint64_t>();
+                    path = training.live["pointcloud"].as<std::string>(); scenePath = training.live["scene"].as<std::string>();
+                } else if (training.view == viewer::TrainingView::Saved && training.status["scene"].IsScalar()) {
+                    const auto latest = training.latestSavedSnapshot();
+                    if (!latest) return;
+                    step = latest->iteration; generation = step + 1;
+                    path = latest->path; scenePath = training.status["scene"].as<std::string>();
+                }
+                if(training.view==viewer::TrainingView::History&&!training.historyPath.empty()&&training.status["scene"].IsScalar()) {
+                    path=training.historyPath;step=training.historyIteration;generation=step+1;scenePath=training.status["scene"].as<std::string>();
+                }
+                if (path.empty() || generation == training.loadedGeneration) return;
+                const auto run=training.process.directory;
+                std::shared_ptr<const viewer::LivePacketLease> packetLease;
+                if(training.view==viewer::TrainingView::Live) {
+                    // Pin the owned immutable packet before slow scene loading.
+                    // The publisher may remove its original name meanwhile.
+                    packetLease=livePacketLeases.acquire(path,run);
+                    path=packetLease->path();
+                }
+                // Checkpoint navigation invalidates the requested generation,
+                // not the run's scene/camera. Reload XML only when the run or an
+                // editable workspace changes, and otherwise replace its PLY.
+                const bool onlyPoints=currentScenePath==scenePath && loadedTrainingSceneRun==run;
+                auto loaded=std::make_shared<bool>(false);
+                startPreviewJob([&,loaded,path,scenePath,onlyPoints,run,packetLease] {
+                    *loaded=onlyPoints?replacePointCloud(path,true):replaceSceneAndPointCloud(scenePath,path,true);
+                    if(*loaded && framedTrainingRun!=run) {
+                        orbit=makeInitialOrbitCamera(buildProducts,bounds);initialOrbit=orbit;
+                        cameraSource=CameraSource::Viewport;cameraDirty=true;framedTrainingRun=run;
+                    }
+                },[&,loaded,generation,step,run,packetLease] {
+                    if(*loaded)loadedLivePacket=packetLease;
+                    if(training.process.directory!=run)return;
+                    if(*loaded) {loadedTrainingSceneRun=run;training.loadedGeneration=generation;pendingViewedIteration=std::make_pair(run,step);}
+                    else throw std::runtime_error("Scene update failed: "+pointCloudStatus);
+                },"Updating training scene");
+            } catch (const std::exception& error) { training.message = error.what(); }
         };
 
         auto refreshLatestOptimizationPointCloud = [&]() {
@@ -3822,7 +3991,7 @@ int main(int argc, char** argv) {
             }
         };
 
-        auto ensureDebugDisplayBuffer = [&](ViewImageMode mode) -> bool {
+        auto ensureDebugDisplayBuffer = [&](ViewImageMode mode, bool prepare) -> bool {
             if (!hasSensor || displayedRenderWidth == 0u || displayedRenderHeight == 0u) {
                 return false;
             }
@@ -3833,6 +4002,39 @@ int main(int argc, char** argv) {
             debugDisplayBuffers.prepareFor(displayedRenderWidth, displayedRenderHeight);
             const std::size_t pixelCount =
                 static_cast<std::size_t>(displayedRenderWidth) * static_cast<std::size_t>(displayedRenderHeight);
+
+            // UI recoloring may reuse host data, but a missing map must never
+            // compile a diagnostic kernel or download device memory here.
+            if (!prepare) {
+                bool ready = false;
+                switch (mode) {
+                    case ViewImageMode::Rendered: ready = true; break;
+                    case ViewImageMode::RawLinear: ready = !rawLinearPixels.empty(); break;
+                    case ViewImageMode::AdjointDerivative: ready = viewerAdjointImageValid; break;
+                    case ViewImageMode::TransportScore:
+                    case ViewImageMode::TargetLoss: ready = debugDisplayBuffers.positionPrimitiveIndicesValid; break;
+                    case ViewImageMode::SurfaceOverlap: ready = debugDisplayBuffers.surfaceOverlapValid; break;
+                    case ViewImageMode::TerminalTransmittance: ready = debugDisplayBuffers.terminalTransmittanceValid; break;
+                    case ViewImageMode::SurfelDensity: ready = debugDisplayBuffers.surfelDensityValid; break;
+                    case ViewImageMode::MeanDepth: ready = debugDisplayBuffers.meanDepthValid; break;
+                    case ViewImageMode::MedianDepth: ready = debugDisplayBuffers.medianDepthValid; break;
+                    case ViewImageMode::VisibleNormal: ready = debugDisplayBuffers.visibleNormalValid; break;
+                    case ViewImageMode::MedianDepthNormal:
+                    case ViewImageMode::MeanDepthNormal: ready = debugDisplayBuffers.depthNormalValid; break;
+                    case ViewImageMode::DepthDistortion: ready = debugDisplayBuffers.depthDistortionValid; break;
+                    case ViewImageMode::IntraSlabDepth:
+                    case ViewImageMode::IntraSlabRayDepth: ready = debugDisplayBuffers.intraSlabDepthValid; break;
+                    case ViewImageMode::PositionPrimitiveScore: ready = debugDisplayBuffers.positionPrimitiveScoreValid; break;
+                    case ViewImageMode::DensificationOrigin: ready = debugDisplayBuffers.densificationOriginValid; break;
+                    case ViewImageMode::PrimitiveAge: ready = debugDisplayBuffers.primitiveAgeValid; break;
+                    case ViewImageMode::DepthPositionGradient: ready = debugDisplayBuffers.depthPositionGradientValid; break;
+                    case ViewImageMode::NormalPositionGradient: ready = debugDisplayBuffers.normalPositionGradientValid; break;
+                    case ViewImageMode::IntraSlabPositionGradient: ready = debugDisplayBuffers.intraSlabPositionGradientValid; break;
+                }
+                if (!ready) { renderRequested = true; return false; }
+                // Target loss can change its aggregation without retracing.
+                if (mode != ViewImageMode::TargetLoss) return true;
+            }
 
             const auto ensureVisiblePrimitiveIndices = [&]() -> bool {
                 if (!sensor.visiblePrimitiveIndexBuffer) {
@@ -4109,7 +4311,6 @@ int main(int argc, char** argv) {
                         float* output = sycl::malloc_device<float>(pixelCount, queue);
                         if (!output) throw std::runtime_error("Failed to allocate transmittance preview");
                         try {
-                            viewer::runWithEventPump([&] {
                                 queue.parallel_for(sycl::range<1>(pixelCount), [=](sycl::id<1> id) {
                                     const auto pixel = static_cast<uint32_t>(id[0]);
                                     const auto ray = Pale::makePrimaryRayFromPixelJitteredFov(
@@ -4119,7 +4320,6 @@ int main(int argc, char** argv) {
                                         ray, previewScene, previewSettings, target);
                                 }).wait_and_throw();
                                 queue.memcpy(values.data(), output, pixelCount * sizeof(float)).wait_and_throw();
-                            }, [] { glfwPollEvents(); });
                         } catch (...) {
                             queue.wait();
                             sycl::free(output, queue);
@@ -4395,7 +4595,7 @@ int main(int argc, char** argv) {
             }
 
             if (viewImageMode != ViewImageMode::Rendered) {
-                if (!ensureDebugDisplayBuffer(viewImageMode)) {
+                if (!ensureDebugDisplayBuffer(viewImageMode, false)) {
                     if (viewImageMode == ViewImageMode::AdjointDerivative) {
                         // A disabled/failed derivative pass must not show an old map.
                         texture.update(renderPixels, displayedRenderWidth, displayedRenderHeight);
@@ -4623,12 +4823,14 @@ int main(int argc, char** argv) {
                 rawRenderPixels,
                 displayedTransform,
                 displayedOrbit,
+                displayedCamera,
                 displayedBounds,
                 displayedRenderWidth,
                 displayedRenderHeight,
                 displayedCameraSource == CameraSource::Viewport && showViewportGrid,
                 forceRenderOpacity,
                 viewportBackgroundColor,
+                viewportBackgroundCache,
                 pixels);
             texture.update(pixels, displayedRenderWidth, displayedRenderHeight);
         };
@@ -4640,6 +4842,7 @@ int main(int argc, char** argv) {
 
             // A newly selected diagnostic needs fresh buffers. Never display
             viewImageMode = nextMode;
+            previewRecovery.manualRetry();
             renderRequested = true;
             if (nextMode == ViewImageMode::Rendered) {
                 updateDisplayTexture();
@@ -4842,6 +5045,20 @@ int main(int argc, char** argv) {
         };
 
         auto renderNow = [&]() {
+            // Until every render/diagnostic pass succeeds, the old published
+            // image and camera remain a complete, consistent presentation.
+            previewPublication.begin(PublishedPreviewState{std::move(renderPixels),std::move(rawLinearPixels),
+                std::move(pixels),std::move(screenshotPixels),std::move(rawRenderPixels),std::move(viewerAdjointImage),viewerAdjointImageValid,std::move(debugDisplayBuffers),
+                displayedTransform,displayedOrbit,displayedBounds,displayedCameraSource,displayedCamera,
+                displayedRenderWidth,displayedRenderHeight});
+            debugDisplayBuffers=DebugDisplayBuffers{};
+            viewerAdjointImageValid=false;
+            try {
+            if(sceneUploadPending) {
+                Pale::SceneUpload::uploadOrReallocate(buildProducts,sceneGpu,queue);
+                sceneGpu.profileCounters=gpuCounterProfilingEnabled?deviceProfilingCounters:nullptr;
+                sceneUploadPending=false;
+            }
             if (viewImageMode == ViewImageMode::TransportScore && transportDirty) computeTransportScores();
             if (viewImageMode == ViewImageMode::TargetLoss && targetLossDirty) computeTargetLoss();
             renderWidth = std::clamp(renderWidth, 16u, 4096u);
@@ -4875,6 +5092,7 @@ int main(int argc, char** argv) {
             if (!hasSensor || sensor.width != renderWidth || sensor.height != renderHeight) {
                 if (hasSensor) {
                     destroySensor(queue, sensor);
+                    hasSensor = false;
                 }
                 sensor = createSensor(queue, camera);
                 hasSensor = true;
@@ -4905,6 +5123,10 @@ int main(int argc, char** argv) {
 
             Pale::PathTracerSettings activeTracerSettings =
                 makeViewerDebugSettings(settings, viewImageMode);
+            if(interactivePreview) {
+                activeTracerSettings.rendererDebugMaxSplatEventsPerRay=2;
+                activeTracerSettings.rendererDebugShareLocalLayerDirectLighting=true;
+            }
             if (runAdjointEveryRender || runAdjointNextRender ||
                 viewImageMode == ViewImageMode::AdjointDerivative) {
                 viewerAdjointSamplesPerPixel = std::clamp(viewerAdjointSamplesPerPixel, 1, 256);
@@ -4968,10 +5190,14 @@ int main(int argc, char** argv) {
             // Prepare diagnostic data on the renderer thread too: some views
             // launch their own SYCL kernels. OpenGL upload stays on the UI thread.
             if (viewImageMode != ViewImageMode::Rendered) {
-                ensureDebugDisplayBuffer(viewImageMode);
+                ensureDebugDisplayBuffer(viewImageMode, true);
             }
             cameraDirty = false;
             renderRequested = false;
+            } catch(...) {
+                previewPublication.finish(false,restorePublishedPreview);
+                throw;
+            }
         };
 
         const auto finishWalkNavigation = [&](bool cancel) {
@@ -4988,6 +5214,7 @@ int main(int argc, char** argv) {
                 glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
             }
             viewportPickArmed = false;
+            pressedLightMarker.reset();
             viewportGizmoMouseCapture = false;
             cameraDirty = true;
             tracerDirty = true;
@@ -5003,13 +5230,619 @@ int main(int argc, char** argv) {
             renderRequested = true;
         };
 
+        const auto makeSceneGroups=[&] {
+            const auto areaLights=collectAreaLights(scene);
+            if (sceneTreeDirty) {
+                sceneTreeEmitterIndices.clear();
+                if (auto handle = firstPointCloudHandle(scene)) {
+                    if (auto cloud = assetAccessor.getPointCloud(*handle); cloud && !cloud->points.empty())
+                        sceneTreeEmitterIndices = collectSurfelPowerIndices(cloud->points.front(), true);
+                }
+                sceneTreeDirty = false;
+            }
+            std::vector<viewer::SceneTreeGroup> sceneGroups{{"Geometry",{}},{"Materials",{}},{"Emitters",{}},{"Cameras",{}}};
+            sceneGroups[0].items.push_back({viewer::SceneItemKind::Geometry,0,"Surfels · "+std::to_string(buildProducts.points.size()),"Reconstruction primitives",viewer::ui::Icon::Cube,sceneSelectionKind==viewer::SceneItemKind::Geometry});
+            sceneGroups[1].items.push_back({viewer::SceneItemKind::Material,-1,"Surfel albedo","Select a surfel in the viewport to inspect its material",viewer::ui::Icon::Material,false});
+            int meshOrdinal=0;
+            for (auto [id, mesh, tag] : scene->getAllEntitiesWith<Pale::MeshComponent,Pale::TagComponent>().each()) {
+                Pale::Entity entity(id,scene.get());
+                if (!entity.hasComponent<Pale::AreaLightComponent>())
+                    sceneGroups[0].items.push_back({viewer::SceneItemKind::Mesh,meshOrdinal,tag.tag,"Source triangle mesh",viewer::ui::Icon::Cube,sceneSelectionKind==viewer::SceneItemKind::Mesh && selectedTreeEntity==tag.tag});
+                if (entity.hasComponent<Pale::MaterialComponent>())
+                    sceneGroups[1].items.push_back({viewer::SceneItemKind::Material,meshOrdinal,tag.tag,"Mesh material",viewer::ui::Icon::Material,sceneSelectionKind==viewer::SceneItemKind::Material && selectedTreeEntity==tag.tag});
+                ++meshOrdinal;
+            }
+            for (std::size_t i=0;i<areaLights.size();++i)
+                sceneGroups[2].items.push_back({viewer::SceneItemKind::Emitter,static_cast<int>(i),entityName(areaLights[i]),"Mesh area emitter",viewer::ui::Icon::Light,sceneSelectionKind==viewer::SceneItemKind::Emitter && selectedLightIndex==static_cast<int>(i)});
+            const auto addSurfelEmitterRow=[&](std::size_t listIndex) {
+                const auto index=sceneTreeEmitterIndices[listIndex];
+                sceneGroups[2].items.push_back({viewer::SceneItemKind::SurfelEmitter,static_cast<int>(listIndex),"Emitter surfel "+std::to_string(index),"Select to inspect emission, position and material",viewer::ui::Icon::Light,sceneSelectionKind==viewer::SceneItemKind::SurfelEmitter && selectedSurfelEditorIndex==static_cast<int>(index)});
+            };
+            for (std::size_t i=0;i<std::min<std::size_t>(sceneTreeEmitterIndices.size(),256);++i)addSurfelEmitterRow(i);
+            if (selectedSurfelLightIndex>=256 && static_cast<std::size_t>(selectedSurfelLightIndex)<sceneTreeEmitterIndices.size())addSurfelEmitterRow(selectedSurfelLightIndex);
+            sceneGroups[2].total=areaLights.size()+sceneTreeEmitterIndices.size();
+            for (std::size_t i=0;i<buildProducts.cameraGPUs.size();++i)
+                sceneGroups[3].items.push_back({viewer::SceneItemKind::Camera,static_cast<int>(i),buildProducts.cameraGPUs[i].name,"Calibrated camera · fixed pose and intrinsics",viewer::ui::Icon::Camera,cameraSource==CameraSource::SceneXml && selectedSceneCameraIndex==static_cast<int>(i)});
+            return sceneGroups;
+        };
+
+        const auto recordPreviewFailure=[&](const std::string& error) {
+            previewRecovery.fail(error);
+            tracerDirty=true;
+            // Preserve the request, rather than permanently starving the
+            // preview after a failed upload, render, or diagnostic pass.
+            renderRequested=true;
+            Pale::Log::PA_ERROR("Preview failed during {} (failure {}): {}",previewActivity,previewRecovery.failures(),error);
+            try {
+                std::filesystem::create_directories(previewFailureLog.parent_path());
+                YAML::Node event;
+                event["event"]="preview_failure";event["error"]=error;event["activity"]=previewActivity;
+                event["unix_ms"]=viewer::jsonNumber(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                event["failure"]=viewer::jsonNumber(previewRecovery.failures());
+                event["scene"]=previewJobScene.string();event["pointcloud"]=previewJobPointCloud.string();
+                event["view"]=previewJobView;
+                event["width"]=viewer::jsonNumber(renderWidth);event["height"]=viewer::jsonNumber(renderHeight);
+                event["scene_upload_pending"]=sceneUploadPending;
+                event["loaded_generation"]=viewer::jsonNumber(training.loadedGeneration);
+                std::ofstream output(previewFailureLog,std::ios::app);
+                viewer::writeJsonValue(output,event);output<<'\n';
+            } catch(const std::exception& loggingError) {
+                Pale::Log::PA_WARN("Cannot write preview diagnostics: {}",loggingError.what());
+            }
+        };
+        const auto recordLongPreview=[&] {
+            Pale::Log::PA_WARN("Preview has not completed after 15 seconds during {}; UI/training remain active",previewActivity);
+            try {
+                std::filesystem::create_directories(previewFailureLog.parent_path());
+                YAML::Node event;
+                event["event"]="preview_long_work";event["activity"]=previewActivity;
+                event["unix_ms"]=viewer::jsonNumber(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+                event["elapsed_ms"]=viewer::jsonNumber(previewWatchdog.elapsedMilliseconds());
+                event["scene"]=previewJobScene.string();event["pointcloud"]=previewJobPointCloud.string();
+                event["view"]=previewJobView;
+                std::ofstream output(previewFailureLog,std::ios::app);viewer::writeJsonValue(output,event);output<<'\n';
+            } catch(const std::exception& error) {Pale::Log::PA_WARN("Cannot write long-preview diagnostics: {}",error.what());}
+        };
+        const auto drawPreviewFailureNotice=[&](const viewer::ViewportCanvas& canvas,bool busy) {
+            const bool longWork=previewWatchdog.longRunning();
+            if(previewRecovery.error().empty()&&!longWork)return false;
+            const auto cursor=ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(canvas.min.x+50,canvas.min.y+8));
+            ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(.13f,.14f,.16f,.98f));
+            ImGui::BeginChild("Preview recovery",ImVec2(std::min(620.f,std::max(120.f,canvas.size.x-65)),std::min(180.f,std::max(75.f,canvas.size.y-20))),ImGuiChildFlags_Borders);
+            ImGui::TextColored(previewRecovery.failed()?ImVec4(1,.65f,.35f,1):viewer::ui::green,"%s",
+                longWork?"Preview is still working":previewRecovery.failed()?(previewRecovery.paused()?"Preview paused after repeated failures":"Preview update failed; retrying"):"Preview recovered");
+            if(longWork)ImGui::TextWrapped("Training and UI remain active. Kernel compilation or rendering has not completed yet.");
+            else ImGui::TextWrapped("%s",previewRecovery.error().c_str());
+            if(previewRecovery.failed()||longWork) {
+                if(busy)ImGui::BeginDisabled();
+                if(ImGui::Button("Retry preview")) {
+                    previewRecovery.manualRetry();
+                    if(busy)queuedRefresh=true;else renderRequested=true;
+                }
+                if(busy)ImGui::EndDisabled();
+                if(busy&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("The current preview must finish before retrying.");
+            } else if(ImGui::Button("Dismiss"))previewRecovery.dismiss();
+            ImGui::SameLine();if(ImGui::Button(longWork?"Copy diagnostics path":"Copy error"))
+                ImGui::SetClipboardText(longWork?previewFailureLog.string().c_str():previewRecovery.error().c_str());
+            ImGui::TextWrapped("Details: %s",previewFailureLog.string().c_str());
+            const bool hovered=ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+            ImGui::EndChild();ImGui::PopStyleColor();ImGui::SetCursorScreenPos(cursor);
+            return hovered;
+        };
+
+        const auto drawApplicationMenu=[&](bool busy) {
+            bool start=false;
+            if (ImGui::BeginMainMenuBar()) {
+                ImGui::TextColored(kUiAccent,"pale"); ImGui::Spacing();
+                if (ImGui::BeginMenu("File")) {
+                    if (ImGui::MenuItem("Save editable snapshot", nullptr, false, !busy && !modelReadOnly())) saveWorkingSnapshot();
+                    if (ImGui::MenuItem("Export mesh..."))showMeshExport=true;
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Reconstruction")) {
+                    if (ImGui::MenuItem("Training setup")) {
+                        if(busy)inspectorPage=viewer::ui::Inspector::Reconstruction;else selectTrainingTab=true;
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Window")) {
+                    ImGui::MenuItem("Scene Collection", nullptr, &showSceneTree);
+                    ImGui::MenuItem("Run monitor", nullptr, &showTrainingProgress);
+                    if (ImGui::MenuItem("Restore workspace layout")) dockLayoutInitialized=false;
+                    ImGui::Separator();
+                    ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
+                    ImGui::EndMenu();
+                }
+                ImGui::SameLine(); ImGui::TextDisabled("JOINT PBdR");
+                ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX()+20,ImGui::GetWindowWidth()-380));
+                ImGui::Checkbox("Auto preview",&autoRender); ImGui::SameLine();
+                if(viewer::ui::iconButton("Refresh preview",viewer::ui::Icon::Refresh,false,ImVec2(25,ImGui::GetFrameHeight()))) {
+                    previewRecovery.manualRetry();
+                    if(busy)queuedRefresh=true;else renderRequested=true;
+                }
+                ImGui::SameLine();
+                if(training.drawStartButton(ImVec2(182,0),busy&&training.useWorkingSnapshot))start=true;
+                ImGui::EndMainMenuBar();
+            }
+            return start;
+        };
+        const auto drawViewportStatus=[&](bool busy) {
+            // Work begins and ends many times during a single gesture. Keep the
+            // visible guidance unchanged and expose transient details on hover.
+            ImGui::TextDisabled("%s  ·  %u surfels  ·  %s",
+                modelReadOnly()?"Read-only training view":"Editable snapshot",
+                busy?busyPointCount:sceneGpu.pointCount,
+                walkNavigationActive?"WASD walk · Enter to finish":"Drag orbit · RMB pan · Wheel zoom");
+            if(ImGui::IsItemHovered()) {
+                ImGui::BeginTooltip();
+                ImGui::Text("Last preview: %.1f ms",busy?busyRenderMs:lastRenderMs);
+                ImGui::TextUnformatted("Fast preview uses 2 splat events and shared lighting; full quality returns when idle.");
+                ImGui::TextUnformatted("Preview updates run in the background; navigation and edits remain available.");
+                ImGui::EndTooltip();
+            }
+        };
+
+        // Keep the same controls and geometry while the renderer owns the scene.
+        // Scene-source changes wait for handoff; display choices can be queued.
+        const auto drawViewportToolbar=[&](bool busy) {
+            const auto mode=busy?queuedView.value_or(viewImageMode):viewImageMode;
+            ImGui::SetNextItemWidth(175);
+            if (ImGui::BeginCombo("##ViewportMode",viewImageModeLabel(mode))) {
+                for(auto candidate:kViewImageModeCycleOrder)
+                    if(ImGui::Selectable(viewImageModeLabel(candidate),mode==candidate)) {
+                        if(busy)queuedView=candidate;else setViewImageMode(candidate);
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (training.process.launched()) {
+                ImGui::SetNextItemWidth(168);
+                const char* source = training.view==viewer::TrainingView::Live ? "Live training" : training.view==viewer::TrainingView::Saved ? "Follow saved" : training.view==viewer::TrainingView::History ? "Checkpoint history" : "Editable snapshot";
+                if(ImGui::BeginCombo("##SceneSource",source)) {
+                    if(ImGui::Selectable("Live training",training.view==viewer::TrainingView::Live)) {
+                        if(busy)queuedSceneSource=viewer::TrainingView::Live;else enterTrainingView(viewer::TrainingView::Live);
+                    }
+                    if(ImGui::Selectable("Follow saved",training.view==viewer::TrainingView::Saved)) {
+                        if(busy)queuedSceneSource=viewer::TrainingView::Saved;else enterTrainingView(viewer::TrainingView::Saved);
+                    }
+                    if(ImGui::Selectable("Browse checkpoints...")) {training.requestedMonitorTab=2;showTrainingProgress=true;}
+                    ImGui::Separator();
+                    if(ImGui::Selectable("Edit latest saved snapshot")) {
+                        if(busy)editLatestRequested=true;else editLatestSavedSnapshot();
+                    }
+                    if(hasWorkingSnapshot && modelReadOnly() && ImGui::Selectable("Return to edits")) {
+                        if(busy)returnToEditsRequested=true;else restoreWorkingSnapshot();
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine(); ImGui::TextDisabled("%s",modelReadOnly()?"Read-only":"Editable");
+                ImGui::SameLine();
+            }
+            const float overlayWidth = 164;
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),ImGui::GetWindowWidth()-overlayWidth-12));
+            if(ImGui::Button("Gizmos & overlays",ImVec2(overlayWidth,0)))ImGui::OpenPopup("ViewportAids");
+            if(ImGui::BeginPopup("ViewportAids")) {
+                ImGui::SeparatorText("Viewport overlays");
+                if(ImGui::Checkbox("Ground grid",&showViewportGrid)) {
+                    if(busy)queuedRefresh=true;else updateDisplayTexture();
+                }
+                ImGui::SeparatorText("Gizmos");
+                ImGui::Checkbox("Show gizmos",&gizmosEnabled);
+                if(!gizmosEnabled)ImGui::BeginDisabled();
+                ImGui::Checkbox("Emitter markers",&showLightMarkers);
+                ImGui::Checkbox("Emitter transform handles",&showLightGizmo);
+                ImGui::Checkbox("Surfel transform handles",&showSurfelGizmo);
+                if(!gizmosEnabled)ImGui::EndDisabled();
+                ImGui::SeparatorText("Transform coordinates");
+                bool local=lightGizmoMode==ImGuizmo::LOCAL;
+                if(ImGui::RadioButton("World",!local))lightGizmoMode=surfelGizmoMode=ImGuizmo::WORLD;
+                ImGui::SameLine(); if(ImGui::RadioButton("Local",local))lightGizmoMode=surfelGizmoMode=ImGuizmo::LOCAL;
+                ImGui::EndPopup();
+            }
+            ImGui::Separator();
+        };
+
+        const auto refreshLightMarkerMetadata=[&] {
+            auto lights=collectAreaLights(scene);
+            if(!lightMarkersDirty&&lightLocalCenters.size()==lights.size())return;
+            lightLocalCenters.clear();
+            for(auto light:lights) {
+                glm::vec3 low(std::numeric_limits<float>::infinity()),high(-std::numeric_limits<float>::infinity());
+                if(light.hasComponent<Pale::MeshComponent>())if(const auto mesh=assetAccessor.getMesh(light.getComponent<Pale::MeshComponent>().meshID))
+                    for(const auto& part:mesh->submeshes)for(const auto& position:part.positions) {low=glm::min(low,position);high=glm::max(high,position);}
+                lightLocalCenters.push_back(std::isfinite(low.x)?(low+high)*.5f:glm::vec3(0));
+            }
+            surfelLightMarkers.clear();
+            auto entity=firstPointCloudEntity(scene);const auto handle=firstPointCloudHandle(scene);
+            const auto asset=handle?assetAccessor.getPointCloud(*handle):nullptr;
+            const auto transform=entity&&entity.hasComponent<Pale::TransformComponent>()?entity.getComponent<Pale::TransformComponent>().getTransform():glm::mat4(1);
+            int index=0;
+            if(asset)for(const auto& geometry:asset->points)for(std::size_t i=0;i<geometry.positions.size();++i,++index)
+                if(i<geometry.powers.size()&&geometry.powers[i]>0)surfelLightMarkers.push_back({glm::vec3(transform*glm::vec4(geometry.positions[i],1)),index});
+            lightMarkersDirty=false;
+        };
+        const auto publishDisplayedOverlays=[&] {
+            displayedExportMetadata=captureExportMetadata();
+            displayedExportRunConfig.clear();
+            if(training.status["scene"].IsScalar()&&currentScenePath==std::filesystem::path(training.status["scene"].as<std::string>()))
+                displayedExportRunConfig=training.process.runDirectory/"run_config.json";
+            displayedLivePacket=livePacketLeases.retain(currentPointCloudPath);
+            refreshLightMarkerMetadata();displayedLightMarkers.clear();
+            auto lights=collectAreaLights(scene);
+            for(std::size_t i=0;i<lights.size();++i)
+                displayedLightMarkers.push_back({glm::vec3(lights[i].getComponent<Pale::TransformComponent>().getTransform()*glm::vec4(lightLocalCenters[i],1)),{static_cast<int>(i),-1},entityName(lights[i])});
+            for(const auto& marker:surfelLightMarkers)displayedLightMarkers.push_back({marker.worldCenter,{-1,marker.editorIndex},"Surfel light "+std::to_string(marker.editorIndex)});
+            displayedOverlayPointCloud=currentPointCloudPath;displayedOverlayScene=currentScenePath;
+        };
+        const auto drawViewportToolRail=[&](ImVec2 canvas,bool surfelSelected) {
+            const auto after=ImGui::GetCursorScreenPos();ImGui::SetCursorScreenPos(ImVec2(canvas.x+8,canvas.y+42));ImGui::BeginGroup();
+            for(const auto& [tool,icon,label]:std::array<std::tuple<int,viewer::ui::Icon,const char*>,4>{{
+                {0,viewer::ui::Icon::Select,"Select"},{1,viewer::ui::Icon::Move,"Move selection"},
+                {2,viewer::ui::Icon::Rotate,"Rotate selection"},{3,viewer::ui::Icon::Scale,"Scale mesh emitter"}}}) {
+                const bool disabled=tool==3&&surfelSelected;if(disabled)ImGui::BeginDisabled();
+                if(viewer::ui::iconButton(label,icon,viewportTool==tool,ImVec2(30,30))) {
+                    viewportTool=tool;
+                    if(tool==1)lightGizmoOperation=surfelGizmoOperation=ImGuizmo::TRANSLATE;
+                    if(tool==2)lightGizmoOperation=surfelGizmoOperation=ImGuizmo::ROTATE;
+                    if(tool==3)lightGizmoOperation=ImGuizmo::SCALE;
+                }
+                if(disabled)ImGui::EndDisabled();
+            }
+            ImGui::EndGroup();ImGui::SetCursorScreenPos(after);
+        };
+        const auto drawDisplayedLightMarkers=[&](const Pale::CameraGPU& camera,ImVec2 origin,ImVec2 size,bool hoverable,
+                viewer::SceneItemKind selectedKind,int selectedSurfel,int selectedArea) {
+            std::optional<LightMarkerSelection> hovered;std::string name;float nearest=14.f*14.f;
+            if(!gizmosEnabled||!showLightMarkers||walkNavigationActive)return hovered;
+            auto* draw=ImGui::GetWindowDrawList();draw->PushClipRect(origin,ImVec2(origin.x+size.x,origin.y+size.y),true);
+            const auto mouse=ImGui::GetMousePos();
+            for(const auto& marker:displayedLightMarkers) {
+                const auto screen=viewer::projectViewportPoint(camera,marker.center,{origin.x,origin.y},{size.x,size.y});if(!screen)continue;
+                const ImVec2 point(screen->x+18,screen->y-18);
+                if(point.x<origin.x||point.x>=origin.x+size.x||point.y<origin.y||point.y>=origin.y+size.y)continue;
+                const bool selected=marker.selection.areaIndex>=0
+                    ? selectedKind==viewer::SceneItemKind::Emitter&&selectedSurfel<0&&selectedArea==marker.selection.areaIndex
+                    : selectedSurfel==marker.selection.surfelIndex;
+                const float distance=(point.x-mouse.x)*(point.x-mouse.x)+(point.y-mouse.y)*(point.y-mouse.y);
+                if(hoverable&&distance<nearest) {nearest=distance;hovered=marker.selection;name=marker.name;}
+                const auto color=selected?IM_COL32(255,255,255,255):IM_COL32(255,201,75,255);
+                draw->AddLine(ImVec2(screen->x,screen->y),point,IM_COL32(255,201,75,140));
+                draw->AddCircleFilled(point,9,IM_COL32(25,23,18,235),16);draw->AddCircle(point,selected?11:7,color,16,1.5f);
+                draw->AddCircleFilled(point,3,IM_COL32(255,201,75,255),12);
+                for(int axis=0;axis<4;++axis) {const float a=axis*1.5707963f,x=std::cos(a),y=std::sin(a);draw->AddLine(ImVec2(point.x+x*5,point.y+y*5),ImVec2(point.x+x*9,point.y+y*9),color,1.5f);}
+            }
+            draw->PopClipRect();if(hovered) {ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);ImGui::SetTooltip("%s\nClick to select and edit",name.c_str());}
+            return hovered;
+        };
+        const auto inspectorContextKey=[&](viewer::ui::Inspector page) {
+            std::string key=std::to_string(static_cast<int>(page))+"/"+std::to_string(static_cast<int>(viewImageMode));
+            if(const auto* window=ImGui::FindWindowByName("Properties"))key+="/"+std::to_string(window->Size.x)+"/"+std::to_string(window->Size.y)+"/"+std::to_string(window->Pos.x)+"/"+std::to_string(window->Pos.y);
+            if(page==viewer::ui::Inspector::Selection)key+="/"+currentPointCloudPath.string()+"/"+std::to_string(static_cast<int>(sceneSelectionKind))+"/"+std::to_string(selectedSurfelEditorIndex)+"/"+std::to_string(selectedLightIndex);
+            if(page==viewer::ui::Inspector::Camera||page==viewer::ui::Inspector::Files||page==viewer::ui::Inspector::Advanced)key+="/"+currentScenePath.string();
+            return key;
+        };
+        const auto capturePreviewUi=[&] {
+            busyProfilingScene=sceneGpu;busyProfilingCounters=lastProfilingCounters;
+            busyTimerRecords=lastTimerRecords;busyFrameTimes=renderFrameTimeHistory;
+            busyTimerProfilingEnabled=timerProfilingEnabled;busyGpuCounterProfilingEnabled=gpuCounterProfilingEnabled;
+            busyOverlayMatchesScene=displayedOverlayPointCloud==currentPointCloudPath&&displayedOverlayScene==currentScenePath;
+            busySelectedLightIndex=selectedLightIndex;
+            busyHasWorkspace=hasWorkingSnapshot||(!modelReadOnly()&&firstPointCloudHandle(scene).has_value());
+            cachedSceneGroups=makeSceneGroups();cachedSceneName=currentScenePath.stem().string();
+            queuedOrbit=orbit;busyBounds=bounds;busyCamera=displayedCamera;busyCameraSource=cameraSource;
+            busyPointCount=static_cast<uint32_t>(buildProducts.points.size());busyRenderMs=lastRenderMs;
+            busyCameraNames.clear();for(const auto& camera:buildProducts.cameraGPUs)busyCameraNames.emplace_back(camera.name);
+            busyHasSelection=false;busySelectionName=selectedTreeEntity;busySelectionKind=sceneSelectionKind;
+            busySelectionIndex=selectedSurfelEditorIndex;busyLightCenter=glm::vec3(0);busyPointCloudTransform=glm::mat4(1);
+            if(auto entity=firstPointCloudEntity(scene);entity&&entity.hasComponent<Pale::TransformComponent>())busyPointCloudTransform=entity.getComponent<Pale::TransformComponent>().getTransform();
+            if(sceneSelectionKind==viewer::SceneItemKind::Emitter) {
+                const auto lights=collectAreaLights(scene);
+                if(selectedLightIndex>=0&&static_cast<std::size_t>(selectedLightIndex)<lights.size()) {
+                    auto light=lights[selectedLightIndex];busySelectionName=entityName(light);
+                    if(static_cast<std::size_t>(selectedLightIndex)<lightLocalCenters.size())busyLightCenter=lightLocalCenters[selectedLightIndex];
+                    const auto& transform=light.getComponent<Pale::TransformComponent>();
+                    busySelectionPosition=transform.translation;busySelectionRotation=transform.rotationEuler;busySelectionScale=transform.scale;
+                    const auto& emitter=light.getComponent<Pale::AreaLightComponent>();busySelectionColor=emitter.radiance;busySelectionPower=emitter.flux;
+                    if(light.hasComponent<Pale::MaterialComponent>())if(const auto material=assetManager.get<Pale::Material>(light.getComponent<Pale::MaterialComponent>().materialID)) {busySelectionColor=material->baseColor;busySelectionPower=material->power;}
+                    busyHasSelection=true;
+                }
+            } else if((sceneSelectionKind==viewer::SceneItemKind::Geometry||sceneSelectionKind==viewer::SceneItemKind::SurfelEmitter)&&selectedSurfelEditorIndex>=0) {
+                if(const auto handle=firstPointCloudHandle(scene)) {
+                    const auto cloud=assetAccessor.getPointCloud(*handle);
+                    if(cloud)if(const auto point=resolveEditableSurfel(*cloud,selectedSurfelEditorIndex);point&&point->pointGeometry) {
+                        busySelectionName="Surfel "+std::to_string(selectedSurfelEditorIndex);
+                        busySelectionPosition=point->pointGeometry->positions[point->localIndex];
+                        const auto& geometry=*point->pointGeometry;const auto i=point->localIndex;
+                        busySelectionColor=geometry.albedos[i];busySelectionRotation=glm::degrees(glm::eulerAngles(geometry.quat[i]));
+                        busySelectionScale=glm::vec3(geometry.scales[i],1);busySelectionPower=geometry.powers[i];busySelectionOpacity=geometry.opacities[i];busySelectionBeta=geometry.betas[i];busyHasSelection=true;
+                    }
+                }
+            }
+        };
+        startPreviewJob=[&](std::function<void()> work,std::function<void()> completion,const char* activity) {
+            capturePreviewUi();previewActivity=activity;previewCompletion=std::move(completion);
+            previewJobScene=currentScenePath;previewJobPointCloud=currentPointCloudPath;previewJobView=viewImageModeLabel(viewImageMode);
+            interactivePreview=std::chrono::steady_clock::now()-lastNavigationInput<std::chrono::milliseconds(180);
+            previewWatchdog.begin();
+            try {previewWork.start(std::move(work));}
+            catch(const std::exception& error) {previewWatchdog.finish();previewCompletion={};recordPreviewFailure(error.what());}
+        };
+        const auto loadRequestedInitializer=[&] {
+            const auto directory=*training.initializedPointCloudRequest;
+            training.initializedPointCloudRequest.reset();
+            if(!modelReadOnly()&&!saveWorkingSnapshot())return;
+            training.useWorkingSnapshot=false;
+            followLaunchAfterPreview=false;
+            invalidateSceneMaterials();
+            auto loaded=std::make_shared<bool>(false);
+            startPreviewJob([&,directory,loaded] {
+                *loaded=replaceSceneAndPointCloud(directory/"scene.xml",directory/"points.ply",true);
+                if(*loaded) {
+                    orbit=makeInitialOrbitCamera(buildProducts,bounds);initialOrbit=orbit;
+                    cameraSource=CameraSource::Viewport;cameraDirty=renderRequested=true;
+                }
+            },[&,directory,loaded] {
+                if(!*loaded) {training.message=pointCloudStatus;return;}
+                training.view=viewer::TrainingView::Snapshot;
+                workingDirectory.clear();workingSourceScene=std::filesystem::absolute(currentScenePath);
+                hasWorkingSnapshot=false;workingIteration=training.viewedIteration=0;
+                training.loadedGeneration=0;loadedTrainingSceneRun.clear();framedTrainingRun.clear();
+                pendingViewedIteration.reset();loadedLivePacket.reset();
+                sceneSelectionKind=viewer::SceneItemKind::Geometry;
+                training.message="Initialized point cloud loaded · "+directory.filename().string();
+            },"Updating training scene");
+        };
+        const auto drawBusyFrame=[&] {
+            // The worker exclusively owns scene/renderer state. This frame reads
+            // CPU snapshots and UI-owned training state, never in-flight buffers.
+            ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();
+            io.ConfigInputTrickleEventQueue=true;ImGui::NewFrame();
+            bool start=launchTrainingRequested;
+            launchTrainingRequested=false;
+            if(!io.WantTextInput&&!io.KeyCtrl&&!io.KeyAlt&&!io.KeySuper) {
+                if(ImGui::IsKeyPressed(ImGuiKey_R))training.checkpointNavigation=0;
+                if(ImGui::IsKeyPressed(ImGuiKey_N))training.checkpointNavigation=-2;
+                if(ImGui::IsKeyPressed(ImGuiKey_M))training.checkpointNavigation=2;
+            }
+            start=drawApplicationMenu(true)||start;
+            auto* viewport=ImGui::GetMainViewport();const auto dock=ImHashStr("PaleRealtimeViewerDockSpace");
+            if(!dockLayoutInitialized) {viewer::ui::defaultDockLayout(dock,viewport);dockLayoutInitialized=true;}
+            ImGui::DockSpaceOverViewport(dock,viewport,ImGuiDockNodeFlags_PassthruCentralNode);ImGuizmo::BeginFrame();ImGuizmo::Enable(true);
+            if(auto pick=sceneTree.draw(cachedSceneName,cachedSceneGroups,showSceneTree)) {
+                // A scene replacement may renumber rows; preserve selection only
+                // for a render of the same immutable scene.
+                if(previewActivity!="Updating training scene")queuedScenePick=pick;
+                inspectorPage=viewer::ui::Inspector::Selection;
+            }
+            ImGui::Begin("Properties",nullptr,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::BeginChild("InspectorRail",ImVec2(32,0),ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar);
+            viewer::ui::inspectorRail(inspectorPage,showAdvancedTools);ImGui::EndChild();ImGui::SameLine(0,8);
+            const auto cachedPage=inspectorBodies[static_cast<int>(inspectorPage)].valid?inspectorPage:lastDrawnInspector;
+            auto& cachedInspector=inspectorBodies[static_cast<int>(cachedPage)];
+            if(inspectorPage!=viewer::ui::Inspector::Reconstruction&&cachedInspector.valid)
+                ImGui::SetNextWindowScroll(ImVec2(-1,cachedInspector.scroll));
+            ImGui::BeginChild("InspectorContents",ImVec2(0,0));
+            if(inspectorPage==viewer::ui::Inspector::Reconstruction)start=training.drawSetup(busyHasWorkspace,true)||start;
+            else if(cachedInspector.valid) {
+                cachedInspector.geometry.draw(*ImGui::GetWindowDrawList(),ImGui::GetWindowPos(),cachedInspector.size);
+                ImGui::Dummy(ImVec2(1,std::max(1.f,cachedInspector.contentHeight)));
+                if(cachedPage==inspectorPage&&ImGui::IsWindowHovered()&&
+                   (ImGui::IsMouseClicked(ImGuiMouseButton_Left)||io.MouseWheel!=0))
+                    inspectorInput.queue(static_cast<int>(inspectorPage),cachedInspector.key,io.MousePos,io.MouseWheel,ImGui::IsMouseClicked(ImGuiMouseButton_Left));
+            }
+            ImGui::EndChild();ImGui::End();
+            if(start&&!training.process.active()) {
+                if(training.useWorkingSnapshot) {training.message="Wait for the current preview before starting from an edited snapshot";}
+                else try {
+                    const bool preserve=!modelReadOnly();training.launch();showTrainingProgress=true;
+                    if(preserve) {training.view=viewer::TrainingView::Snapshot;followLaunchAfterPreview=true;}
+                } catch(const std::exception& error) {training.message=error.what();}
+            }
+            ImGui::Begin("Viewport",nullptr,ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
+            drawViewportToolbar(true);
+            const auto viewportCanvas=viewer::viewportCanvas();
+            const auto available=viewportCanvas.size;
+            const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,true);
+            if(texture.id) {
+                const auto canvas=viewportCanvas.min;
+                const ImVec2 canvasMax(canvas.x+available.x,canvas.y+available.y);
+                const auto placement=viewer::viewportImagePlacement(viewportCanvas,busyCameraSource==CameraSource::SceneXml,cameraImageView,texture.width,texture.height);
+                const auto size=placement.size,origin=placement.min;
+                ImGui::SetCursorScreenPos(origin);ImGui::PushClipRect(canvas,canvasMax,true);
+                ImGui::Image(toImTextureId(texture.id),size);
+                const ImVec2 toolsMin(canvas.x+8,canvas.y+42),toolsMax(canvas.x+42,canvas.y+182);
+                const bool toolsHovered=ImGui::IsMouseHoveringRect(toolsMin,toolsMax);
+                const bool imageHovered=ImGui::IsItemHovered()&&!toolsHovered;
+                drawViewportToolRail(canvas,busySelectionIndex>=0);
+                ImGui::GetWindowDrawList()->AddText(ImVec2(origin.x+12,origin.y+10),ImGui::GetColorU32(viewer::ui::muted),busyCameraSource==CameraSource::SceneXml?busyCamera.name:"User perspective");
+                const bool replacingScene=previewActivity=="Updating training scene"||!busyOverlayMatchesScene;
+                const auto hoveredMarker=drawDisplayedLightMarkers(busyCamera,origin,size,imageHovered&&!replacingScene,busySelectionKind,busySelectionIndex,busySelectedLightIndex);
+                if(!replacingScene) {
+                    if(ImGui::IsMouseClicked(ImGuiMouseButton_Left))pressedLightMarker=hoveredMarker;
+                    if(pressedLightMarker&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                        if(hoveredMarker==pressedLightMarker&&io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left]<io.MouseDragThreshold*io.MouseDragThreshold)
+                            queuedLightMarkerPick=std::make_pair(*hoveredMarker,displayedOverlayPointCloud);
+                        pressedLightMarker.reset();
+                    }
+                }
+                bool gizmoCapturing=viewportGizmoMouseCapture;
+                if(replacingScene&&gizmosEnabled&&viewportTool!=0) {
+                    displayedSelectedHandles.draw(*ImGui::GetWindowDrawList(),origin,size);
+                    if(displayedSelectedHandles.contains(io.MousePos,origin,size)) {
+                        gizmoCapturing=true;
+                        if(ImGui::IsMouseDown(ImGuiMouseButton_Left))viewportGizmoMouseCapture=true;
+                    }
+                }
+                if(busyHasSelection&&!replacingScene&&gizmosEnabled&&viewportTool!=0&&
+                   (busySelectionKind==viewer::SceneItemKind::Emitter?showLightGizmo:showSurfelGizmo)) {
+                    const bool emitter=busySelectionKind==viewer::SceneItemKind::Emitter;
+                    glm::mat4 matrix=glm::translate(glm::mat4(1),busySelectionPosition)*glm::mat4_cast(glm::quat(glm::radians(busySelectionRotation)));
+                    if(emitter)matrix=glm::translate(glm::scale(matrix,busySelectionScale),busyLightCenter);
+                    else matrix=busyPointCloudTransform*matrix;
+                    auto view=syclMatrixToGlm(busyCamera.view),projection=syclMatrixToGlm(busyCamera.proj);
+                    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());ImGuizmo::SetOrthographic(false);
+                    ImGuizmo::SetRect(origin.x,origin.y,size.x,size.y);ImGuizmo::PushID(emitter?"area-light-gizmo":"surfel-gizmo");
+                    if(ImGuizmo::Manipulate(glm::value_ptr(view),glm::value_ptr(projection),emitter?lightGizmoOperation:surfelGizmoOperation,emitter?(lightGizmoOperation==ImGuizmo::SCALE?ImGuizmo::LOCAL:lightGizmoMode):surfelGizmoMode,glm::value_ptr(matrix))) {
+                        if(emitter) {
+                            Pale::TransformComponent transform;transform.setTransform(glm::translate(matrix,-busyLightCenter));
+                            busySelectionPosition=transform.translation;busySelectionRotation=transform.rotationEuler;busySelectionScale=transform.scale;
+                        } else {
+                            const auto local=glm::inverse(busyPointCloudTransform)*matrix;
+                            busySelectionPosition=glm::vec3(local[3]);busySelectionRotation=glm::degrees(glm::eulerAngles(extractRotationQuaternion(local)));
+                        }
+                        queuedSelectionChanged=true;
+                    }
+                    gizmoCapturing=gizmoCapturing||ImGuizmo::IsOver()||ImGuizmo::IsUsingAny();ImGuizmo::PopID();
+                }
+                if(!walkNavigationActive&&busyCameraSource==CameraSource::Viewport) {
+                    auto view=replacingScene?syclMatrixToGlm(busyCamera.view):queuedOrbit.viewMatrix();
+                    const ImVec2 gizmoSize(92,92),gizmoPosition(origin.x+size.x-104,origin.y+12);
+                    ImGuizmo::ViewManipulate(glm::value_ptr(view),queuedOrbit.distance,gizmoPosition,gizmoSize,IM_COL32(16,16,16,96));
+                    if(ImGuizmo::IsUsingViewManipulate()) {
+                        const auto cameraFromWorld=glm::inverse(view);
+                        const auto forward=-glm::normalize(glm::vec3(cameraFromWorld[2]));
+                        if(std::isfinite(forward.x)&&std::isfinite(forward.y)&&std::isfinite(forward.z)) {
+                            queuedOrbit.setPositionKeepingTarget(queuedOrbit.target-forward*queuedOrbit.distance);
+                            queuedOrbitChanged=true;lastNavigationInput=std::chrono::steady_clock::now();
+                        }
+                    }
+                    gizmoCapturing=gizmoCapturing||ImGuizmo::IsViewManipulateHovered()||ImGuizmo::IsUsingViewManipulate();
+                }
+                if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))viewportGizmoMouseCapture=false;
+                if((imageHovered||(busyCameraSource==CameraSource::SceneXml&&ImGui::IsMouseHoveringRect(canvas,canvasMax)))&&!previewNoticeHovered&&!toolsHovered&&!hoveredMarker&&!gizmoCapturing&&!io.WantTextInput&&!walkNavigationActive) {
+                    const bool orbitInput=ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+                    const bool panInput=ImGui::IsMouseDragging(ImGuiMouseButton_Right)||ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
+                    if(busyCameraSource==CameraSource::SceneXml&&!orbitInput) {
+                        if(panInput)cameraImageView.drag(io.MouseDelta);
+                        if(io.MouseWheel!=0)cameraImageView.zoomAt(io.MousePos,canvas,available,io.MouseWheel);
+                    } else if(orbitInput||panInput||io.MouseWheel!=0) {
+                        lastNavigationInput=std::chrono::steady_clock::now();queuedCamera.reset();
+                        if(busyCameraSource==CameraSource::SceneXml&&!queuedOrbitChanged)queuedOrbit=makeOrbitCameraFromSceneCamera(busyCamera,busyBounds,queuedOrbit);
+                        if(orbitInput)queuedOrbit.orbit(io.MouseDelta);
+                        if(panInput)queuedOrbit.pan(io.MouseDelta);
+                        if(io.MouseWheel!=0)queuedOrbit.zoom(io.MouseWheel);
+                        queuedOrbitChanged=true;
+                    }
+                }
+                ImGui::PopClipRect();viewer::finishViewportCanvas(viewportCanvas);
+            } else ImGui::TextWrapped("The first preview will appear when compilation finishes.");
+            if(walkNavigationActive&&!queuedWalkFinish) {
+                queuedOrbit.lookAround(io.MouseDelta);
+                const glm::vec3 direction{float(ImGui::IsKeyDown(ImGuiKey_D))-float(ImGui::IsKeyDown(ImGuiKey_A)),float(ImGui::IsKeyDown(ImGuiKey_W))-float(ImGui::IsKeyDown(ImGuiKey_S)),float(ImGui::IsKeyDown(ImGuiKey_E))-float(ImGui::IsKeyDown(ImGuiKey_Q))};
+                if(glm::dot(direction,direction)>0||io.MouseDelta.x||io.MouseDelta.y) {
+                    lastNavigationInput=std::chrono::steady_clock::now();
+                    queuedOrbit.walk(direction,walkSpeed*(io.KeyShift?4.f:io.KeyAlt?.25f:1.f)*std::min(io.DeltaTime,.1f));queuedOrbitChanged=true;
+                }
+                if(ImGui::IsKeyPressed(ImGuiKey_Enter)||ImGui::IsKeyPressed(ImGuiKey_Escape)||!glfwGetWindowAttrib(window,GLFW_FOCUSED)) {
+                    queuedWalkFinish=ImGui::IsKeyPressed(ImGuiKey_Escape)||!glfwGetWindowAttrib(window,GLFW_FOCUSED);
+                    glfwSetInputMode(window,GLFW_CURSOR,GLFW_CURSOR_NORMAL);
+                }
+            }
+            drawViewportStatus(true);
+            ImGui::End();training.drawProgress(showTrainingProgress);
+            if(drawProfilingWindow(showProfilingWindow,busyTimerProfilingEnabled,busyGpuCounterProfilingEnabled,
+                busyRenderMs,busyFrameTimes,busyCamera.width,busyCamera.height,busyProfilingScene,busyProfilingCounters,busyTimerRecords))
+                queuedProfilingSettings=true;
+            if(meshExport.draw(showMeshExport,displayedExportMetadata.IsMap(),displayedOverlayPointCloud.filename().string()))meshExportRequested=true;
+            launchMeshExport(true);
+            ImGui::Render();int width=0,height=0;glfwGetFramebufferSize(window,&width,&height);
+            glViewport(0,0,width,height);glClearColor(kBlenderViewportBackground.x,kBlenderViewportBackground.y,kBlenderViewportBackground.z,1);
+            glClear(GL_COLOR_BUFFER_BIT);ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());glfwSwapBuffers(window);
+        };
+
+        // This guard is declared after all worker-referenced lambdas, so an
+        // exception in the UI joins the worker before those captures unwind.
+        struct ViewerWorkLifetime {
+            viewer::TrainingSession& training;
+            viewer::TrainingSession& exporter;
+            viewer::PreviewWork& preview;
+            ~ViewerWorkLifetime() {
+                training.shutdown();exporter.shutdown();
+                try {preview.finish();}catch(...){}
+            }
+        } viewerWorkLifetime{training.process,meshExport.process,previewWork};
+
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+            training.poll();
+            meshExport.poll();
+            if(previewWork.ready()) {
+                previewWatchdog.finish();
+                const auto priorTextureRevision=texture.revision;
+                const auto completionFailed=[&](const std::string& error) {
+                    previewPublication.finish(texture.revision!=priorTextureRevision,restorePublishedPreview);
+                    recordPreviewFailure(error);
+                };
+                try {
+                    previewWork.finish();if(previewCompletion)previewCompletion();
+                    previewPublication.finish(true,restorePublishedPreview);
+                }
+                catch(const std::bad_alloc&) {completionFailed("Preview memory allocation failed. Reduce preview resolution or diagnostic cost, then retry.");}
+                catch(const std::exception& error) {completionFailed(error.what());}
+                catch(...) {completionFailed("Unknown preview worker failure");}
+                previewCompletion={};
+                if(queuedProfilingSettings) {
+                    if(gpuCounterProfilingEnabled!=busyGpuCounterProfilingEnabled)tracerDirty=true;
+                    timerProfilingEnabled=busyTimerProfilingEnabled;gpuCounterProfilingEnabled=busyGpuCounterProfilingEnabled;
+                    queuedProfilingSettings=false;renderRequested=true;
+                }
+                if(queuedLightMarkerPick) {
+                    if(queuedLightMarkerPick->second==currentPointCloudPath) {
+                        const auto pick=queuedLightMarkerPick->first;
+                        if(pick.areaIndex>=0) {selectedLightIndex=pick.areaIndex;selectedSurfelEditorIndex=-1;sceneSelectionKind=viewer::SceneItemKind::Emitter;}
+                        else {selectedSurfelEditorIndex=pick.surfelIndex;sceneSelectionKind=viewer::SceneItemKind::SurfelEmitter;}
+                        openLightControls=true;inspectorPage=viewer::ui::Inspector::Selection;
+                    }
+                    queuedLightMarkerPick.reset();
+                }
+                if(queuedSelectionChanged) {
+                    queuedSelectionChanged=false;beginSnapshotEdit();
+                    if(busySelectionKind==viewer::SceneItemKind::Emitter) {
+                        for(auto light:collectAreaLights(scene))if(entityName(light)==busySelectionName) {
+                            auto& transform=light.getComponent<Pale::TransformComponent>();transform.translation=busySelectionPosition;transform.setRotationEuler(busySelectionRotation);transform.scale=busySelectionScale;
+                            auto& emitter=light.getComponent<Pale::AreaLightComponent>();emitter.radiance=busySelectionColor;emitter.flux=busySelectionPower;
+                            if(light.hasComponent<Pale::MaterialComponent>())if(auto material=assetManager.get<Pale::Material>(light.getComponent<Pale::MaterialComponent>().materialID)) {material->baseColor=busySelectionColor;material->power=busySelectionPower;}
+                            openLightControls=true;break;
+                        }
+                    } else if(const auto handle=firstPointCloudHandle(scene)) {
+                        const auto cloud=assetAccessor.getPointCloud(*handle);
+                        if(cloud)if(auto point=resolveEditableSurfel(*cloud,busySelectionIndex);point&&point->pointGeometry) {
+                            auto& geometry=*point->pointGeometry;const auto i=point->localIndex;
+                            geometry.positions[i]=busySelectionPosition;geometry.quat[i]=glm::quat(glm::radians(busySelectionRotation));geometry.scales[i]=glm::vec2(busySelectionScale);
+                            geometry.albedos[i]=busySelectionColor;geometry.powers[i]=busySelectionPower;geometry.opacities[i]=busySelectionOpacity;geometry.betas[i]=busySelectionBeta;
+                            selectedSurfelEditorIndex=busySelectionIndex;openSurfelControls=true;
+                        }
+                    }
+                    rebuildSceneGpu();
+                }
+                if(queuedOrbitChanged) {orbit=queuedOrbit;cameraSource=CameraSource::Viewport;cameraDirty=renderRequested=true;queuedOrbitChanged=false;}
+                if(queuedCamera && *queuedCamera>=0 && static_cast<std::size_t>(*queuedCamera)<buildProducts.cameraGPUs.size()) {
+                    selectedSceneCameraIndex=*queuedCamera;cameraSource=CameraSource::SceneXml;cameraDirty=renderRequested=true;
+                }
+                queuedCamera.reset();
+                if(queuedWalkFinish) {finishWalkNavigation(*queuedWalkFinish);queuedWalkFinish.reset();}
+                if(queuedView) {setViewImageMode(*queuedView);queuedView.reset();}
+                if(queuedSceneSource) {enterTrainingView(*queuedSceneSource);queuedSceneSource.reset();}
+                if(editLatestRequested) {editLatestRequested=false;editLatestSavedSnapshot();}
+                if(returnToEditsRequested) {returnToEditsRequested=false;restoreWorkingSnapshot();}
+                if(queuedRefresh) {renderRequested=true;queuedRefresh=false;}
+                if(followLaunchAfterPreview) {
+                    if(saveWorkingSnapshot()) {invalidateSceneMaterials();training.view=viewer::TrainingView::Live;training.loadedGeneration=0;}
+                    followLaunchAfterPreview=false;
+                }
+            }
+            if(previewWork.busy()&&previewWatchdog.reportDue())recordLongPreview();
+            if(previewWork.busy()) {drawBusyFrame();continue;}
             if (walkNavigationActive && !glfwGetWindowAttrib(window, GLFW_FOCUSED)) {
                 finishWalkNavigation(true);
             }
             if (glfwWindowShouldClose(window)) { break; }
 
+            if (modelReadOnly() && dropState.hasPendingPath) {
+                dropState.hasPendingPath = false;
+                training.message = "Switch to an editable snapshot before loading other geometry";
+            }
             if (dropState.hasPendingPath) {
                 const std::filesystem::path droppedPath = dropState.pendingPath;
                 dropState.hasPendingPath = false;
@@ -5027,18 +5860,12 @@ int main(int argc, char** argv) {
                 }
             }
 
-            if ((autoRender && cameraDirty) || renderRequested) {
-                glfwSetWindowTitle(window, "Pale Realtime Viewer - rendering / compiling kernels");
-                viewer::runWithEventPump(renderNow, [] { glfwPollEvents(); });
-                if (glfwWindowShouldClose(window)) { break; }
-                glfwSetWindowTitle(window, "Pale Realtime Viewer");
-                updateDisplayTexture();
-            }
-
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             // Avoid replaying stale movement over several expensive render frames.
             io.ConfigInputTrickleEventQueue = !walkNavigationActive;
+            if(inspectorInput.pending())inspectorHandoffFrames=std::max(inspectorHandoffFrames,2);
+            inspectorInput.deliver(static_cast<int>(inspectorPage),inspectorContextKey(inspectorPage),glfwGetMouseButton(window,GLFW_MOUSE_BUTTON_LEFT)==GLFW_PRESS);
             ImGui::NewFrame();
             // Snapshot the actual object representation to detect every settings
             // control without coupling cache invalidation to individual widgets.
@@ -5074,6 +5901,7 @@ int main(int argc, char** argv) {
                         static_cast<float>(ImGui::IsKeyDown(ImGuiKey_W)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_S)),
                         static_cast<float>(ImGui::IsKeyDown(ImGuiKey_E)) - static_cast<float>(ImGui::IsKeyDown(ImGuiKey_Q))};
                     if (lookDelta.x != 0.0f || lookDelta.y != 0.0f || glm::dot(direction, direction) > 0.0f) {
+                        lastNavigationInput = std::chrono::steady_clock::now();
                         orbit.lookAround(lookDelta);
                         const float speedMultiplier = io.KeyShift ? 4.0f : (io.KeyAlt ? 0.25f : 1.0f);
                         orbit.walk(direction, walkSpeed * speedMultiplier * std::min(io.DeltaTime, 0.1f));
@@ -5115,37 +5943,13 @@ int main(int argc, char** argv) {
                 ImGui::BeginDisabled();
                 ImGui::PopStyleVar();
             }
-            if (ImGui::BeginMainMenuBar()) {
-                if (ImGui::BeginMenu("View")) {
-                    ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMainMenuBar();
-            }
+            if(drawApplicationMenu(false))launchTrainingRequested=true;
 
             ImGuiViewport* mainViewport = ImGui::GetMainViewport();
             const ImGuiID dockspaceId = ImHashStr("PaleRealtimeViewerDockSpace");
             if (!dockLayoutInitialized) {
                 dockLayoutInitialized = true;
-                ImGui::DockBuilderRemoveNode(dockspaceId);
-                ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-                ImGui::DockBuilderSetNodePos(dockspaceId, mainViewport->WorkPos);
-                ImGui::DockBuilderSetNodeSize(dockspaceId, mainViewport->WorkSize);
-
-                ImGuiID leftDockId = 0;
-                ImGuiID renderDockId = 0;
-                ImGui::DockBuilderSplitNode(
-                    dockspaceId,
-                    ImGuiDir_Left,
-                    kSidebarDockFraction,
-                    &leftDockId,
-                    &renderDockId);
-
-                ImGui::DockBuilderDockWindow("Renderer settings", leftDockId);
-                // Profiling shares the sidebar only when explicitly opened.
-                ImGui::DockBuilderDockWindow("Profiling", leftDockId);
-                ImGui::DockBuilderDockWindow("Render", renderDockId);
-                ImGui::DockBuilderFinish(dockspaceId);
+                viewer::ui::defaultDockLayout(dockspaceId, mainViewport);
             }
             ImGui::DockSpaceOverViewport(
                 dockspaceId,
@@ -5159,30 +5963,34 @@ int main(int argc, char** argv) {
                 !io.KeyAlt &&
                 !io.KeySuper) {
                 if (viewerKeyPressed(ImGuiKey_R)) {
-                    refreshLatestOptimizationPointCloud();
+                    if (training.process.launched()) {
+                        enterTrainingView(viewer::TrainingView::Live);
+                    } else refreshLatestOptimizationPointCloud();
                 }
 
-                if (viewerKeyPressed(ImGuiKey_F)) {
+                if (!training.process.launched() && viewerKeyPressed(ImGuiKey_F)) {
                     jumpToOptimizationSnapshotBoundary(false);
                 }
 
-                if (viewerKeyPressed(ImGuiKey_L)) {
+                if (!training.process.launched() && viewerKeyPressed(ImGuiKey_L)) {
                     jumpToOptimizationSnapshotBoundary(true);
                 }
 
                 if (viewerKeyPressed(ImGuiKey_N)) {
-                    stepLatestOptimizationSnapshot(-1, kSnapshotIterationStep);
+                    if(training.process.launched())training.checkpointNavigation=-2;
+                    else stepLatestOptimizationSnapshot(-1,kSnapshotIterationStep);
                 }
 
                 if (viewerKeyPressed(ImGuiKey_M)) {
-                    stepLatestOptimizationSnapshot(1, kSnapshotIterationStep);
+                    if(training.process.launched())training.checkpointNavigation=2;
+                    else stepLatestOptimizationSnapshot(1,kSnapshotIterationStep);
                 }
 
-                if (ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
+                if (!training.process.launched() && ImGui::IsKeyDown(ImGuiKey_LeftArrow)) {
                     stepLatestOptimizationSnapshot(-1);
                 }
 
-                if (ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
+                if (!training.process.launched() && ImGui::IsKeyDown(ImGuiKey_RightArrow)) {
                     stepLatestOptimizationSnapshot(1);
                 }
 
@@ -5205,7 +6013,7 @@ int main(int argc, char** argv) {
                             tracerDirty = true;
                             renderRequested = true;
                         }
-                    } else {
+                    } else if (!training.process.launched()) {
                         stepLatestOptimizationSnapshot(verticalArrowStep);
                     }
                 }
@@ -5257,67 +6065,51 @@ int main(int argc, char** argv) {
             Pale::Entity selectedLight =
                 areaLights.empty() ? Pale::Entity{} : areaLights[static_cast<std::size_t>(selectedLightIndex)];
 
-            ImGui::Begin("Renderer settings", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            // Keep scene essentials and the primary action visible while settings scroll.
-            ImGui::TextDisabled("SCENE OVERVIEW");
-            ImGui::TextWrapped("%s", currentScenePath.filename().string().c_str());
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", currentScenePath.string().c_str());
-            }
-            ImGui::TextDisabled("%s", currentPointCloudPath.filename().string().c_str());
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s", currentPointCloudPath.string().c_str());
-            }
-            if (ImGui::BeginTable("SceneSummary", 3, ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();
-                ImGui::TextDisabled("Surfels");
-                std::string surfelCount = std::to_string(sceneGpu.pointCount);
-                for (int digit = static_cast<int>(surfelCount.size()) - 3; digit > 0; digit -= 3) {
-                    surfelCount.insert(static_cast<std::size_t>(digit), ",");
+            auto sceneGroups=makeSceneGroups();
+            cachedSceneGroups=sceneGroups;cachedSceneName=currentScenePath.stem().string();
+            auto treePick=sceneTree.draw(cachedSceneName,sceneGroups,showSceneTree);
+            if(!treePick&&queuedScenePick) {treePick=queuedScenePick;queuedScenePick.reset();}
+            if (auto picked=treePick) {
+                if(picked->kind==viewer::SceneItemKind::Emitter && (picked->index<0 || static_cast<std::size_t>(picked->index)>=areaLights.size()))picked.reset();
+                if(picked && picked->kind==viewer::SceneItemKind::SurfelEmitter && (picked->index<0 || static_cast<std::size_t>(picked->index)>=sceneTreeEmitterIndices.size()))picked.reset();
+                if(picked && picked->kind==viewer::SceneItemKind::Camera && (picked->index<0 || static_cast<std::size_t>(picked->index)>=buildProducts.cameraGPUs.size()))picked.reset();
+                if(picked) {
+                sceneSelectionKind=picked->kind; selectedTreeEntity=picked->name;
+                inspectorPage=viewer::ui::Inspector::Selection;
+                if (picked->kind==viewer::SceneItemKind::Emitter) {
+                    selectedLightIndex=picked->index; selectedLight=areaLights[selectedLightIndex]; selectedSurfelEditorIndex=-1; openLightControls=true;
+                } else if (picked->kind==viewer::SceneItemKind::SurfelEmitter) {
+                    selectedSurfelLightIndex=picked->index; selectedSurfelEditorIndex=static_cast<int>(sceneTreeEmitterIndices[picked->index]); openLightControls=true;
+                } else if (picked->kind==viewer::SceneItemKind::Camera) {
+                    selectedSceneCameraIndex=picked->index; cameraSource=CameraSource::SceneXml;
+                    inspectorPage=viewer::ui::Inspector::Camera; cameraDirty=tracerDirty=renderRequested=true;
+                } else if (picked->kind==viewer::SceneItemKind::Geometry || (picked->kind==viewer::SceneItemKind::Material && picked->index==-1)) {
+                    sceneSelectionKind=viewer::SceneItemKind::Geometry; openSurfelControls=true;
                 }
-                ImGui::TextColored(kUiAccent, "%s", surfelCount.c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextDisabled("Last render");
-                ImGui::Text("%.1f ms", lastRenderMs);
-                ImGui::TableNextColumn();
-                ImGui::TextDisabled("Resolution");
-                ImGui::Text("%u x %u", renderWidth, renderHeight);
-                ImGui::EndTable();
             }
-            ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Button, kUiAccent);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.98f, 0.79f, 0.48f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.80f, 0.58f, 0.29f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.12f, 0.12f, 0.11f, 1.0f));
-            if (ImGui::Button("Render", ImVec2(100.0f, 0.0f))) {
-                renderRequested = true;
             }
-            ImGui::PopStyleColor(4);
-            ImGui::SameLine();
-            ImGui::Checkbox("Auto render", &autoRender);
-            ImGui::Separator();
-
-            ImGui::BeginChild("SettingsContent", ImVec2(0.0f, 0.0f));
-            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.52f);
-            if (ImGui::CollapsingHeader("Render & display", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (selectTrainingTab) { inspectorPage = viewer::ui::Inspector::Reconstruction; selectTrainingTab = false; }
+            if (openLightControls || openSurfelControls) {
+                inspectorPage = viewer::ui::Inspector::Selection;
+                sceneSelectionKind = openLightControls ? (selectedSurfelEditorIndex >= 0 ? viewer::SceneItemKind::SurfelEmitter : viewer::SceneItemKind::Emitter) : viewer::SceneItemKind::Geometry;
+            }
+            ImGui::Begin("Properties", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::BeginChild("InspectorRail", ImVec2(32,0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+            viewer::ui::inspectorRail(inspectorPage, showAdvancedTools);
+            ImGui::EndChild(); ImGui::SameLine(0,8);
+            ImGui::BeginChild("InspectorContents", ImVec2(0,0));
+            ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .52f);
+            if (inspectorPage == viewer::ui::Inspector::Reconstruction) {
+                try {
+                    if (training.drawSetup(hasWorkingSnapshot || (!modelReadOnly() && firstPointCloudHandle(scene).has_value()))) launchTrainingRequested = true;
+                } catch (const std::exception& error) { training.message = error.what(); }
+            }
+            if (inspectorPage == viewer::ui::Inspector::View) {
+            if (ImGui::CollapsingHeader("Display", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ScopedSectionIndent sectionIndent;
-                int integrator = settings.integratorKind == Pale::IntegratorKind::photonMapping
-                                     ? 2
-                                     : settings.integratorKind == Pale::IntegratorKind::lightTracing
-                                           ? 1
-                                           : 0;
-                const char* integrators[] = {"Cylinder ray", "Light tracing", "Photon mapping"};
-                if (ImGui::Combo("Integrator", &integrator, integrators, 3)) {
-                    settings.integratorKind =
-                        integrator == 2 ? Pale::IntegratorKind::photonMapping
-                                        : integrator == 1 ? Pale::IntegratorKind::lightTracing
-                                                          : Pale::IntegratorKind::lightTracingCylinderRay;
-                    tracerDirty = true;
-                    renderRequested = true;
-                }
-
-                if (ImGui::BeginCombo("Display", viewImageModeLabel(viewImageMode))) {
+                if (ImGui::BeginCombo("View", viewImageModeLabel(viewImageMode))) {
                     for (const ViewImageMode candidateMode : kViewImageModeCycleOrder) {
+                        if (!showAdvancedTools && candidateMode != ViewImageMode::Rendered && candidateMode != ViewImageMode::MedianDepth && candidateMode != ViewImageMode::VisibleNormal && candidateMode != ViewImageMode::TargetLoss && candidateMode != ViewImageMode::SurfelDensity && candidateMode != ViewImageMode::RawLinear) continue;
                         const bool selected = viewImageMode == candidateMode;
                         if (ImGui::Selectable(viewImageModeLabel(candidateMode), selected)) {
                             setViewImageMode(candidateMode);
@@ -5328,13 +6120,434 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndCombo();
                 }
-                bool showTransport = viewImageMode == ViewImageMode::TransportScore;
-                if (ImGui::Checkbox("Contribution scores", &showTransport))
-                    setViewImageMode(showTransport ? ViewImageMode::TransportScore : ViewImageMode::Rendered);
                 if (viewImageMode == ViewImageMode::RawLinear) {
                     ImGui::TextWrapped("Raw primal RGB: no exposure, sRGB/gamma, normalization, or alpha blending. Display clips to [0,1]; non-finite RGB is magenta.");
-                } else if (viewImageMode != ViewImageMode::Rendered) {
-                    ImGui::TextDisabled("Options below in Display diagnostics");
+                }
+                if (viewImageMode != ViewImageMode::Rendered && viewImageMode != ViewImageMode::RawLinear &&
+                        ImGui::TreeNodeEx("View options", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    const ScopedSectionIndent sectionIndent;
+                    if (viewImageMode == ViewImageMode::DepthDistortion ||
+                        viewImageMode == ViewImageMode::DepthPositionGradient) {
+                        ImGui::TextWrapped("Preview uses unit loss weight; colors rescale to each frame.");
+                    }
+                    if (viewImageMode == ViewImageMode::TerminalTransmittance) {
+                        if (ImGui::SliderFloat("Target attenuation", &terminalTargetAttenuation, 0.8f, 1.0f, "%.2f")) {
+                            debugDisplayBuffers.terminalTransmittanceValid = false;
+                            updateDisplayTexture();
+                        }
+                        ImGui::TextWrapped("Camera rays only. Loss = max(0, target - attenuation)^2. Empty rays and rays meeting the target are black. Magenta means traversal limit reached; escape is unknown.");
+                        ImGui::Text("Fixed loss color range: 0 to %.3f", terminalTargetAttenuation * terminalTargetAttenuation);
+                        ImGui::TextWrapped("Preview only: no opacity or training updates. Uses surfel footprints and slab compositing.");
+                    }
+                    if (viewImageMode == ViewImageMode::DepthDistortion || viewImageMode == ViewImageMode::DepthPositionGradient) {
+                        int distortionDepthMode = settings.depthDistortionWorldSpace ? (settings.depthDistortionSquared ? 1 : 0) : 2;
+                        const char* distortionDepthModes[] = {"World distance (absolute)", "World distance (squared)", "Normalized depth (squared)"};
+                        if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 3)) {
+                            settings.depthDistortionWorldSpace = distortionDepthMode != 2;
+                            settings.depthDistortionSquared = distortionDepthMode == 1;
+                            renderRequested = true;
+                        }
+                    }
+
+                    if (viewImageMode == ViewImageMode::AdjointDerivative) {
+                        bool changed = ImGui::Combo("Derivative property", &viewerAdjointProperty,
+                            adjointProperties, static_cast<int>(std::size(adjointProperties)));
+                        changed |= ImGui::Checkbox("All surfels (common change)", &viewerAdjointAllSurfels);
+                        if (!viewerAdjointAllSurfels) {
+                            changed |= ImGui::InputInt("Global surfel index", &viewerAdjointSurfelIndex);
+                            viewerAdjointSurfelIndex = std::clamp(viewerAdjointSurfelIndex, 0,
+                                std::max(0, static_cast<int>(sceneGpu.pointCount) - 1));
+                            std::optional<uint32_t> pickedGlobalIndex;
+                            if (const auto handle = firstPointCloudHandle(scene);
+                                handle && selectedSurfelEditorIndex >= 0) {
+                                const auto found = buildProducts.pointCloudIndexById.find(*handle);
+                                if (found != buildProducts.pointCloudIndexById.end()) {
+                                    const auto& range = buildProducts.pointCloudRanges.at(found->second);
+                                    if (static_cast<uint32_t>(selectedSurfelEditorIndex) < range.pointCount)
+                                        pickedGlobalIndex = range.firstPoint + selectedSurfelEditorIndex;
+                                }
+                            }
+                            ImGui::BeginDisabled(!pickedGlobalIndex);
+                            if (ImGui::Button("Use picked surfel") && pickedGlobalIndex) {
+                                viewerAdjointSurfelIndex = static_cast<int>(*pickedGlobalIndex);
+                                changed = true;
+                            }
+                            ImGui::EndDisabled();
+                            ImGui::TextDisabled("Click the viewport to pick, then use the picked surfel");
+                        }
+                        changed |= ImGui::SliderInt("Derivative adjoint SPP", &viewerAdjointSamplesPerPixel,
+                            1, 256, "%d", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+                        ImGui::Text("Fixed: qNull %.3f, qReflect %.3f",
+                            settings.sampling.qNull, settings.sampling.qReflect);
+                        changed |= ImGui::InputInt("Adjoint seed", &viewerAdjointSeed);
+                        viewerAdjointSeed = std::max(0, viewerAdjointSeed);
+                        if (ImGui::Button("Resample adjoint")) {
+                            viewerAdjointSeed = (viewerAdjointSeed + 1u) % 2147483647u;
+                            changed = true;
+                        }
+                        if (changed) renderRequested = true;
+                        if (ImGui::DragFloat("Full color at |derivative|", &viewerAdjointColorMaximum,
+                            0.001f, 1.0e-10f, 1.0e10f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
+                            viewerAdjointColorMaximum = std::max(1.0e-10f, viewerAdjointColorMaximum);
+                            updateDisplayTexture();
+                        }
+                        if (ImGui::Button("Fit derivative colors") && viewerAdjointImageValid) {
+                            viewerAdjointColorMaximum = 1.0e-10f;
+                            for (float g : viewerAdjointImage) if (std::isfinite(g))
+                                viewerAdjointColorMaximum = std::max(viewerAdjointColorMaximum, std::abs(g));
+                            updateDisplayTexture();
+                        }
+                        ImGui::TextWrapped("Red: increasing this property increases linear R+G+B. "
+                            "Blue: decreases it. White: zero. Colors stay fixed across SPP and seed changes.");
+                        ImGui::TextWrapped("All surfels sums the derivative for the same property change everywhere. "
+                            "Rotation uses local tangent-frame radians; albedo changes the red channel only.");
+                        ImGui::Text("Adjoint: %.3f ms", lastViewerAdjointMs);
+                        ImGui::TextWrapped("%s", viewerAdjointStatus.c_str());
+                        if (settings.rendererDebugShareLocalLayerDirectLighting)
+                            ImGui::TextWrapped("Shared lighting is enabled: this displays its existing detached-lighting VJP.");
+                    }
+                    if ((viewImageMode == ViewImageMode::MedianDepth || viewImageMode == ViewImageMode::MedianDepthNormal ||
+                         viewImageMode == ViewImageMode::NormalPositionGradient) &&
+                        ImGui::TreeNodeEx("Median depth settings", ImGuiTreeNodeFlags_DefaultOpen)) {
+                        const ScopedSectionIndent sectionIndent;
+                        if (ImGui::SliderFloat("Median depth threshold", &settings.medianDepthThreshold,
+                                               0.001f, 0.999f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
+                            settings.medianDepthThreshold = std::clamp(settings.medianDepthThreshold, 0.001f, 0.999f);
+                            renderRequested = true;
+                        }
+                        ImGui::TextWrapped("Accumulated opacity needed to select depth. Lower values select earlier hits.");
+                        if (ImGui::Checkbox("Retain last accepted depth", &settings.medianDepthRetainLastHit)) {
+                            renderRequested = true;
+                        }
+                        ImGui::TextWrapped("If the threshold is never reached, use the last accepted surface hit. Empty rays still have no depth.");
+                        ImGui::TextDisabled("The existing traversal-limit fallback remains active.");
+                        ImGui::TreePop();
+                    }
+                    if (viewImageMode == ViewImageMode::IntraSlabDepth ||
+                        viewImageMode == ViewImageMode::IntraSlabRayDepth) {
+                        ImGui::TextWrapped("Both slab losses use the same logarithmic color scale and unit weight.");
+                        ImGui::TextWrapped("Mean ray depth: equal-weight squared hit-depth differences from the slab mean.");
+                        if (settings.sharedHeightEnabled) {
+                            ImGui::TextWrapped("Slab loss previews are unavailable while Shared surface experiment is enabled.");
+                        } else if (debugDisplayBuffers.intraSlabDepthValid) {
+                            ImGui::Text("Mean per pixel: plane %.6g | ray %.6g",
+                                debugDisplayBuffers.slabPlaneLossMean, debugDisplayBuffers.slabRayLossMean);
+                            ImGui::Text("Shared color range: 0 to %.6g", debugDisplayBuffers.slabLossColorMaximum);
+                        }
+                    }
+                    if (viewImageMode == ViewImageMode::MeanDepth ||
+                        viewImageMode == ViewImageMode::MedianDepth ||
+                        viewImageMode == ViewImageMode::DepthDistortion ||
+                        viewImageMode == ViewImageMode::IntraSlabDepth ||
+                        viewImageMode == ViewImageMode::IntraSlabRayDepth ||
+                        viewImageMode == ViewImageMode::PositionPrimitiveScore ||
+                        viewImageMode == ViewImageMode::TerminalTransmittance ||
+                        viewImageMode == ViewImageMode::SurfelDensity ||
+                        viewImageMode == ViewImageMode::SurfaceOverlap ||
+                        viewImageMode == ViewImageMode::TargetLoss ||
+                        viewImageMode == ViewImageMode::DepthPositionGradient ||
+                        viewImageMode == ViewImageMode::NormalPositionGradient ||
+                        viewImageMode == ViewImageMode::IntraSlabPositionGradient) {
+                        int scalarColorMapIndex = static_cast<int>(scalarColorMap);
+                        const char* scalarColorMaps[] = {"Viridis", "Jet"};
+                        if (ImGui::Combo(
+                                "Scalar colormap",
+                                &scalarColorMapIndex,
+                                scalarColorMaps,
+                                IM_ARRAYSIZE(scalarColorMaps))) {
+                            scalarColorMap = static_cast<ScalarColorMap>(scalarColorMapIndex);
+                            updateDisplayTexture();
+                        }
+                    }
+                    if (viewImageMode == ViewImageMode::SurfaceOverlap) {
+                        const char* metrics[] = {"Mean slab members", "Slab overflow footprint (%)", "Center slab members"};
+                        bool refreshMap = ImGui::Combo("Overlap metric", &surfaceOverlapMetric, metrics, IM_ARRAYSIZE(metrics));
+                        refreshMap |= ImGui::Checkbox("Normal-distance overlap", &settings.surfaceOverlapNormalDistance);
+                        if (ImGui::DragFloat("Overlap distance tolerance", &settings.surfaceOverlapDepthTolerance,
+                                0.0001f, 1.0e-5f, 10.0f, "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
+                            settings.surfaceOverlapDepthTolerance = std::max(settings.surfaceOverlapDepthTolerance, 1.0e-5f);
+                            refreshMap = true;
+                        }
+                        ImGui::TextWrapped(settings.surfaceOverlapNormalDistance
+                            ? "Symmetric distance along each surfel's normal. Includes neighbors in front and behind; ray intervals widen at grazing angles."
+                            : "Symmetric distance along each camera ray. At grazing angles, the same normal separation can fall outside the interval.");
+                        const float normalCosine = Pale::rendererDebugLocalLayerNormalCosineThreshold(settings);
+                        const auto memberLimit = Pale::rendererDebugMaxLocalSurfelHits(settings);
+                        ImGui::Text("Inherited normal cosine: %.3f (%.1f degrees)",
+                            normalCosine, glm::degrees(std::acos(normalCosine)));
+                        ImGui::Text("Overflow: more than %u total members (including anchor)", memberLimit);
+                        ImGui::TextDisabled("Overlap distance is independent of Surfel traversal. Alpha filtering is disabled.");
+                        if (viewImageMode == ViewImageMode::SurfaceOverlap && surfaceOverlapMetric != kSlabOverflowMetric) {
+                            refreshMap |= ImGui::SliderFloat("Overlap color maximum (members)",
+                                &surfaceOverlapColorMaximum, 1.0f, 128.0f, "%.1f");
+                            surfaceOverlapColorMaximum = std::max(surfaceOverlapColorMaximum, 1.0f);
+                        }
+                        if (refreshMap) {
+                            debugDisplayBuffers.surfaceOverlapValid = false;
+                            renderRequested = true;
+                        }
+                        ImGui::Text("Observed surfels: %zu   peak mean slab members: %.2f",
+                            surfaceOverlapEligibleCount, surfaceOverlapPeak);
+                        ImGui::Text("64 samples/surfel x %zu cameras; last calculation: %.1f ms",
+                            surfaceOverlapViews.size(), surfaceOverlapComputeMs);
+                        ImGui::TextWrapped("Counts full-footprint intersections in a slab anchored at each sample, using the renderer's "
+                            "ray-facing normal test and the overlap distance above. Counts include the anchor, exclude lights, and continue beyond the member limit.");
+                        ImGui::TextWrapped("Overflow is the percentage of in-frame sample/camera pairs exceeding the slab capacity. "
+                            "Color range: 0%% to 100%%. Member counts are averaged over those pairs.");
+                        ImGui::TextWrapped(buildProducts.cameraGPUs.empty()
+                            ? "No saved scene cameras: using the displayed camera; scores change when it moves."
+                            : "Uses saved scene cameras; orbiting the viewer only changes which surfel scores are displayed.");
+                        ImGui::TextWrapped("Potential membership only: hidden surfaces are included; occlusion, transmission and ray-event limits "
+                            "are not applied. Black means no observed surfel. Training uses the same scoring rule with its own overlap settings; viewer changes are preview-only.");
+                    }
+                    if (viewImageMode == ViewImageMode::TransportScore) {
+                        if (ImGui::Checkbox("Use saved run settings", &transportUseSavedSettings)) {
+                            transportDirty = true; renderRequested = true;
+                        }
+                        if (ImGui::Button("Recompute contributions")) { transportDirty = true; renderRequested = true; }
+                        ImGui::TextWrapped("%s", transportStatus.c_str());
+                        bool recolor = ImGui::Combo("Score component", &transportComponent, "Camera + shadow\0Camera only\0Shadow only\0");
+                        const char* sourceLabel = transportSource < 0 || transportSource >= int(transportViews.size()) ? "All training cameras (one cycle)" : transportViews[transportSource].name.c_str();
+                        if (ImGui::BeginCombo("Score source", sourceLabel)) {
+                            if (ImGui::Selectable("All training cameras (one cycle)", transportSource < 0)) { transportSource = -1; recolor = true; }
+                            for (std::size_t i = 0; i < transportViews.size(); ++i) {
+                                ImGui::PushID(static_cast<int>(i));
+                                const auto label = transportViews[i].name + (transportViews[i].training ? " [training]" : " [held out]");
+                                if (ImGui::Selectable(label.c_str(), transportSource == int(i))) { transportSource = int(i); recolor = true; }
+                                ImGui::PopID();
+                            }
+                            ImGui::EndCombo();
+                        }
+                        recolor |= ImGui::DragFloat("Passing score", &transportThreshold, 0.1f, 0.001f, 1e9f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+                        if (ImGui::Button("Reset passing score to 10")) { transportThreshold = 10.0f; recolor = true; }
+                        if (recolor) { refreshTransportSelection(); updateDisplayTexture(); }
+                        ImGui::Checkbox("X-ray affected centers", &transportXray);
+                        ImGui::Text("Below threshold: %zu surfels", transportAffected.size());
+                        const auto trainingCameras = std::count_if(transportViews.begin(), transportViews.end(),
+                            [](const auto& view) { return view.training; });
+                        ImGui::Text("Training cameras: %zu / %zu", static_cast<std::size_t>(trainingCameras), transportViews.size());
+                        if (!transportViews.empty() && trainingCameras == 0)
+                            ImGui::TextWrapped("No cameras are marked for training: the training total is zero. Select an individual camera to inspect its contributions.");
+                        ImGui::TextWrapped("Pink: score < threshold. Green: score >= threshold. Camera + shadow summed over training cameras matches the pruning score. Preview only; no surfels are removed.");
+                        ImGui::TextWrapped("Scores use incoming transmission and effective opacity. Hidden surfels can have zero support. X-ray shows up to 20,000 affected centers, including occluded ones; click a marker to inspect it.");
+                        if (ImGui::Button("Select next affected surfel")) {
+                            const auto handle = firstPointCloudHandle(scene);
+                            const auto found = handle ? buildProducts.pointCloudIndexById.find(*handle) : buildProducts.pointCloudIndexById.end();
+                            if (found != buildProducts.pointCloudIndexById.end()) {
+                                const auto& range = buildProducts.pointCloudRanges.at(found->second);
+                                int first = -1, next = -1;
+                                for (const auto primitive : transportAffected) {
+                                    if (primitive < range.firstPoint || primitive - range.firstPoint >= range.pointCount) continue;
+                                    const int local = static_cast<int>(primitive - range.firstPoint);
+                                    if (first < 0) first = local;
+                                    if (local > selectedSurfelEditorIndex) { next = local; break; }
+                                }
+                                selectedSurfelEditorIndex = next >= 0 ? next : first;
+                            }
+                        }
+                        if (selectedSurfelEditorIndex >= 0) {
+                            const auto id = static_cast<std::size_t>(selectedSurfelEditorIndex);
+                            // Optimization snapshots contain one editable point cloud; the score buffers use global point indices.
+                            const auto handle = firstPointCloudHandle(scene);
+                            const auto found = handle ? buildProducts.pointCloudIndexById.find(*handle) : buildProducts.pointCloudIndexById.end();
+                            if (found != buildProducts.pointCloudIndexById.end()) {
+                                const auto& range = buildProducts.pointCloudRanges.at(found->second);
+                                const auto primitive = range.firstPoint + id;
+                                if (id < range.pointCount && primitive < transportScores.size()) {
+                                    ImGui::Text("Selected surfel %d: %.6g", selectedSurfelEditorIndex, transportScores[primitive]);
+                                    if (ImGui::BeginTable("Contribution breakdown", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY, ImVec2(0, 160))) {
+                                        ImGui::TableSetupColumn("Camera"); ImGui::TableSetupColumn("Camera score"); ImGui::TableSetupColumn("Shadow score"); ImGui::TableHeadersRow();
+                                        for (const auto& view : transportViews) {
+                                            ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextUnformatted(view.name.c_str());
+                                            ImGui::TableNextColumn(); ImGui::Text("%.6g", view.camera[primitive]);
+                                            ImGui::TableNextColumn(); ImGui::Text("%.6g", view.shadow[primitive]);
+                                        }
+                                        ImGui::EndTable();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (viewImageMode == ViewImageMode::TargetLoss) {
+                        ImGui::InputText("Target dataset / images", targetDatasetBuffer.data(), targetDatasetBuffer.size());
+                        ImGui::Combo("Target color space", &targetColorSpace, "Linear\0sRGB\0");
+                        if (ImGui::Button("Apply targets")) {
+                            targetDatasetManual = true;
+                            targetLossDirty = true;
+                            renderRequested = true;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Discover from loaded run")) {
+                            targetDatasetManual = false;
+                            targetLossDirty = true;
+                            renderRequested = true;
+                        }
+                        if (ImGui::Button("Reproject target loss")) {
+                            targetLossDirty = true;
+                            renderRequested = true;
+                        }
+                        const char* cameraLabel = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
+                            ? targetLossViews[targetLossCamera].cameraName.c_str() : "All target images";
+                        bool recolor = false;
+                        if (ImGui::BeginCombo("Loss source camera", cameraLabel)) {
+                            if (ImGui::Selectable("All target images", targetLossCamera == -1)) { targetLossCamera = -1; recolor = true; }
+                            for (std::size_t i = 0; i < targetLossViews.size(); ++i) {
+                                if (ImGui::Selectable(targetLossViews[i].cameraName.c_str(), targetLossCamera == int(i))) {
+                                    targetLossCamera = int(i);
+                                    recolor = true;
+                                }
+                            }
+                            ImGui::EndCombo();
+                        }
+                        if (targetLossCamera == -1)
+                            recolor |= ImGui::Combo("Across cameras", &targetLossAggregation, "Visibility-weighted mean\0Worst camera mean\0");
+                        recolor |= ImGui::DragFloat("Loss color maximum", &targetLossColorMaximum, 0.0001f,
+                            1.0e-8f, 1.0e8f, "%.6g", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
+                        recolor |= ImGui::Checkbox("Logarithmic loss colors", &targetLossLogColors);
+                        if (ImGui::Button("Fit loss colors to peak")) {
+                            const auto& scores = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
+                                ? targetLossViews[targetLossCamera].mean : (targetLossAggregation == 0 ? targetLossMean : targetLossWorst);
+                            targetLossColorMaximum = 1.0e-8f;
+                            for (float value : scores) if (std::isfinite(value)) targetLossColorMaximum = std::max(targetLossColorMaximum, value);
+                            recolor = true;
+                        }
+                        if (recolor) updateDisplayTexture();
+                        double loss = 0, unassigned = 0;
+                        std::size_t pixelsWithoutSurfels = 0, sourcePixels = 0, sourceViews = 0;
+                        for (std::size_t i = 0; i < targetLossViews.size(); ++i) {
+                            if (targetLossCamera >= 0 && int(i) != targetLossCamera) continue;
+                            const auto& view = targetLossViews[i];
+                            loss += view.imageMean;
+                            unassigned += view.unassignedMean;
+                            pixelsWithoutSurfels += view.unassignedPixels;
+                            sourcePixels += view.pixelCount;
+                            ++sourceViews;
+                        }
+                        if (sourceViews) {
+                            ImGui::Text("Image half-MSE: %.6g   unassigned: %.6g", loss / sourceViews, unassigned / sourceViews);
+                            ImGui::Text("Pixels without a surfel contribution: %zu / %zu", pixelsWithoutSurfels, sourcePixels);
+                        }
+                        ImGui::TextWrapped("%s", targetLossStatus.c_str());
+                        ImGui::Text("Last projection: %.1f ms", targetLossComputeMs);
+                        ImGui::TextWrapped("Linear RGB half-squared error, weighted by slab opacity and transmission onto each surfel. "
+                            "Gray: no target observation. Black: background. Colors remain fixed while orbiting.");
+                        ImGui::TextWrapped("Completely missing geometry has no surfel to color; its image loss is included in unassigned above. "
+                            "This is image-error attribution, not a geometry gradient or a geometric regularizer.");
+                        ImGui::TextWrapped("Projection refreshes after geometry or renderer changes. Exposure and display gamma do not affect the linear loss. "
+                            "Targets must match scene camera names and resolution; alpha is ignored, as in training.");
+                    }
+                    if (viewImageMode == ViewImageMode::SurfelDensity) {
+                        if (ImGui::SliderInt("Density grid (cells per axis)", &densityGridSize, 8, 256)) {
+                            densityGridSize = std::clamp(densityGridSize, 8, 256);
+                            debugDisplayBuffers.surfelDensityValid = false;
+                            updateDisplayTexture();
+                        }
+                        bool recolorDensity = ImGui::SliderFloat(
+                            "Density color maximum (surfels/cell)", &densityColorMaximum,
+                            1.0f, 10000.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+                        recolorDensity |= ImGui::Checkbox("Logarithmic density colors", &densityLogScale);
+                        const auto& density = debugDisplayBuffers.surfelDensity;
+                        if (ImGui::Button("Fit density colors to current peak")) {
+                            densityColorMaximum = static_cast<float>(std::max(density.peak, 1u));
+                            recolorDensity = true;
+                        }
+                        if (recolorDensity) {
+                            densityColorMaximum = std::max(densityColorMaximum, 1.0f);
+                            updateDisplayTexture();
+                        }
+                        ImGui::Text("Non-emissive surfels: %zu   centers in view: %zu", density.total, density.inView);
+                        ImGui::Text("Peak: %u surfels/cell   grid: %d x %d", density.peak, density.gridSize, density.gridSize);
+                        ImGui::TextWrapped(
+                            "Counts all projected centers, including hidden and transparent surfels; lights are excluded. "
+                            "Black means an empty cell. Colors saturate at the selected maximum.");
+                        ImGui::TextWrapped(
+                            "Compare snapshots with the same camera, grid and color maximum. "
+                            "The scale stays fixed until you change it. This is screen-space concentration, not world-space density.");
+                    }
+                    if (viewImageMode == ViewImageMode::PositionPrimitiveScore) {
+                        if (!debugDisplayBuffers.positionPrimitiveMetadataAvailable) {
+                            ImGui::TextWrapped(
+                                "This PLY does not contain saved position densification statistics. "
+                                "Run optimization again to generate a trustworthy visualization.");
+                        } else {
+                            const float savedThreshold =
+                                debugDisplayBuffers.positionPrimitiveSplitThreshold;
+                            ImGui::Text(
+                                "Saved threshold: %.9g",
+                                savedThreshold);
+                            const float sliderMinimum = static_cast<float>(std::max(
+                                static_cast<double>(std::numeric_limits<float>::min()),
+                                static_cast<double>(std::min(savedThreshold, kPositionDefaultThreshold)) * 1.0e-3));
+                            const float sliderMaximum = static_cast<float>(std::min(
+                                static_cast<double>(std::numeric_limits<float>::max()),
+                                static_cast<double>(std::max(savedThreshold, kPositionDefaultThreshold)) * 1.0e3));
+                            if (ImGui::SliderFloat(
+                                    "What-if position threshold",
+                                    &positionWhatIfDisplayThreshold,
+                                    sliderMinimum,
+                                    sliderMaximum,
+                                    "%.9g",
+                                    ImGuiSliderFlags_Logarithmic)) {
+                                positionWhatIfDisplayThreshold = std::clamp(
+                                    positionWhatIfDisplayThreshold,
+                                    sliderMinimum,
+                                    sliderMaximum);
+                                updateDisplayTexture();
+                            }
+                            if (ImGui::Button("Use saved##position-threshold")) {
+                                positionWhatIfDisplayThreshold = savedThreshold;
+                                updateDisplayTexture();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Use config default##position-threshold")) {
+                                positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
+                                updateDisplayTexture();
+                            }
+                            ImGui::TextDisabled(
+                                "Below: saved G_i / selected threshold; magenta: at/above boundary");
+
+                            const std::size_t splitCandidateCount = static_cast<std::size_t>(
+                                std::count_if(
+                                    debugDisplayBuffers.positionObservedPrimitiveScores.begin(),
+                                    debugDisplayBuffers.positionObservedPrimitiveScores.end(),
+                                    [&](float signal) {
+                                        return signal >= positionWhatIfDisplayThreshold;
+                                    }));
+                            ImGui::Text(
+                                "Observed: %zu   above selected: %zu   max G_i: %.9g",
+                                debugDisplayBuffers.positionObservedPrimitiveCount,
+                                splitCandidateCount,
+                                debugDisplayBuffers.positionPrimitiveScoreMax);
+                            ImGui::TextDisabled(
+                                "Values are the optimizer's saved interval-average statistics");
+                            ImGui::Text("Without interval samples: %zu (gray)",
+                                debugDisplayBuffers.positionUnsampledPrimitiveCount);
+                            ImGui::TextDisabled("Frontmost surfel per pixel; black: background");
+                            ImGui::TextWrapped(
+                                "New surfels and intervals with no accumulated position signal have no score yet. "
+                                "Training can skip the first half of each densification interval.");
+                        }
+                    }
+                    if (viewImageMode == ViewImageMode::DensificationOrigin) {
+                        ImGui::TextDisabled(
+                            "gray: initial/unknown  green: clone  blue: position split");
+                    }
+                    if (viewImageMode == ViewImageMode::PrimitiveAge) {
+                        if (ImGui::SliderInt(
+                                "Cold after iterations",
+                                &primitiveAgeColdAfterIterations,
+                                1,
+                                100000,
+                                "%d",
+                                ImGuiSliderFlags_Logarithmic)) {
+                            primitiveAgeColdAfterIterations = std::max(
+                                primitiveAgeColdAfterIterations, 1);
+                            updateDisplayTexture();
+                        }
+                        ImGui::TextDisabled(
+                            "red: created/split now  blue: age >= selected range");
+                    }
+                    ImGui::TreePop();
                 }
                 ImGui::BeginDisabled(screenshotPixels.empty());
                 if (ImGui::Button("Save screenshot (PNG)")) {
@@ -5369,8 +6582,50 @@ int main(int argc, char** argv) {
                 if (!screenshotStatus.empty()) {
                     ImGui::TextWrapped("%s", screenshotStatus.c_str());
                 }
+                if (ImGui::TreeNode("Appearance")) {
+                    const ScopedSectionIndent sectionIndent;
+                    // Avoid BeginDisabled(false): it makes the color picker transparent
+                    // in this ImGui version (see the walk-navigation scope above).
+                    const bool appearanceDisabled = viewImageMode == ViewImageMode::RawLinear;
+                    if (appearanceDisabled) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (ImGui::Checkbox("Force opacity = 1", &forceRenderOpacity)) {
+                        updateDisplayTexture();
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Hide the background behind contributing rays. Does not change surfel opacity or primal RGB.");
+                    }
+                    if (ImGui::ColorEdit3("Background color", &viewportBackgroundColor.x)) {
+                        updateDisplayTexture();
+                    }
+                    if (ImGui::DragFloat("Exposure", &exposure, 0.01f, 0.001f, 100.0f, "%.3f")) {
+                        renderRequested = true;
+                    }
+                    if (ImGui::Checkbox("sRGB output", &useSrgbEncoding)) {
+                        renderRequested = true;
+                    }
+                    if (!useSrgbEncoding &&
+                        ImGui::DragFloat("Gamma", &gamma, 0.01f, 0.1f, 5.0f, "%.3f")) {
+                        renderRequested = true;
+                    }
+                    if (appearanceDisabled) {
+                        ImGui::EndDisabled();
+                    }
+
+                    ImGui::TreePop();
+                }
             }
 
+            }
+            if (inspectorPage == viewer::ui::Inspector::View) {
+                if(ImGui::CollapsingHeader("Interaction preview")) {
+                    ImGui::Checkbox("Fast preview for emitter edits",&fastEmitterEditing);
+                    ImGui::Checkbox("Fast preview for surfel edits",&fastSurfelEditing);
+                    ImGui::TextWrapped("Lower preview quality while editing for faster feedback. Full quality returns when interaction stops.");
+                }
+            }
+            if (inspectorPage == viewer::ui::Inspector::Camera) {
             if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ScopedSectionIndent sectionIndent;
                 int cameraSourceIndex = cameraSource == CameraSource::SceneXml ? 1 : 0;
@@ -5410,6 +6665,7 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                if(cameraSource==CameraSource::SceneXml&&ImGui::Button("Fit camera image"))cameraImageView.reset();
                 if (ImGui::Button("Reset view")) {
                     resetOrbitView();
                 }
@@ -5420,43 +6676,10 @@ int main(int argc, char** argv) {
                 }
             }
 
-            if (ImGui::CollapsingHeader("Appearance")) {
-                const ScopedSectionIndent sectionIndent;
-                // Avoid BeginDisabled(false): it makes the color picker transparent
-                // in this ImGui version (see the walk-navigation scope above).
-                const bool appearanceDisabled = viewImageMode == ViewImageMode::RawLinear;
-                if (appearanceDisabled) {
-                    ImGui::BeginDisabled();
-                }
-                if (ImGui::Checkbox("Force opacity = 1", &forceRenderOpacity)) {
-                    updateDisplayTexture();
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Hide the background behind contributing rays. Does not change surfel opacity or primal RGB.");
-                }
-                if (cameraSource == CameraSource::Viewport && ImGui::Checkbox("Show grid", &showViewportGrid)) {
-                    updateDisplayTexture();
-                }
-                if (ImGui::ColorEdit3("Background color", &viewportBackgroundColor.x)) {
-                    updateDisplayTexture();
-                }
-                if (ImGui::DragFloat("Exposure", &exposure, 0.01f, 0.001f, 100.0f, "%.3f")) {
-                    renderRequested = true;
-                }
-                if (ImGui::Checkbox("sRGB output", &useSrgbEncoding)) {
-                    renderRequested = true;
-                }
-                if (!useSrgbEncoding &&
-                    ImGui::DragFloat("Gamma", &gamma, 0.01f, 0.1f, 5.0f, "%.3f")) {
-                    renderRequested = true;
-                }
-                if (appearanceDisabled) {
-                    ImGui::EndDisabled();
-                }
-
             }
-
-            if (ImGui::CollapsingHeader("Scene files")) {
+            if (inspectorPage == viewer::ui::Inspector::Files) {
+            if (modelReadOnly()) ImGui::BeginDisabled();
+            if (ImGui::CollapsingHeader("Scene files", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ScopedSectionIndent sectionIndent;
                 ImGui::TextWrapped("Scene: %s", currentScenePath.string().c_str());
                 ImGui::TextWrapped("Point cloud: %s", currentPointCloudPath.string().c_str());
@@ -5548,15 +6771,50 @@ int main(int argc, char** argv) {
                     selectedMeshPath)) {
                 loadRuntimeMesh(selectedMeshPath);
             }
+            if (modelReadOnly()) ImGui::EndDisabled();
 
-            if (ImGui::CollapsingHeader("Lights")) {
+            }
+            if (inspectorPage == viewer::ui::Inspector::Selection) {
+            ImGui::TextColored(kUiAccent, "%s", modelReadOnly() ? "INSPECT SELECTION" : "EDIT SNAPSHOT");
+            if (sceneSelectionKind == viewer::SceneItemKind::Camera && !buildProducts.cameraGPUs.empty()) {
+                const auto& camera=buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)];
+                ImGui::TextWrapped("%s",camera.name); ImGui::SeparatorText("Calibration");
+                ImGui::Text("Image  %u × %u",camera.width,camera.height);
+                ImGui::Text("Focal length  %.3f  %.3f",camera.fx,camera.fy);
+                ImGui::Text("Principal point  %.3f  %.3f",camera.cx,camera.cy);
+                ImGui::TextWrapped("Dataset pose and intrinsics are fixed.");
+                if(ImGui::Button("View through camera")) {cameraSource=CameraSource::SceneXml; cameraDirty=tracerDirty=renderRequested=true;}
+            }
+            if (sceneSelectionKind == viewer::SceneItemKind::Mesh || sceneSelectionKind == viewer::SceneItemKind::Material) {
+                ImGui::TextWrapped("%s", selectedTreeEntity.c_str());
+                for (auto [id, mesh, transform, tag] : scene->getAllEntitiesWith<Pale::MeshComponent, Pale::TransformComponent, Pale::TagComponent>().each()) {
+                    if (tag.tag != selectedTreeEntity) continue;
+                    ImGui::SeparatorText("Transform");
+                    ImGui::Text("Location  %.3f  %.3f  %.3f", transform.translation.x, transform.translation.y, transform.translation.z);
+                    ImGui::Text("Rotation  %.1f  %.1f  %.1f", transform.rotationEuler.x, transform.rotationEuler.y, transform.rotationEuler.z);
+                    ImGui::Text("Scale     %.3f  %.3f  %.3f", transform.scale.x, transform.scale.y, transform.scale.z);
+                    Pale::Entity entity(id, scene.get());
+                    if (entity.hasComponent<Pale::MaterialComponent>()) {
+                        auto material = assetManager.get<Pale::Material>(entity.getComponent<Pale::MaterialComponent>().materialID);
+                        if (material) { ImGui::SeparatorText("Material"); ImGui::Text("Albedo  %.3f  %.3f  %.3f", material->baseColor.x, material->baseColor.y, material->baseColor.z); }
+                    }
+                }
+                ImGui::TextDisabled("Source mesh properties");
+            }
+            if (openLightControls) ImGui::SetNextItemOpen(true);
+            if ((sceneSelectionKind == viewer::SceneItemKind::Emitter || sceneSelectionKind == viewer::SceneItemKind::SurfelEmitter) && ImGui::CollapsingHeader("Emitters", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ScopedSectionIndent sectionIndent;
-                ImGui::Text("Area lights: %zu", areaLights.size());
+                if (openLightControls) ImGui::SetScrollHereY(0.15f);
+
+                ImGui::TextWrapped("%s",modelReadOnly() ? "Changing a property creates a private editable snapshot." : "Snapshot edits are independent of training.");
+                if (sceneSelectionKind == viewer::SceneItemKind::Emitter) {
+                ImGui::TextDisabled("AREA EMITTER");
                 if (areaLights.empty()) {
                     ImGui::TextWrapped("No editable mesh area lights in the scene");
                 } else {
                     const std::string selectedLightName = entityName(selectedLight);
-                    if (ImGui::BeginCombo("Selected light", selectedLightName.c_str())) {
+                    ImGui::SetNextItemWidth(-1);
+                    if (ImGui::BeginCombo("##SelectedLight", selectedLightName.c_str())) {
                         for (std::size_t lightIndex = 0; lightIndex < areaLights.size(); ++lightIndex) {
                             const bool selected = static_cast<int>(lightIndex) == selectedLightIndex;
                             const std::string label =
@@ -5564,6 +6822,7 @@ int main(int argc, char** argv) {
                             if (ImGui::Selectable(label.c_str(), selected)) {
                                 selectedLightIndex = static_cast<int>(lightIndex);
                                 selectedLight = areaLights[lightIndex];
+                                selectedSurfelEditorIndex = -1;
                             }
                             if (selected) {
                                 ImGui::SetItemDefaultFocus();
@@ -5572,17 +6831,18 @@ int main(int argc, char** argv) {
                         ImGui::EndCombo();
                     }
 
+
                     bool lightChanged = false;
                     auto& transform = selectedLight.getComponent<Pale::TransformComponent>();
-                    if (ImGui::DragFloat3("Position", &transform.translation.x, 0.01f, -10000.0f, 10000.0f, "%.3f")) {
+                    if (viewer::ui::float3("Location", &transform.translation.x, 0.01f, -10000.0f, 10000.0f, "%.3f")) {
                         lightChanged = true;
                     }
                     glm::vec3 rotationEuler = transform.rotationEuler;
-                    if (ImGui::DragFloat3("Rotation", &rotationEuler.x, 0.25f, -360.0f, 360.0f, "%.2f deg")) {
+                    if (viewer::ui::float3("Rotation", &rotationEuler.x, 0.25f, -360.0f, 360.0f, "%.1f")) {
                         transform.setRotationEuler(rotationEuler);
                         lightChanged = true;
                     }
-                    if (ImGui::DragFloat3("Scale", &transform.scale.x, 0.01f, 0.001f, 10000.0f, "%.3f")) {
+                    if (viewer::ui::float3("Scale", &transform.scale.x, 0.01f, 0.001f, 10000.0f, "%.3f")) {
                         transform.scale = glm::max(transform.scale, glm::vec3(0.001f));
                         lightChanged = true;
                     }
@@ -5596,14 +6856,14 @@ int main(int argc, char** argv) {
 
                     glm::vec3 emissionColor = lightMaterial ? lightMaterial->baseColor : areaLight.radiance;
                     float emissionPower = lightMaterial ? lightMaterial->power : areaLight.flux;
-                    if (ImGui::ColorEdit3("Emission color", &emissionColor.x)) {
+                    if (viewer::ui::color3("Color", &emissionColor.x)) {
                         areaLight.radiance = emissionColor;
                         if (lightMaterial) {
                             lightMaterial->baseColor = emissionColor;
                         }
                         lightChanged = true;
                     }
-                    if (ImGui::DragFloat("Emission power", &emissionPower, 0.1f, 0.0f, 1000000.0f, "%.3f")) {
+                    if (viewer::ui::scalar("Power", &emissionPower, 0.1f, 0.0f, 1000000.0f, "%.3f")) {
                         emissionPower = std::max(emissionPower, 0.0f);
                         areaLight.flux = emissionPower;
                         if (lightMaterial) {
@@ -5615,35 +6875,15 @@ int main(int argc, char** argv) {
                         ImGui::TextWrapped("Selected light has no editable emissive material");
                     }
 
-                    ImGui::Checkbox("Show light gizmo", &showLightGizmo);
-                    if (ImGui::RadioButton("Move", lightGizmoOperation == ImGuizmo::TRANSLATE)) {
-                        lightGizmoOperation = ImGuizmo::TRANSLATE;
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::RadioButton("Rotate", lightGizmoOperation == ImGuizmo::ROTATE)) {
-                        lightGizmoOperation = ImGuizmo::ROTATE;
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::RadioButton("Scale", lightGizmoOperation == ImGuizmo::SCALE)) {
-                        lightGizmoOperation = ImGuizmo::SCALE;
-                    }
-                    if (lightGizmoOperation != ImGuizmo::SCALE) {
-                        if (ImGui::RadioButton("Local", lightGizmoMode == ImGuizmo::LOCAL)) {
-                            lightGizmoMode = ImGuizmo::LOCAL;
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::RadioButton("World", lightGizmoMode == ImGuizmo::WORLD)) {
-                            lightGizmoMode = ImGuizmo::WORLD;
-                        }
-                    }
 
                     if (lightChanged) {
-                        rebuildSceneGpu();
+                        beginSnapshotEdit();rebuildSceneGpu();
                     }
                 }
 
-                ImGui::Separator();
-                ImGui::Text("Surfel lights");
+                }
+                if (sceneSelectionKind == viewer::SceneItemKind::SurfelEmitter) {
+                ImGui::SeparatorText("Surfel emitter");
                 const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
                 if (!pointCloudHandle) {
                     ImGui::TextWrapped("No point cloud loaded");
@@ -5698,6 +6938,7 @@ int main(int argc, char** argv) {
                                 ImGui::EndCombo();
                             }
 
+
 	                            if (selectedPowerIndex < pointGeometry.positions.size()) {
 	                                glm::vec3& position = pointGeometry.positions[selectedPowerIndex];
 	                                if (ImGui::DragFloat3("Surfel position", &position.x, 0.01f, -10000.0f, 10000.0f, "%.3f")) {
@@ -5737,26 +6978,12 @@ int main(int argc, char** argv) {
 	                                surfelLightStatus =
 	                                    "Removed surfel " + std::to_string(selectedPowerIndex) + " from lights";
                             }
-                            ImGui::Checkbox("Show surfel gizmo", &showSurfelGizmo);
-                            if (showSurfelGizmo) {
-                                if (ImGui::RadioButton("Move##surfel_gizmo", surfelGizmoOperation == ImGuizmo::TRANSLATE)) {
-                                    surfelGizmoOperation = ImGuizmo::TRANSLATE;
-                                }
-                                ImGui::SameLine();
-                                if (ImGui::RadioButton("Rotate##surfel_gizmo", surfelGizmoOperation == ImGuizmo::ROTATE)) {
-                                    surfelGizmoOperation = ImGuizmo::ROTATE;
-                                }
-                                if (ImGui::RadioButton("Local##surfel_gizmo", surfelGizmoMode == ImGuizmo::LOCAL)) {
-                                    surfelGizmoMode = ImGuizmo::LOCAL;
-                                }
-                                ImGui::SameLine();
-                                if (ImGui::RadioButton("World##surfel_gizmo", surfelGizmoMode == ImGuizmo::WORLD)) {
-                                    surfelGizmoMode = ImGuizmo::WORLD;
-                                }
-                            }
+
+
                         }
 
                         ImGui::Separator();
+
                         if (pointGeometry.powers.empty()) {
                             ImGui::TextWrapped("Point cloud has no power attribute values");
                         } else if (zeroPowerSurfels.empty()) {
@@ -5816,57 +7043,35 @@ int main(int argc, char** argv) {
                         if (!surfelLightStatus.empty()) {
                             ImGui::TextWrapped("%s", surfelLightStatus.c_str());
                         }
+
                         if (surfelChanged) {
-                            rebuildSceneGpu();
+                            beginSnapshotEdit();rebuildSceneGpu();
                         }
                     }
                 }
+                }
             }
 
-            if (ImGui::CollapsingHeader("Surfel editor")) {
+            openLightControls = false;
+            if (openSurfelControls) ImGui::SetNextItemOpen(true);
+            if ((sceneSelectionKind == viewer::SceneItemKind::Geometry || sceneSelectionKind == viewer::SceneItemKind::SurfelEmitter) && ImGui::CollapsingHeader("Surfel properties", ImGuiTreeNodeFlags_DefaultOpen)) {
                 const ScopedSectionIndent sectionIndent;
                 const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
                 const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
                     pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
 
-                if (ImGui::Button("Save as startup default")) {
-                    std::string saveFailure;
-                    if (pointCloudAsset &&
-                        writePointCloudPly(
-                            *pointCloudAsset,
-                            savedInitialPointCloudPath,
-                            saveFailure)) {
-                        surfelEditorStatus =
-                            "Saved startup default to " + savedInitialPointCloudPath.string();
-                    } else {
-                        surfelEditorStatus = "Could not save startup default: " +
-                                             (saveFailure.empty() ? "no point cloud is loaded" : saveFailure);
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Reset to original")) {
-                    if (replacePointCloud(originalInitialPointCloudPath)) {
-                        std::error_code removeError;
-                        std::filesystem::remove(savedInitialPointCloudPath, removeError);
-                        surfelEditorStatus = removeError
-                            ? "Reloaded the original PLY, but could not clear the saved default: " +
-                                  removeError.message()
-                            : "Reloaded the original PLY and cleared the saved startup default";
-                        selectedSurfelEditorIndex = -1;
-                    } else {
-                        surfelEditorStatus = "Could not reload the original PLY: " + pointCloudStatus;
-                    }
-                }
-                ImGui::TextDisabled(
-                    "Save is loaded automatically next run; reset clears it and reloads %s",
-                    originalInitialPointCloudPath.filename().string().c_str());
+                if (openSurfelControls) ImGui::SetScrollHereY(0.15f);
+                ImGui::TextWrapped("Select a surfel in the viewport to inspect geometry and material.");
+                if(modelReadOnly())ImGui::TextWrapped("Changing a property creates a private editable snapshot; training continues.");
 
                 if (!pointCloudAsset || countSurfels(*pointCloudAsset) == 0u) {
                     ImGui::TextWrapped("No editable surfels are loaded");
                     selectedSurfelEditorIndex = -1;
                 } else {
                     std::size_t surfelCount = countSurfels(*pointCloudAsset);
+
                     if (ImGui::Button("Add surfel")) {
+                        beginSnapshotEdit();
                         Pale::PointGeometry& pointGeometry = pointCloudAsset->points.back();
                         const std::size_t previousBlockCount = pointGeometry.positions.size();
                         const float defaultScale = std::clamp(bounds.radius * 0.12f, 0.05f, 1.0f);
@@ -5907,6 +7112,7 @@ int main(int argc, char** argv) {
                     ImGui::SameLine();
                     ImGui::TextDisabled("New surfels face the current viewport");
 
+
                     selectedSurfelEditorIndex = std::clamp(
                         selectedSurfelEditorIndex,
                         -1,
@@ -5936,6 +7142,7 @@ int main(int argc, char** argv) {
                         ImGui::TextWrapped(selectedSurfelEditorIndex < 0 ? "No surfel selected" : "The selected surfel could not be resolved");
                     } else {
                         Pale::PointGeometry& pointGeometry = *selectedPointGeometry;
+
 
                         if (localSurfelIndex < pointGeometry.positions.size()) {
                             glm::vec3& position = pointGeometry.positions[localSurfelIndex];
@@ -6039,10 +7246,12 @@ int main(int argc, char** argv) {
                         }
 
                         if (surfelChanged) {
+                            beginSnapshotEdit();
                             surfelEditorStatus =
                                 "Updated surfel " + std::to_string(selectedSurfelEditorIndex);
                             rebuildSceneGpu();
                         }
+
                     }
 
                     if (!surfelEditorStatus.empty()) {
@@ -6052,429 +7261,27 @@ int main(int argc, char** argv) {
             }
 
             ImGui::Spacing();
-            ImGui::SeparatorText("Diagnostics");
-            if (ImGui::CollapsingHeader("Display diagnostics")) {
+            openSurfelControls = false;
+            }
+            if (inspectorPage == viewer::ui::Inspector::Advanced) {
+            ImGui::SeparatorText("Advanced");
+            if (ImGui::CollapsingHeader("Renderer debug")) {
                 const ScopedSectionIndent sectionIndent;
-                if (viewImageMode == ViewImageMode::DepthDistortion ||
-                    viewImageMode == ViewImageMode::DepthPositionGradient) {
-                    ImGui::TextWrapped("Preview uses unit loss weight; colors rescale to each frame.");
-                }
-                if (viewImageMode == ViewImageMode::TerminalTransmittance) {
-                    if (ImGui::SliderFloat("Target attenuation", &terminalTargetAttenuation, 0.8f, 1.0f, "%.2f")) {
-                        debugDisplayBuffers.terminalTransmittanceValid = false;
-                        updateDisplayTexture();
-                    }
-                    ImGui::TextWrapped("Camera rays only. Loss = max(0, target - attenuation)^2. Empty rays and rays meeting the target are black. Magenta means traversal limit reached; escape is unknown.");
-                    ImGui::Text("Fixed loss color range: 0 to %.3f", terminalTargetAttenuation * terminalTargetAttenuation);
-                    ImGui::TextWrapped("Preview only: no opacity or training updates. Uses surfel footprints and slab compositing.");
-                }
-                int distortionDepthMode = settings.depthDistortionWorldSpace ? (settings.depthDistortionSquared ? 1 : 0) : 2;
-                const char* distortionDepthModes[] = {"World distance (absolute)", "World distance (squared)", "Normalized depth (squared)"};
-                if (ImGui::Combo("Depth distortion", &distortionDepthMode, distortionDepthModes, 3)) {
-                    settings.depthDistortionWorldSpace = distortionDepthMode != 2;
-                    settings.depthDistortionSquared = distortionDepthMode == 1;
+                int integrator = settings.integratorKind == Pale::IntegratorKind::photonMapping
+                                     ? 2
+                                     : settings.integratorKind == Pale::IntegratorKind::lightTracing
+                                           ? 1
+                                           : 0;
+                const char* integrators[] = {"Cylinder ray", "Light tracing", "Photon mapping"};
+                if (ImGui::Combo("Integrator", &integrator, integrators, 3)) {
+                    settings.integratorKind =
+                        integrator == 2 ? Pale::IntegratorKind::photonMapping
+                                        : integrator == 1 ? Pale::IntegratorKind::lightTracing
+                                                          : Pale::IntegratorKind::lightTracingCylinderRay;
+                    tracerDirty = true;
                     renderRequested = true;
                 }
 
-                if (viewImageMode == ViewImageMode::AdjointDerivative) {
-                    bool changed = ImGui::Combo("Derivative property", &viewerAdjointProperty,
-                        adjointProperties, static_cast<int>(std::size(adjointProperties)));
-                    changed |= ImGui::Checkbox("All surfels (common change)", &viewerAdjointAllSurfels);
-                    if (!viewerAdjointAllSurfels) {
-                        changed |= ImGui::InputInt("Global surfel index", &viewerAdjointSurfelIndex);
-                        viewerAdjointSurfelIndex = std::clamp(viewerAdjointSurfelIndex, 0,
-                            std::max(0, static_cast<int>(sceneGpu.pointCount) - 1));
-                        std::optional<uint32_t> pickedGlobalIndex;
-                        if (const auto handle = firstPointCloudHandle(scene);
-                            handle && selectedSurfelEditorIndex >= 0) {
-                            const auto found = buildProducts.pointCloudIndexById.find(*handle);
-                            if (found != buildProducts.pointCloudIndexById.end()) {
-                                const auto& range = buildProducts.pointCloudRanges.at(found->second);
-                                if (static_cast<uint32_t>(selectedSurfelEditorIndex) < range.pointCount)
-                                    pickedGlobalIndex = range.firstPoint + selectedSurfelEditorIndex;
-                            }
-                        }
-                        ImGui::BeginDisabled(!pickedGlobalIndex);
-                        if (ImGui::Button("Use picked surfel") && pickedGlobalIndex) {
-                            viewerAdjointSurfelIndex = static_cast<int>(*pickedGlobalIndex);
-                            changed = true;
-                        }
-                        ImGui::EndDisabled();
-                        ImGui::TextDisabled("Click the viewport to pick, then use the picked surfel");
-                    }
-                    changed |= ImGui::SliderInt("Derivative adjoint SPP", &viewerAdjointSamplesPerPixel,
-                        1, 256, "%d", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-                    ImGui::Text("Fixed: qNull %.3f, qReflect %.3f",
-                        settings.sampling.qNull, settings.sampling.qReflect);
-                    changed |= ImGui::InputInt("Adjoint seed", &viewerAdjointSeed);
-                    viewerAdjointSeed = std::max(0, viewerAdjointSeed);
-                    if (ImGui::Button("Resample adjoint")) {
-                        viewerAdjointSeed = (viewerAdjointSeed + 1u) % 2147483647u;
-                        changed = true;
-                    }
-                    if (changed) renderRequested = true;
-                    if (ImGui::DragFloat("Full color at |derivative|", &viewerAdjointColorMaximum,
-                        0.001f, 1.0e-10f, 1.0e10f, "%.6g", ImGuiSliderFlags_Logarithmic)) {
-                        viewerAdjointColorMaximum = std::max(1.0e-10f, viewerAdjointColorMaximum);
-                        updateDisplayTexture();
-                    }
-                    if (ImGui::Button("Fit derivative colors") && viewerAdjointImageValid) {
-                        viewerAdjointColorMaximum = 1.0e-10f;
-                        for (float g : viewerAdjointImage) if (std::isfinite(g))
-                            viewerAdjointColorMaximum = std::max(viewerAdjointColorMaximum, std::abs(g));
-                        updateDisplayTexture();
-                    }
-                    ImGui::TextWrapped("Red: increasing this property increases linear R+G+B. "
-                        "Blue: decreases it. White: zero. Colors stay fixed across SPP and seed changes.");
-                    ImGui::TextWrapped("All surfels sums the derivative for the same property change everywhere. "
-                        "Rotation uses local tangent-frame radians; albedo changes the red channel only.");
-                    ImGui::Text("Adjoint: %.3f ms", lastViewerAdjointMs);
-                    ImGui::TextWrapped("%s", viewerAdjointStatus.c_str());
-                    if (settings.rendererDebugShareLocalLayerDirectLighting)
-                        ImGui::TextWrapped("Shared lighting is enabled: this displays its existing detached-lighting VJP.");
-                }
-                if (ImGui::CollapsingHeader("Median depth settings")) {
-                    const ScopedSectionIndent sectionIndent;
-                    if (ImGui::SliderFloat("Median depth threshold", &settings.medianDepthThreshold,
-                                           0.001f, 0.999f, "%.3f", ImGuiSliderFlags_AlwaysClamp)) {
-                        settings.medianDepthThreshold = std::clamp(settings.medianDepthThreshold, 0.001f, 0.999f);
-                        renderRequested = true;
-                    }
-                    ImGui::TextWrapped("Accumulated opacity needed to select depth. Lower values select earlier hits.");
-                    if (ImGui::Checkbox("Retain last accepted depth", &settings.medianDepthRetainLastHit)) {
-                        renderRequested = true;
-                    }
-                    ImGui::TextWrapped("If the threshold is never reached, use the last accepted surface hit. Empty rays still have no depth.");
-                    ImGui::TextDisabled("The existing traversal-limit fallback remains active.");
-                }
-                if (viewImageMode == ViewImageMode::IntraSlabDepth ||
-                    viewImageMode == ViewImageMode::IntraSlabRayDepth) {
-                    ImGui::TextWrapped("Both slab losses use the same logarithmic color scale and unit weight.");
-                    ImGui::TextWrapped("Mean ray depth: equal-weight squared hit-depth differences from the slab mean.");
-                    if (settings.sharedHeightEnabled) {
-                        ImGui::TextWrapped("Slab loss previews are unavailable while Shared surface experiment is enabled.");
-                    } else if (debugDisplayBuffers.intraSlabDepthValid) {
-                        ImGui::Text("Mean per pixel: plane %.6g | ray %.6g",
-                            debugDisplayBuffers.slabPlaneLossMean, debugDisplayBuffers.slabRayLossMean);
-                        ImGui::Text("Shared color range: 0 to %.6g", debugDisplayBuffers.slabLossColorMaximum);
-                    }
-                }
-                if (viewImageMode == ViewImageMode::MeanDepth ||
-                    viewImageMode == ViewImageMode::MedianDepth ||
-                    viewImageMode == ViewImageMode::DepthDistortion ||
-                    viewImageMode == ViewImageMode::IntraSlabDepth ||
-                    viewImageMode == ViewImageMode::IntraSlabRayDepth ||
-                    viewImageMode == ViewImageMode::PositionPrimitiveScore ||
-                    viewImageMode == ViewImageMode::TerminalTransmittance ||
-                    viewImageMode == ViewImageMode::SurfelDensity ||
-                    viewImageMode == ViewImageMode::SurfaceOverlap ||
-                    viewImageMode == ViewImageMode::TargetLoss ||
-                    viewImageMode == ViewImageMode::DepthPositionGradient ||
-                    viewImageMode == ViewImageMode::NormalPositionGradient ||
-                    viewImageMode == ViewImageMode::IntraSlabPositionGradient) {
-                    int scalarColorMapIndex = static_cast<int>(scalarColorMap);
-                    const char* scalarColorMaps[] = {"Viridis", "Jet"};
-                    if (ImGui::Combo(
-                            "Scalar colormap",
-                            &scalarColorMapIndex,
-                            scalarColorMaps,
-                            IM_ARRAYSIZE(scalarColorMaps))) {
-                        scalarColorMap = static_cast<ScalarColorMap>(scalarColorMapIndex);
-                        updateDisplayTexture();
-                    }
-                }
-                if (viewImageMode == ViewImageMode::SurfaceOverlap) {
-                    const char* metrics[] = {"Mean slab members", "Slab overflow footprint (%)", "Center slab members"};
-                    bool refreshMap = ImGui::Combo("Overlap metric", &surfaceOverlapMetric, metrics, IM_ARRAYSIZE(metrics));
-                    refreshMap |= ImGui::Checkbox("Normal-distance overlap", &settings.surfaceOverlapNormalDistance);
-                    if (ImGui::DragFloat("Overlap distance tolerance", &settings.surfaceOverlapDepthTolerance,
-                            0.0001f, 1.0e-5f, 10.0f, "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
-                        settings.surfaceOverlapDepthTolerance = std::max(settings.surfaceOverlapDepthTolerance, 1.0e-5f);
-                        refreshMap = true;
-                    }
-                    ImGui::TextWrapped(settings.surfaceOverlapNormalDistance
-                        ? "Symmetric distance along each surfel's normal. Includes neighbors in front and behind; ray intervals widen at grazing angles."
-                        : "Symmetric distance along each camera ray. At grazing angles, the same normal separation can fall outside the interval.");
-                    const float normalCosine = Pale::rendererDebugLocalLayerNormalCosineThreshold(settings);
-                    const auto memberLimit = Pale::rendererDebugMaxLocalSurfelHits(settings);
-                    ImGui::Text("Inherited normal cosine: %.3f (%.1f degrees)",
-                        normalCosine, glm::degrees(std::acos(normalCosine)));
-                    ImGui::Text("Overflow: more than %u total members (including anchor)", memberLimit);
-                    ImGui::TextDisabled("Overlap distance is independent of Surfel traversal. Alpha filtering is disabled.");
-                    if (viewImageMode == ViewImageMode::SurfaceOverlap && surfaceOverlapMetric != kSlabOverflowMetric) {
-                        refreshMap |= ImGui::SliderFloat("Overlap color maximum (members)",
-                            &surfaceOverlapColorMaximum, 1.0f, 128.0f, "%.1f");
-                        surfaceOverlapColorMaximum = std::max(surfaceOverlapColorMaximum, 1.0f);
-                    }
-                    if (refreshMap) {
-                        debugDisplayBuffers.surfaceOverlapValid = false;
-                        renderRequested = true;
-                    }
-                    ImGui::Text("Observed surfels: %zu   peak mean slab members: %.2f",
-                        surfaceOverlapEligibleCount, surfaceOverlapPeak);
-                    ImGui::Text("64 samples/surfel x %zu cameras; last calculation: %.1f ms",
-                        surfaceOverlapViews.size(), surfaceOverlapComputeMs);
-                    ImGui::TextWrapped("Counts full-footprint intersections in a slab anchored at each sample, using the renderer's "
-                        "ray-facing normal test and the overlap distance above. Counts include the anchor, exclude lights, and continue beyond the member limit.");
-                    ImGui::TextWrapped("Overflow is the percentage of in-frame sample/camera pairs exceeding the slab capacity. "
-                        "Color range: 0%% to 100%%. Member counts are averaged over those pairs.");
-                    ImGui::TextWrapped(buildProducts.cameraGPUs.empty()
-                        ? "No saved scene cameras: using the displayed camera; scores change when it moves."
-                        : "Uses saved scene cameras; orbiting the viewer only changes which surfel scores are displayed.");
-                    ImGui::TextWrapped("Potential membership only: hidden surfaces are included; occlusion, transmission and ray-event limits "
-                        "are not applied. Black means no observed surfel. Training uses the same scoring rule with its own overlap settings; viewer changes are preview-only.");
-                }
-                if (viewImageMode == ViewImageMode::TransportScore) {
-                    if (ImGui::Checkbox("Use saved run settings", &transportUseSavedSettings)) {
-                        transportDirty = true; renderRequested = true;
-                    }
-                    if (ImGui::Button("Recompute contributions")) { transportDirty = true; renderRequested = true; }
-                    ImGui::TextWrapped("%s", transportStatus.c_str());
-                    bool recolor = ImGui::Combo("Score component", &transportComponent, "Camera + shadow\0Camera only\0Shadow only\0");
-                    const char* sourceLabel = transportSource < 0 || transportSource >= int(transportViews.size()) ? "All training cameras (one cycle)" : transportViews[transportSource].name.c_str();
-                    if (ImGui::BeginCombo("Score source", sourceLabel)) {
-                        if (ImGui::Selectable("All training cameras (one cycle)", transportSource < 0)) { transportSource = -1; recolor = true; }
-                        for (std::size_t i = 0; i < transportViews.size(); ++i) {
-                            ImGui::PushID(static_cast<int>(i));
-                            const auto label = transportViews[i].name + (transportViews[i].training ? " [training]" : " [held out]");
-                            if (ImGui::Selectable(label.c_str(), transportSource == int(i))) { transportSource = int(i); recolor = true; }
-                            ImGui::PopID();
-                        }
-                        ImGui::EndCombo();
-                    }
-                    recolor |= ImGui::DragFloat("Passing score", &transportThreshold, 0.1f, 0.001f, 1e9f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
-                    if (ImGui::Button("Reset passing score to 10")) { transportThreshold = 10.0f; recolor = true; }
-                    if (recolor) { refreshTransportSelection(); updateDisplayTexture(); }
-                    ImGui::Checkbox("X-ray affected centers", &transportXray);
-                    ImGui::Text("Below threshold: %zu surfels", transportAffected.size());
-                    const auto trainingCameras = std::count_if(transportViews.begin(), transportViews.end(),
-                        [](const auto& view) { return view.training; });
-                    ImGui::Text("Training cameras: %zu / %zu", static_cast<std::size_t>(trainingCameras), transportViews.size());
-                    if (!transportViews.empty() && trainingCameras == 0)
-                        ImGui::TextWrapped("No cameras are marked for training: the training total is zero. Select an individual camera to inspect its contributions.");
-                    ImGui::TextWrapped("Pink: score < threshold. Green: score >= threshold. Camera + shadow summed over training cameras matches the pruning score. Preview only; no surfels are removed.");
-                    ImGui::TextWrapped("Scores use incoming transmission and effective opacity. Hidden surfels can have zero support. X-ray shows up to 20,000 affected centers, including occluded ones; click a marker to inspect it.");
-                    if (ImGui::Button("Select next affected surfel")) {
-                        const auto handle = firstPointCloudHandle(scene);
-                        const auto found = handle ? buildProducts.pointCloudIndexById.find(*handle) : buildProducts.pointCloudIndexById.end();
-                        if (found != buildProducts.pointCloudIndexById.end()) {
-                            const auto& range = buildProducts.pointCloudRanges.at(found->second);
-                            int first = -1, next = -1;
-                            for (const auto primitive : transportAffected) {
-                                if (primitive < range.firstPoint || primitive - range.firstPoint >= range.pointCount) continue;
-                                const int local = static_cast<int>(primitive - range.firstPoint);
-                                if (first < 0) first = local;
-                                if (local > selectedSurfelEditorIndex) { next = local; break; }
-                            }
-                            selectedSurfelEditorIndex = next >= 0 ? next : first;
-                        }
-                    }
-                    if (selectedSurfelEditorIndex >= 0) {
-                        const auto id = static_cast<std::size_t>(selectedSurfelEditorIndex);
-                        // Optimization snapshots contain one editable point cloud; the score buffers use global point indices.
-                        const auto handle = firstPointCloudHandle(scene);
-                        const auto found = handle ? buildProducts.pointCloudIndexById.find(*handle) : buildProducts.pointCloudIndexById.end();
-                        if (found != buildProducts.pointCloudIndexById.end()) {
-                            const auto& range = buildProducts.pointCloudRanges.at(found->second);
-                            const auto primitive = range.firstPoint + id;
-                            if (id < range.pointCount && primitive < transportScores.size()) {
-                                ImGui::Text("Selected surfel %d: %.6g", selectedSurfelEditorIndex, transportScores[primitive]);
-                                if (ImGui::BeginTable("Contribution breakdown", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_ScrollY, ImVec2(0, 160))) {
-                                    ImGui::TableSetupColumn("Camera"); ImGui::TableSetupColumn("Camera score"); ImGui::TableSetupColumn("Shadow score"); ImGui::TableHeadersRow();
-                                    for (const auto& view : transportViews) {
-                                        ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::TextUnformatted(view.name.c_str());
-                                        ImGui::TableNextColumn(); ImGui::Text("%.6g", view.camera[primitive]);
-                                        ImGui::TableNextColumn(); ImGui::Text("%.6g", view.shadow[primitive]);
-                                    }
-                                    ImGui::EndTable();
-                                }
-                            }
-                        }
-                    }
-                }
-                if (viewImageMode == ViewImageMode::TargetLoss) {
-                    ImGui::InputText("Target dataset / images", targetDatasetBuffer.data(), targetDatasetBuffer.size());
-                    ImGui::Combo("Target color space", &targetColorSpace, "Linear\0sRGB\0");
-                    if (ImGui::Button("Apply targets")) {
-                        targetDatasetManual = true;
-                        targetLossDirty = true;
-                        renderRequested = true;
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Discover from loaded run")) {
-                        targetDatasetManual = false;
-                        targetLossDirty = true;
-                        renderRequested = true;
-                    }
-                    if (ImGui::Button("Reproject target loss")) {
-                        targetLossDirty = true;
-                        renderRequested = true;
-                    }
-                    const char* cameraLabel = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
-                        ? targetLossViews[targetLossCamera].cameraName.c_str() : "All target images";
-                    bool recolor = false;
-                    if (ImGui::BeginCombo("Loss source camera", cameraLabel)) {
-                        if (ImGui::Selectable("All target images", targetLossCamera == -1)) { targetLossCamera = -1; recolor = true; }
-                        for (std::size_t i = 0; i < targetLossViews.size(); ++i) {
-                            if (ImGui::Selectable(targetLossViews[i].cameraName.c_str(), targetLossCamera == int(i))) {
-                                targetLossCamera = int(i);
-                                recolor = true;
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    if (targetLossCamera == -1)
-                        recolor |= ImGui::Combo("Across cameras", &targetLossAggregation, "Visibility-weighted mean\0Worst camera mean\0");
-                    recolor |= ImGui::DragFloat("Loss color maximum", &targetLossColorMaximum, 0.0001f,
-                        1.0e-8f, 1.0e8f, "%.6g", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp);
-                    recolor |= ImGui::Checkbox("Logarithmic loss colors", &targetLossLogColors);
-                    if (ImGui::Button("Fit loss colors to peak")) {
-                        const auto& scores = targetLossCamera >= 0 && targetLossCamera < int(targetLossViews.size())
-                            ? targetLossViews[targetLossCamera].mean : (targetLossAggregation == 0 ? targetLossMean : targetLossWorst);
-                        targetLossColorMaximum = 1.0e-8f;
-                        for (float value : scores) if (std::isfinite(value)) targetLossColorMaximum = std::max(targetLossColorMaximum, value);
-                        recolor = true;
-                    }
-                    if (recolor) updateDisplayTexture();
-                    double loss = 0, unassigned = 0;
-                    std::size_t pixelsWithoutSurfels = 0, sourcePixels = 0, sourceViews = 0;
-                    for (std::size_t i = 0; i < targetLossViews.size(); ++i) {
-                        if (targetLossCamera >= 0 && int(i) != targetLossCamera) continue;
-                        const auto& view = targetLossViews[i];
-                        loss += view.imageMean;
-                        unassigned += view.unassignedMean;
-                        pixelsWithoutSurfels += view.unassignedPixels;
-                        sourcePixels += view.pixelCount;
-                        ++sourceViews;
-                    }
-                    if (sourceViews) {
-                        ImGui::Text("Image half-MSE: %.6g   unassigned: %.6g", loss / sourceViews, unassigned / sourceViews);
-                        ImGui::Text("Pixels without a surfel contribution: %zu / %zu", pixelsWithoutSurfels, sourcePixels);
-                    }
-                    ImGui::TextWrapped("%s", targetLossStatus.c_str());
-                    ImGui::Text("Last projection: %.1f ms", targetLossComputeMs);
-                    ImGui::TextWrapped("Linear RGB half-squared error, weighted by slab opacity and transmission onto each surfel. "
-                        "Gray: no target observation. Black: background. Colors remain fixed while orbiting.");
-                    ImGui::TextWrapped("Completely missing geometry has no surfel to color; its image loss is included in unassigned above. "
-                        "This is image-error attribution, not a geometry gradient or a geometric regularizer.");
-                    ImGui::TextWrapped("Projection refreshes after geometry or renderer changes. Exposure and display gamma do not affect the linear loss. "
-                        "Targets must match scene camera names and resolution; alpha is ignored, as in training.");
-                }
-                if (viewImageMode == ViewImageMode::SurfelDensity) {
-                    if (ImGui::SliderInt("Density grid (cells per axis)", &densityGridSize, 8, 256)) {
-                        densityGridSize = std::clamp(densityGridSize, 8, 256);
-                        debugDisplayBuffers.surfelDensityValid = false;
-                        updateDisplayTexture();
-                    }
-                    bool recolorDensity = ImGui::SliderFloat(
-                        "Density color maximum (surfels/cell)", &densityColorMaximum,
-                        1.0f, 10000.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-                    recolorDensity |= ImGui::Checkbox("Logarithmic density colors", &densityLogScale);
-                    const auto& density = debugDisplayBuffers.surfelDensity;
-                    if (ImGui::Button("Fit density colors to current peak")) {
-                        densityColorMaximum = static_cast<float>(std::max(density.peak, 1u));
-                        recolorDensity = true;
-                    }
-                    if (recolorDensity) {
-                        densityColorMaximum = std::max(densityColorMaximum, 1.0f);
-                        updateDisplayTexture();
-                    }
-                    ImGui::Text("Non-emissive surfels: %zu   centers in view: %zu", density.total, density.inView);
-                    ImGui::Text("Peak: %u surfels/cell   grid: %d x %d", density.peak, density.gridSize, density.gridSize);
-                    ImGui::TextWrapped(
-                        "Counts all projected centers, including hidden and transparent surfels; lights are excluded. "
-                        "Black means an empty cell. Colors saturate at the selected maximum.");
-                    ImGui::TextWrapped(
-                        "Compare snapshots with the same camera, grid and color maximum. "
-                        "The scale stays fixed until you change it. This is screen-space concentration, not world-space density.");
-                }
-                if (viewImageMode == ViewImageMode::PositionPrimitiveScore) {
-                    if (!debugDisplayBuffers.positionPrimitiveMetadataAvailable) {
-                        ImGui::TextWrapped(
-                            "This PLY does not contain saved position densification statistics. "
-                            "Run optimization again to generate a trustworthy visualization.");
-                    } else {
-                        const float savedThreshold =
-                            debugDisplayBuffers.positionPrimitiveSplitThreshold;
-                        ImGui::Text(
-                            "Saved threshold: %.9g",
-                            savedThreshold);
-                        const float sliderMinimum = static_cast<float>(std::max(
-                            static_cast<double>(std::numeric_limits<float>::min()),
-                            static_cast<double>(std::min(savedThreshold, kPositionDefaultThreshold)) * 1.0e-3));
-                        const float sliderMaximum = static_cast<float>(std::min(
-                            static_cast<double>(std::numeric_limits<float>::max()),
-                            static_cast<double>(std::max(savedThreshold, kPositionDefaultThreshold)) * 1.0e3));
-                        if (ImGui::SliderFloat(
-                                "What-if position threshold",
-                                &positionWhatIfDisplayThreshold,
-                                sliderMinimum,
-                                sliderMaximum,
-                                "%.9g",
-                                ImGuiSliderFlags_Logarithmic)) {
-                            positionWhatIfDisplayThreshold = std::clamp(
-                                positionWhatIfDisplayThreshold,
-                                sliderMinimum,
-                                sliderMaximum);
-                            updateDisplayTexture();
-                        }
-                        if (ImGui::Button("Use saved##position-threshold")) {
-                            positionWhatIfDisplayThreshold = savedThreshold;
-                            updateDisplayTexture();
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Use config default##position-threshold")) {
-                            positionWhatIfDisplayThreshold = kPositionDefaultThreshold;
-                            updateDisplayTexture();
-                        }
-                        ImGui::TextDisabled(
-                            "Below: saved G_i / selected threshold; magenta: at/above boundary");
-
-                        const std::size_t splitCandidateCount = static_cast<std::size_t>(
-                            std::count_if(
-                                debugDisplayBuffers.positionObservedPrimitiveScores.begin(),
-                                debugDisplayBuffers.positionObservedPrimitiveScores.end(),
-                                [&](float signal) {
-                                    return signal >= positionWhatIfDisplayThreshold;
-                                }));
-                        ImGui::Text(
-                            "Observed: %zu   above selected: %zu   max G_i: %.9g",
-                            debugDisplayBuffers.positionObservedPrimitiveCount,
-                            splitCandidateCount,
-                            debugDisplayBuffers.positionPrimitiveScoreMax);
-                        ImGui::TextDisabled(
-                            "Values are the optimizer's saved interval-average statistics");
-                        ImGui::Text("Without interval samples: %zu (gray)",
-                            debugDisplayBuffers.positionUnsampledPrimitiveCount);
-                        ImGui::TextDisabled("Frontmost surfel per pixel; black: background");
-                        ImGui::TextWrapped(
-                            "New surfels and intervals with no accumulated position signal have no score yet. "
-                            "Training can skip the first half of each densification interval.");
-                    }
-                }
-                if (viewImageMode == ViewImageMode::DensificationOrigin) {
-                    ImGui::TextDisabled(
-                        "gray: initial/unknown  green: clone  blue: position split");
-                }
-                if (viewImageMode == ViewImageMode::PrimitiveAge) {
-                    if (ImGui::SliderInt(
-                            "Cold after iterations",
-                            &primitiveAgeColdAfterIterations,
-                            1,
-                            100000,
-                            "%d",
-                            ImGuiSliderFlags_Logarithmic)) {
-                        primitiveAgeColdAfterIterations = std::max(
-                            primitiveAgeColdAfterIterations, 1);
-                        updateDisplayTexture();
-                    }
-                    ImGui::TextDisabled(
-                        "red: created/split now  blue: age >= selected range");
-                }
-            }
-
-            if (ImGui::CollapsingHeader("Renderer debug")) {
-                const ScopedSectionIndent sectionIndent;
                 if (ImGui::Checkbox("Shared surface experiment", &settings.sharedHeightEnabled)) {
                     if (settings.sharedHeightEnabled) {
                         settings.integratorKind = Pale::IntegratorKind::photonMapping;
@@ -6753,16 +7560,53 @@ int main(int argc, char** argv) {
                 ImGui::TextWrapped("Drag to orbit; right or middle drag to pan; scroll to zoom.");
             }
 
+            }
             ImGui::PopItemWidth();
+            {
+                auto& cached=inspectorBodies[static_cast<int>(inspectorPage)];
+                cached.position=ImGui::GetWindowPos();cached.size=ImGui::GetWindowSize();
+                cached.scroll=ImGui::GetScrollY();
+                cached.contentHeight=std::max(1.f,ImGui::GetCurrentWindow()->DC.CursorMaxPos.y-ImGui::GetCurrentWindow()->DC.CursorStartPos.y);
+                cached.key=inspectorContextKey(inspectorPage);cached.geometry.capture(*ImGui::GetWindowDrawList(),0,cached.position,cached.size);cached.valid=true;
+                lastDrawnInspector=inspectorPage;
+                auto* properties=ImGui::FindWindowByName("Properties");auto& context=*ImGui::GetCurrentContext();
+                holdPreviewForInspector=inspectorInput.pending()||inspectorHandoffFrames>0||
+                    (context.ActiveIdWindow&&properties&&ImGui::IsWindowWithinBeginStackOf(context.ActiveIdWindow,properties)&&
+                     (ImGui::GetIO().WantTextInput||ImGui::IsMouseDown(ImGuiMouseButton_Left)));
+                for(const auto& popup:context.OpenPopupStack)
+                    if(popup.Window&&properties&&ImGui::IsWindowWithinBeginStackOf(popup.Window,properties))holdPreviewForInspector=true;
+                if(!context.OpenPopupStack.empty()&&context.NavWindow&&properties&&
+                   ImGui::IsWindowWithinBeginStackOf(context.NavWindow,properties))holdPreviewForInspector=true;
+                if(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)&&ImGui::IsMouseDown(ImGuiMouseButton_Left))holdPreviewForInspector=true;
+                if(inspectorHandoffFrames>0)--inspectorHandoffFrames;
+            }
             ImGui::EndChild();
             ImGui::End();
+            openLightControls = openSurfelControls = false;
+            if (training.datasetChanged) {
+                training.datasetChanged=false;
+                training.message="Dataset selected for the next reconstruction";
+            }
+            if (launchTrainingRequested && training.process.active()) {
+                launchTrainingRequested=false;
+            }
+            if (launchTrainingRequested) {
+                launchTrainingRequested = false;
+                try {
+                    if (!modelReadOnly() && !saveWorkingSnapshot()) training.message = "Could not preserve the editable scene";
+                    else { training.launch(training.useWorkingSnapshot ? workingDirectory / "workspace.json" : std::filesystem::path{}); showTrainingProgress = true; }
+                } catch (const std::exception& error) { training.message = error.what(); }
+            }
 
             ImGui::Begin(
-                "Render",
+                "Viewport",
                 nullptr,
-                ImGuiWindowFlags_NoCollapse);
+                ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
 
-            const ImVec2 available = ImGui::GetContentRegionAvail();
+            drawViewportToolbar(false);
+            const auto viewportCanvas=viewer::viewportCanvas();
+            const auto available=viewportCanvas.size;
+            const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,false);
             if (cameraSource == CameraSource::Viewport) {
                 const uint32_t targetRenderWidth = renderExtentFromAvailable(available.x);
                 const uint32_t targetRenderHeight = renderExtentFromAvailable(available.y);
@@ -6774,15 +7618,30 @@ int main(int argc, char** argv) {
                 }
             }
             if (texture.id != 0) {
-                const ImVec2 imageSize =
-                    cameraSource == CameraSource::Viewport
-                        ? ImVec2(
-                              std::max(available.x, 1.0f),
-                              std::max(available.y, 1.0f))
-                        : fitImageSize(available, texture.width, texture.height);
+                const ImVec2 imageCanvasMin=viewportCanvas.min;
+                const ImVec2 imageCanvasMax(imageCanvasMin.x+available.x,imageCanvasMin.y+available.y);
+                if(cameraSource==CameraSource::SceneXml) {
+                    const std::string key=currentScenePath.string()+"/"+buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)].name;
+                    if(key!=cameraImageKey) {cameraImageView.reset();cameraImageKey=key;}
+                }
+                const auto placement=viewer::viewportImagePlacement(viewportCanvas,cameraSource==CameraSource::SceneXml,cameraImageView,texture.width,texture.height);
+                const ImVec2 imageSize=placement.size;
+                ImGui::SetCursorScreenPos(placement.min);
+                ImGui::PushClipRect(imageCanvasMin,imageCanvasMax,true);
                 ImGui::Image(toImTextureId(texture.id), imageSize);
-                const bool imageHovered = ImGui::IsItemHovered();
                 const ImVec2 imageMin = ImGui::GetItemRectMin();
+                const bool cameraCanvasHovered=ImGui::IsMouseHoveringRect(imageCanvasMin,imageCanvasMax);
+                const ImVec2 toolsMin(imageCanvasMin.x+8,imageCanvasMin.y+42), toolsMax(imageCanvasMin.x+42,imageCanvasMin.y+182);
+                const bool toolsHovered = ImGui::IsMouseHoveringRect(toolsMin,toolsMax);
+                const bool imageHovered = ImGui::IsItemHovered() && !toolsHovered;
+                drawViewportToolRail(imageCanvasMin,selectedSurfelEditorIndex>=0);
+                auto* overlay=ImGui::GetWindowDrawList();
+                overlay->AddText(ImVec2(imageMin.x+12,imageMin.y+10),ImGui::GetColorU32(viewer::ui::muted),cameraSource==CameraSource::SceneXml ? displayedCamera.name : "User perspective");
+
+                const bool overlayMatchesScene=displayedOverlayPointCloud==currentPointCloudPath&&displayedOverlayScene==currentScenePath;
+                if(overlayMatchesScene)refreshLightMarkerMetadata();
+                const auto hoveredLightMarker=drawDisplayedLightMarkers(displayedCamera,imageMin,imageSize,
+                    imageHovered&&!navigationInputCaptured&&overlayMatchesScene,sceneSelectionKind,selectedSurfelEditorIndex,selectedLightIndex);
 
                 std::optional<int> transportMarkerPick;
                 if (viewImageMode == ViewImageMode::TransportScore && transportXray && !transportScores.empty()) {
@@ -6809,11 +7668,17 @@ int main(int argc, char** argv) {
                     }
                     draw->PopClipRect();
                 }
+                const bool lightMarkerInput = (hoveredLightMarker || pressedLightMarker) && !ImGuizmo::IsUsingAny();
+                ImGuizmo::Enable(!lightMarkerInput);
                 bool viewportGizmoHovered = false;
                 bool viewportGizmoUsing = false;
-                if (!navigationInputCaptured && showLightGizmo && selectedLight && cameraSource == CameraSource::Viewport) {
+                const int firstHandleIndex=ImGui::GetWindowDrawList()->IdxBuffer.Size;
+                if(overlayMatchesScene) {
+                if (gizmosEnabled && viewportTool != 0 && sceneSelectionKind == viewer::SceneItemKind::Emitter && !navigationInputCaptured && showLightGizmo && selectedLight && selectedSurfelEditorIndex < 0) {
                     auto& transform = selectedLight.getComponent<Pale::TransformComponent>();
-                    glm::mat4 lightTransform = transform.getTransform();
+                    const glm::vec3 localCenter = lightLocalCenters.size() == areaLights.size()
+                        ? lightLocalCenters[static_cast<std::size_t>(selectedLightIndex)] : glm::vec3(0);
+                    glm::mat4 lightTransform = glm::translate(transform.getTransform(), localCenter);
                     glm::mat4 view = syclMatrixToGlm(displayedCamera.view);
                     glm::mat4 projection = syclMatrixToGlm(displayedCamera.proj);
 
@@ -6827,7 +7692,7 @@ int main(int argc, char** argv) {
                             lightGizmoOperation,
                             lightGizmoOperation == ImGuizmo::SCALE ? ImGuizmo::LOCAL : lightGizmoMode,
                             glm::value_ptr(lightTransform))) {
-                        transform.setTransform(lightTransform);
+                        beginSnapshotEdit();transform.setTransform(glm::translate(lightTransform, -localCenter));
                         rebuildSceneGpu();
                     }
                     viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsOver();
@@ -6835,7 +7700,7 @@ int main(int argc, char** argv) {
                     ImGuizmo::PopID();
                 }
 
-	                if (!navigationInputCaptured && showSurfelGizmo && cameraSource == CameraSource::Viewport) {
+	                if (gizmosEnabled && viewportTool != 0 && !navigationInputCaptured && showSurfelGizmo) {
 	                    const std::optional<Pale::AssetHandle> pointCloudHandle = firstPointCloudHandle(scene);
 	                    const std::shared_ptr<Pale::PointAsset> pointCloudAsset =
 	                        pointCloudHandle ? assetAccessor.getPointCloud(*pointCloudHandle) : nullptr;
@@ -6885,7 +7750,7 @@ int main(int argc, char** argv) {
 	                                    surfelEditorStatus =
 	                                        (surfelGizmoOperation == ImGuizmo::ROTATE ? "Rotated surfel " : "Moved surfel ") +
 	                                        std::to_string(selectedSurfelEditorIndex);
-	                                    rebuildSceneGpu();
+	                                    beginSnapshotEdit();rebuildSceneGpu();
 	                                }
                                 viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsOver();
                                 viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsing() || ImGuizmo::IsUsingAny();
@@ -6895,6 +7760,12 @@ int main(int argc, char** argv) {
 	                }
                 }
 
+                } else if(gizmosEnabled&&viewportTool!=0) {
+                    displayedSelectedHandles.draw(*ImGui::GetWindowDrawList(),imageMin,imageSize);
+                    viewportGizmoHovered=displayedSelectedHandles.contains(io.MousePos,imageMin,imageSize);
+                }
+                if(overlayMatchesScene)displayedSelectedHandles.capture(*ImGui::GetWindowDrawList(),firstHandleIndex,imageMin,imageSize);
+                ImGuizmo::Enable(true);
                 if (!navigationInputCaptured && cameraSource == CameraSource::Viewport) {
                     glm::mat4 viewGizmoMatrix = orbit.viewMatrix();
                     const ImVec2 viewGizmoSize{92.0f, 92.0f};
@@ -6933,65 +7804,107 @@ int main(int argc, char** argv) {
                     viewportGizmoMouseCapture = true;
                 }
 
-	                const bool viewportCameraInputBlocked =
-	                    navigationInputCaptured || viewportGizmoHovered || viewportGizmoUsing || viewportGizmoMouseCapture;
-	                const ImVec2 imageMax{imageMin.x + imageSize.x, imageMin.y + imageSize.y};
-	                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-	                    viewportPickArmed = imageHovered && !viewportCameraInputBlocked;
-	                }
-	                if (viewportPickArmed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, io.MouseDragThreshold)) {
-	                    viewportPickArmed = false;
-	                }
-	                if (viewportPickArmed && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-	                    const bool releaseInsideImage = ImGui::IsMouseHoveringRect(imageMin, imageMax, false);
-	                    if (releaseInsideImage && !viewportCameraInputBlocked && displayedRenderWidth > 0u && displayedRenderHeight > 0u) {
-	                        const ImVec2 mouse = ImGui::GetMousePos();
-	                        const auto pickRay = viewer::makePickRay(
-	                            displayedCamera, {mouse.x, mouse.y},
-	                            {imageMin.x, imageMin.y}, {imageSize.x, imageSize.y});
-	                        const std::optional<int> pickedSurfelIndex = transportMarkerPick ? transportMarkerPick : pickRay
-	                            ? pickEditableSurfel(scene, assetAccessor, *pickRay) : std::nullopt;
-		                        if (pickedSurfelIndex) {
-		                            selectedSurfelEditorIndex = *pickedSurfelIndex;
-		                            surfelEditorStatus = "Picked surfel " + std::to_string(selectedSurfelEditorIndex);
-		                        } else {
-		                            selectedSurfelEditorIndex = -1;
-		                            surfelEditorStatus = "No surfel selected";
-		                        }
-	                    }
-	                    viewportPickArmed = false;
-	                }
-	                if (imageHovered && !viewportCameraInputBlocked) {
-	                    const bool orbitDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
-	                    const bool panDragging =
-	                        ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
-	                        ImGui::IsMouseDragging(ImGuiMouseButton_Right);
-	                    const bool zooming = io.MouseWheel != 0.0f;
-	                    if (cameraSource == CameraSource::SceneXml && (orbitDragging || panDragging || zooming)) {
-	                        orbit = makeOrbitCameraFromSceneCamera(displayedCamera, bounds, orbit);
-	                        cameraSource = CameraSource::Viewport;
-	                        cameraDirty = true;
-	                        renderRequested = true;
-	                    }
-	                    if (cameraSource == CameraSource::Viewport) {
-	                        if (orbitDragging) {
-	                            orbit.orbit(io.MouseDelta);
-	                            cameraDirty = true;
-	                        }
-	                        if (panDragging) {
-	                            orbit.pan(io.MouseDelta);
-	                            cameraDirty = true;
-	                        }
-	                        if (zooming) {
-	                            orbit.zoom(io.MouseWheel);
-	                            cameraDirty = true;
-	                        }
-	                    }
-	                }
+                const bool viewportCameraInputBlocked =
+                    previewNoticeHovered || navigationInputCaptured || toolsHovered || viewportGizmoUsing ||
+                    (!lightMarkerInput && (viewportGizmoHovered || viewportGizmoMouseCapture));
+                const ImVec2 imageMax{imageMin.x + imageSize.x, imageMin.y + imageSize.y};
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    pressedLightMarker = !viewportCameraInputBlocked ? hoveredLightMarker : std::nullopt;
+                    viewportPickArmed = imageHovered && !viewportCameraInputBlocked && !pressedLightMarker;
+                }
+                if (pressedLightMarker && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    if (hoveredLightMarker == pressedLightMarker && !navigationInputCaptured &&
+                        io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold) {
+                        if (pressedLightMarker->areaIndex >= 0) {
+                            selectedLightIndex = pressedLightMarker->areaIndex;
+                            selectedSurfelEditorIndex = -1;
+                            openLightControls = true;
+                        } else {
+                            selectedSurfelEditorIndex = pressedLightMarker->surfelIndex;
+                            surfelEditorStatus = "Selected surfel light " + std::to_string(selectedSurfelEditorIndex);
+                            const auto found=std::find(sceneTreeEmitterIndices.begin(),sceneTreeEmitterIndices.end(),static_cast<std::size_t>(selectedSurfelEditorIndex));
+                            if(found!=sceneTreeEmitterIndices.end())selectedSurfelLightIndex=static_cast<int>(found-sceneTreeEmitterIndices.begin());
+                            openLightControls = true;
+                        }
+                    }
+                }
+                if (viewportPickArmed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, io.MouseDragThreshold)) {
+                    viewportPickArmed = false;
+                }
+                if (viewportPickArmed && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    const bool releaseInsideImage = ImGui::IsMouseHoveringRect(imageMin, imageMax, false);
+                    if (releaseInsideImage && !viewportCameraInputBlocked && displayedRenderWidth > 0u && displayedRenderHeight > 0u) {
+                        const ImVec2 mouse = ImGui::GetMousePos();
+                        const auto pickRay = viewer::makePickRay(
+                            displayedCamera, {mouse.x, mouse.y},
+                            {imageMin.x, imageMin.y}, {imageSize.x, imageSize.y});
+                        const std::optional<int> pickedSurfelIndex = transportMarkerPick ? transportMarkerPick : pickRay
+                            ? pickEditableSurfel(scene, assetAccessor, *pickRay) : std::nullopt;
+                        if (pickedSurfelIndex) {
+                            selectedSurfelEditorIndex = *pickedSurfelIndex;
+                            surfelEditorStatus = "Picked surfel " + std::to_string(selectedSurfelEditorIndex);
+                            openSurfelControls=true;
+                        } else {
+                            selectedSurfelEditorIndex = -1;
+                            surfelEditorStatus = "No surfel selected";
+                        }
+                    }
+                    viewportPickArmed = false;
+                }
+                if ((imageHovered || (cameraSource==CameraSource::SceneXml&&cameraCanvasHovered)) && !viewportCameraInputBlocked && !hoveredLightMarker && !pressedLightMarker) {
+                    const bool orbitDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
+                    const bool panDragging =
+                        ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
+                        ImGui::IsMouseDragging(ImGuiMouseButton_Right);
+                    const bool zooming = io.MouseWheel != 0.0f;
+                    if(cameraSource==CameraSource::SceneXml&&!orbitDragging) {
+                        if(panDragging)cameraImageView.drag(io.MouseDelta);
+                        if(zooming)cameraImageView.zoomAt(io.MousePos,imageCanvasMin,available,io.MouseWheel);
+                    }
+                    if (cameraSource == CameraSource::SceneXml && orbitDragging) {
+                        orbit = makeOrbitCameraFromSceneCamera(displayedCamera, bounds, orbit);
+                        cameraSource = CameraSource::Viewport;
+                        cameraDirty = true;
+                        renderRequested = true;
+                    }
+                    if (cameraSource == CameraSource::Viewport) {
+                        if(orbitDragging||panDragging||zooming)lastNavigationInput=std::chrono::steady_clock::now();
+                        if (orbitDragging) {
+                            orbit.orbit(io.MouseDelta);
+                            cameraDirty = true;
+                        }
+                        if (panDragging) {
+                            orbit.pan(io.MouseDelta);
+                            cameraDirty = true;
+                        }
+                        if (zooming) {
+                            orbit.zoom(io.MouseWheel);
+                            cameraDirty = true;
+                        }
+                    }
+                }
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) pressedLightMarker.reset();
+                ImGui::PopClipRect();viewer::finishViewportCanvas(viewportCanvas);
             } else {
-                ImGui::Text("No render yet");
+                ImGui::TextWrapped("%s", modelReadOnly() ? "Waiting for the launched training run to publish a scene. See Run monitor for initialization or errors." : "No preview yet");
             }
+            drawViewportStatus(false);
             ImGui::End();
+
+            if(snapshotEditPending) {
+                snapshotEditPending=false;
+                const auto source=cameraSource;const auto cameraIndex=selectedSceneCameraIndex;const auto pose=orbit;
+                const int surfelIndex=selectedSurfelEditorIndex,lightIndex=selectedLightIndex,surfelLightIndex=selectedSurfelLightIndex;
+                const auto kind=sceneSelectionKind;
+                if(saveWorkingSnapshot()&&restoreWorkingSnapshot()) {
+                    orbit=pose;selectedSurfelEditorIndex=surfelIndex;selectedLightIndex=lightIndex;selectedSurfelLightIndex=surfelLightIndex;sceneSelectionKind=kind;
+                    if(source==CameraSource::SceneXml&&static_cast<std::size_t>(cameraIndex)<buildProducts.cameraGPUs.size()) {cameraSource=source;selectedSceneCameraIndex=cameraIndex;}
+                    cameraDirty=renderRequested=true;
+                }
+            }
+            training.drawProgress(showTrainingProgress);
+            if(meshExport.draw(showMeshExport,displayedExportMetadata.IsMap(),displayedOverlayPointCloud.filename().string()))meshExportRequested=true;
+            launchMeshExport(false);
 
             const bool previousGpuCounterProfilingEnabled = gpuCounterProfilingEnabled;
             const bool profilingSettingsChanged = drawProfilingWindow(
@@ -7034,7 +7947,32 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glfwSwapBuffers(window);
+            if(!glfwWindowShouldClose(window)) {
+                const auto now=viewer::PreviewRecovery::Clock::now();
+                if(previewRecovery.retryDue(now))renderRequested=true;
+                if(lastPreviewInteractive&&std::chrono::steady_clock::now()-lastNavigationInput>=std::chrono::milliseconds(180))renderRequested=true;
+                if(training.checkpointNavigation||training.checkpointSelection)navigateCheckpoints();
+                // Render each accepted scene before accepting another live
+                // generation, even if training publishes faster than we draw.
+                if(training.initializedPointCloudRequest&&!holdPreviewForInspector)loadRequestedInitializer();
+                if(!previewWork.busy()&&viewer::canPollTrainingScene(sceneUploadPending,training.loadedGeneration)&&!holdPreviewForInspector&&previewRecovery.dispatchAllowed(now))pollTrainingScene();
+                if(!holdPreviewForInspector&&!previewWork.busy() && previewRecovery.dispatchAllowed(now) && (!modelReadOnly() || training.loadedGeneration!=0) && ((autoRender&&cameraDirty)||renderRequested))
+                    startPreviewJob(renderNow,[&] {
+                        updateDisplayTexture();publishDisplayedOverlays();lastPreviewInteractive=interactivePreview;
+                        previewRecovery.succeeded();
+                        if(pendingViewedIteration) {
+                            if(pendingViewedIteration->first==training.process.directory&&modelReadOnly())training.viewedIteration=pendingViewedIteration->second;
+                            pendingViewedIteration.reset();
+                        }
+                    },"Rendering / compiling preview kernels");
+            }
         }
+        // Stop the owned optimizer immediately, before waiting for any long
+        // in-flight preview/JIT work to release renderer resources.
+        training.process.shutdown();
+        meshExport.shutdown();
+        glfwHideWindow(window);
+        try {previewWork.finish();}catch(const std::exception& error) {Pale::Log::PA_WARN("Preview shutdown: {}",error.what());}
 
         Pale::Log::PA_INFO("Viewer event loop ended; releasing renderer resources");
         if (hasSensor) {

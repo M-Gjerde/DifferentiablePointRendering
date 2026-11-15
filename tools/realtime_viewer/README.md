@@ -1,6 +1,10 @@
 # Pale Realtime Viewer
 
-Standalone ImGui viewer for orbiting the renderer camera without editing the existing renderer executable or top-level CMake files.
+The v1 reconstruction workspace launches the existing Python PBdR optimizer,
+inspects its current scene, tunes supported hyperparameters, and edits independent
+snapshots. The viewport remains the main work area, with a searchable scene tree,
+an icon inspector on the right, and a collapsible bottom run monitor. Styling
+follows the approved Figma/SVG palette, proportions and compact controls.
 
 ## Build
 
@@ -39,14 +43,153 @@ cmake -S tools/realtime_viewer -B build-realtime \
   -DGLFW_SOURCE_DIR=/path/to/glfw
 ```
 
-## Run
+## Start a reconstruction
+
+Open **Reconstruction → Training setup** or the sliders icon in Properties. The
+dataset dropdown discovers complete datasets directly beneath
+`~/ValeDrive/phd/pbdr/datasets/pbdr_synthetic`. A complete entry has `images/`,
+`scene.xml` and `points.ply`; optional ground truth lives alongside them as
+`gt.ply`. Selecting a dataset configures the next reconstruction and leaves the
+currently inspected scene and camera unchanged. **Load initialized point cloud**
+below the dropdown explicitly opens that dataset's starting scene without
+launching training, preserving the previous editing workspace on disk. **Start
+reconstruction** launches the selected dataset and follows its new live scene. The last selected dataset opens on startup, unless
+explicit scene/point-cloud CLI arguments are supplied.
+
+The equivalent command is now:
+
+```bash
+python main.py -s ~/ValeDrive/phd/pbdr/datasets/pbdr_synthetic/teapot_pbdr \
+  -o OptimizationOutput/teapot
+```
+
+Both CLI training and the viewer discover dataset-local `gt.ply`. Disable
+**Evaluate with dataset ground truth** to skip evaluation (CLI:
+`--no-dataset-ground-truth`). An explicit `--gt` still overrides discovery.
+**Run options** contains output root, library location, custom-folder fallback,
+and checkpoint/live-publication cadence. Select the interpreter
+and working directory under **Python environment**; the working directory must
+contain this repository's updated `main.py`. If needed, set **pale module
+directory** to the directory containing the compatible `pale.so`. An empty value
+inherits `PYTHONPATH`. The interpreter needs the same dependencies as CLI training.
+The initial setup prefers an active virtual environment, an existing repository
+`.venv`, or a local Conda environment named `pale`. It also detects this
+repository's `cmake-build-pybind/pale.so` when present. Explicit saved environment choices take precedence over detection. Legacy
+preferences that only recorded the generic `python3` default migrate to the
+detected environment; **Use detected environment** restores that choice.
+
+**Start reconstruction** creates a fresh `run_<timestamp>_<sequence>` beneath the output
+root. Existing runs and source datasets are not overwritten. Each launch saves
+its exact argument list and stdout/stderr in a private `.viewer_sessions` sibling
+directory. Execution passes arguments directly, including paths with spaces.
+Only the process launched by this viewer is controlled; there is no external-run
+attachment or process-discovery interface. Closing the viewer terminates its reconstruction and its worker processes.
+A viewer crash also triggers cleanup. Existing logs and completed checkpoints
+remain on disk; closing is not a request to finish another training update.
+
+Each launch reads the current `python/config.py` defaults. **Override run settings
+from config.py** explicitly overrides iterations, checkpoint cadence and adjoint
+sampling; **Hyperparameters → Override launch defaults** independently overrides
+the listed learning rates and regularizer weights. Leave both off to pick up
+subsequent edits to `config.py`. Dataset, output, GT evaluation and viewer live
+publication settings are still supplied by the viewer. Applying a live tuning
+patch does not automatically enable overrides for the next launch.
+
+The viewport's scene-source dropdown offers these modes:
+
+- **Live training** follows current optimizer parameters, read-only. Publications
+  use atomic binary PLY packets at the configured live interval (default one
+  second), independently of persistent checkpoints. A single serialization worker
+  owns its data and skips publication when busy; it retains only a small window
+  of packets. GPU-to-CPU copies still have a cost, so increase the interval for
+  larger scenes. Viewport rendering competes with training for GPU resources.
+- **Follow saved** follows persistent checkpoints, read-only. The default save
+  interval is 100 updates; completed runs also expose `points_final.ply`.
+- **Browse checkpoints** opens **Run monitor → Checkpoints**. Drag the checkpoint
+  scrubber, select an iteration, or use Previous/Next. **N/M** jump to the saved
+  checkpoint nearest the previous/next 1,000-iteration boundary, always moving in
+  that direction when possible. The inspected checkpoint stays fixed while
+  optimization continues and the list grows. The previous image stays visible until
+  the chosen checkpoint has rendered, and browsing preserves the camera. **R**
+  returns to current live data.
+- **Edit latest saved snapshot** copies the latest checkpoint into a private
+  editable workspace. Geometry, material, and emitter edits do not pause or alter
+  training. Switching to a training view preserves the edits; **Return to edits**
+  restores them. **File → Save editable snapshot** stores the working PLY and mesh
+  emitter transforms/colors/power under `output/viewer_snapshots`.
+
+Selection controls and transform gizmos also work in read-only training views.
+The first actual property/gizmo change creates an independent editable copy of
+the displayed scene, preserving selection and camera. Training keeps running.
+**R** preserves those edits and returns to live data; **Return to edits** restores
+the private copy.
+
+To use edits for another reconstruction, select **Initialize from edited snapshot**
+and launch after the previous process finishes. The viewer freezes the input PLY
+and scene metadata in `.viewer_seeds`, so subsequent editing cannot change the
+new run's initialization. This starts a new optimizer; it does not resume Adam moments.
+
+**Hyperparameters** exposes position, rotation, scale, albedo, opacity and beta
+learning rates, plus alpha, depth distortion, normal consistency and intra-slab
+depth weights. Leave **Override launch defaults** off to use Python defaults.
+During a run, **Apply to training at next iteration** validates the complete patch,
+waits for an iteration boundary, and records its effective iteration in
+`parameter_changes.jsonl`. Checkpoint resume restores applicable journal entries.
+Learning rates precede existing scene/schedule scaling. The current backend keeps
+emitter power learning rates at zero; this UI preserves that behavior. Editable
+emitter changes can seed a new run.
+
+**Run monitor → Progress** shows training/viewed/saved iterations, objective history,
+update time with iterations per second,
+the output directory and log, and acknowledged **Pause**, **Continue**, **Stop
+training**, and **Save checkpoint** actions. Stop finishes the current update and
+saves the result; initialization and finalization can take time. **Metrics** retains the complete objective and image-loss history, with an optional
+rolling iteration window and log scale. Weighted normal and depth regularizers share a separate plot with independent
+left (normal) and right (depth) Y-axes. Alpha/slab losses have their own plot under
+**Other regularizers / raw terms / gradients**. Population, pruning, runtime, gradients and all recorded latest
+CSV fields are available below. GT Chamfer distance, accuracy and completion
+appear after mesh evaluations, at the cadence set by `mesh_extraction_interval`
+in `config.py`; these describe the evaluated mesh, not every live update.
+**Log** interprets tqdm carriage returns/terminal line updates. Drag to select
+text and use Ctrl+C, or use **Copy log**. A selection stays stable while new output
+arrives; clearing it resumes display updates.
+
+Dataset selection remains available while stopping. **Start reconstruction** stays
+disabled with a spinner beside its label while a reconstruction is starting,
+running, paused, stopping or finalizing. It becomes available after the process
+exits. New reconstructions cannot be queued; starting the next one always requires
+another click. Editing never sends a pause command. No command forcibly kills an
+unrelated process.
+
+## Open the viewer
 
 Rendering and diagnostic kernel compilation run on a worker while the main
-thread continues processing window-system events. This prevents a long JIT
-compile from starving the Wayland connection. The title indicates that rendering
-or compilation is in progress; controls are applied after the current work
-finishes. OpenGL presentation remains on the main thread. Closing during a render
-waits for that work to finish before releasing its resources.
+thread continues drawing the full workspace and processing input. Logs, metrics,
+training commands and dataset selection stay usable during kernel compilation.
+The viewport keeps its last image and overlays. Inspector panels retain their
+last complete layout while work is in flight; clicks and scrolling are applied
+at handoff. Preview refresh waits during active inspector edits and open menus
+so controls keep their focus and layout. Reconstruction controls and logs remain
+interactive throughout. Scene replacement also runs in the
+background. OpenGL presentation remains on the main thread. Closing stops the owned training
+process before waiting for in-flight preview work to release its resources.
+
+Preview exceptions retain the last good image and retry up to three times with
+backoff. Repeated failures leave a stable notice with **Retry preview** and
+**Copy error**. A preview taking more than 15 seconds is reported once without
+starting a second renderer concurrently. Records are written beneath
+`output/viewer_diagnostics/preview_*.jsonl`. A persistent renderer worker avoids
+creating a new OS thread and device thread-local state for every preview.
+A GPU call that never returns still requires process/context recovery; the UI
+can report that condition but cannot safely cancel an in-process device call.
+
+**File → Export mesh…** extracts the currently inspected PLY using the existing
+TSDF script. Textured glTF (`.glb`) is optional and off by default; enabling it
+reveals texture size, UV partitions/threads, lights/cameras and scene-unit
+settings. Export freezes its inputs and leaves the viewport on its point cloud.
+The optimizer's existing final PLY and textured GLB export remains controlled by
+`config.py`; completion does not open a mesh in the viewport. See
+[mesh export details](../../docs/viewer_mesh_export.md).
 
 Startup logs identify the window backend. Shutdown logs distinguish Escape from
 a window-system close request; the latter can also indicate a lost display
@@ -56,15 +199,34 @@ connection. An informational AdaptiveCpp JIT warning alone is not an error.
 ./build-realtime/PaleRealtimeViewer --assets Assets --pointcloud points.ply --scene cbox.xml
 ```
 
-The sidebar keeps the live scene surfel count, last render time, resolution, and
-render controls fixed at the top. **Render & display** and **Camera** open by
-default; **Appearance**, **Scene files**, **Lights**, and **Surfel editor** keep
-less frequent controls out of the way. Diagnostic settings are grouped at the
-bottom, including **Display diagnostics → Median depth settings**.
+**Scene Collection** groups surfel geometry, mesh materials, emitters and
+calibrated cameras. Search by name; click a row to select its model element or
+camera. Large surfel-emitter collections show the first 256 plus an explicitly
+selected emitter; viewport picking remains available beyond that list.
 
-The **Profiling** panel starts closed. Open it from **View → Profiling** or
-**Scene statistics & profiling**; it shares the sidebar as a tab without reducing
-the viewport height.
+The Properties icon rail has hover/focus tooltips:
+
+- Cursor: selected geometry, material or emitter properties.
+- Sliders: reconstruction setup and hyperparameter tuning.
+- Layers: viewport display and the active diagnostic's settings.
+- Camera: free-view navigation and calibrated-camera selection.
+- Folder: standalone scene-file and checkpoint inspection.
+
+**Advanced** is always available as the sixth inspector icon, exposing the existing
+research diagnostics. The viewport selector includes all 22 supported debug views. **Refresh
+preview** and **Auto preview** live in the application header; the viewport owns
+its inspection mode, source selection, transform tools and single **Gizmos &
+overlays** popover. Grid starts enabled. Local/world transform coordinates and
+emitter/surfel handles are configured in that popover.
+**Display** groups the view selector, context-sensitive **View options**, screenshot
+capture, and collapsed **Appearance** controls. Only options for the active view
+are shown; depth controls appear with the corresponding depth views.
+**Scene files**, **Lights**, and **Surfel editor** keep editing controls out of the
+way. Integrator selection and renderer experiments live in **Renderer debug**
+under **Advanced**.
+
+The **Profiling** panel starts closed. Open it from **Window → Profiling** or
+**Advanced tools → Scene statistics & profiling**.
 
 Controls:
 
@@ -73,9 +235,14 @@ Controls:
 - Viewport camera convention: world `Z` is up; camera local forward remains `-Z`
 - `Camera source`: switch between the orbit viewport camera and one selected `scene.xml` camera
 - Left-drag over the rendered image: orbit camera
-- Left-click over the rendered image: select the surfel under that pixel for editing, including after resizing or using a scene camera
+- Click a gold light marker: select a mesh area light or emissive surfel and open/scroll to its editing controls. Markers remain visible through geometry, show names on hover, and highlight the selection. Dragging a marker does not orbit or select a surfel.
+- Selected mesh lights support move/rotate/scale; selected surfels support move/rotate in editable snapshots, in both viewport and scene camera views. The viewport's left tool rail chooses select/move/rotate/scale.
+- Left-click elsewhere over the rendered image: select the surfel under that pixel for editing, including after resizing or using a scene camera
+- The ground grid starts enabled; toggle it under **Gizmos & overlays → Ground grid**
+- The viewport docking tab bar starts hidden; its docking menu can reveal it
 - Right-drag or middle-drag: pan target
-- Mouse wheel: zoom
+- Mouse wheel in the orbit view: zoom the camera
+- Calibrated scene-camera images are centered with their aspect ratio preserved. Wheel zooms the displayed image around the pointer; right/middle-drag pans it without changing camera calibration. **Fit camera image** restores the fitted view. Left-drag switches to orbit navigation.
 - `Space`: restore the initial orbit view and switch to the viewport camera
 - `\`: enter walk navigation from the current viewport or selected scene camera
 - In walk mode: mouse look, `W/A/S/D` move, `Q/E` down/up, `Shift` faster, `Alt` slower, wheel adjusts speed
@@ -83,15 +250,15 @@ Controls:
 - Walk navigation has no gravity or collision detection; losing window focus cancels it
 - Debug-view shortcuts (`1`–`0`, `+`/`-`) and point-cloud shortcuts (`R`, `F`, `L`, `N`, `M`, arrows) remain available while walking
 - Walk movement uses the latest input state after each render; released keys are not replayed across later frames. Short exit and viewer-shortcut taps still register.
-- `Render`: force a render
+- `Refresh preview`: request a fresh viewport preview
 - `Save screenshot (PNG)`: save the currently displayed render with transparent background
-- `Auto render`: render after camera/control changes
+- `Auto preview`: refresh after camera/control changes
 - `Median depth settings`: adjust the accumulated-opacity threshold from 0.001 to 0.999 (default 0.5). `Retain last accepted depth` keeps the last surface hit when the threshold is never reached (default on). Empty rays still produce zero depth; the existing traversal-limit fallback is unchanged. Both controls request a fresh render, including depth-derived diagnostics.
 - `Add surfel`: create a camera-facing surfel at the current viewport focus and select it for editing
-- `Save as startup default`: save the currently edited surfels beside the original PLY and load them automatically on later runs
-- `Reset to original`: reload the original startup PLY and clear the saved startup override
+- **File → Save editable snapshot** saves the private working scene without overwriting the source PLY
 - Drop a training run, its `points` folder, or a parent such as `output/pbdr_blade`: load its latest checkpoint and anchor navigation to that run. A parent selects the run with the most recently updated `metrics.csv`.
-- `R`: refresh the latest checkpoint in the anchored run; without a folder anchor, search for the latest run in `python/OptimizationOutput`
+- `R`: return to latest live data for a viewer-launched run. In standalone file inspection, refresh the latest checkpoint in the anchored run; without an anchor, search `python/OptimizationOutput`.
+- `N` / `M`: jump to the saved checkpoint nearest the previous/next 1,000-iteration boundary
 - `F`: load the first `iter_*_points.ply` in the active optimization `points` folder
 - `L`: load the last `iter_*_points.ply` in the active optimization `points` folder
 - Left/right arrows: step through snapshots in the active optimization run
@@ -108,6 +275,35 @@ the original global latest-run search. Loading another point-cloud PLY also clea
 the folder anchor. Without an anchor, `R` or **Load latest run PLY** searches for
 the latest run again.
 
+These file-loading shortcuts inspect saved files in the standalone editable
+workspace. For a viewer-launched run, **N/M** and the Checkpoints panel browse that run
+independently of training, and **R** always returns to its live read-only view.
+
+### Training workflow checks
+
+```bash
+python3 -m unittest discover -s test -p test_viewer_training_session.py -v
+clang++-22 -std=c++20 -O2 -pthread -I. test/test_viewer_training_process.cpp \
+  -o /tmp/pale_training_process_test
+/tmp/pale_training_process_test
+cmake --build build-realtime --target PaleViewerTrainingIntegration -j4
+./build-realtime/PaleViewerTrainingIntegration "$PWD"
+# Optional: render production UI components with Mesa EGL, no display required.
+cmake --build build-realtime --target PaleViewerWorkspacePreview -j4
+./build-realtime/PaleViewerWorkspacePreview "$PWD" /tmp/workspace.png selection 1440 900
+```
+
+The integration check launches a lightweight Python worker using the production
+session bridge, loads its PLY through the native scene loader, exercises tuning
+and pause/stop acknowledgments, and draws both ImGui panels without a display or
+GPU. It does not validate optimization convergence or GPU throughput.
+
+The opt-in `test/test_viewer_training_optimizer.py` runs both native and host
+optimizer paths on a 4×4, two-surfel scene. It verifies a paused-start handshake,
+tuning a participating loss term, resuming, and publishing the final checkpoint
+and live scene. Run it with `PALE_RUN_TRAINING_SMOKE=1` in a configured training
+environment with the built `pale` module on `PYTHONPATH`.
+
 ### Background compositing
 
 The Rendered view composites the saved raw linear primal RGB as `C + (1-A)*B`,
@@ -122,9 +318,31 @@ changing primal RGB or geometry. Over black with the grid off, toggling it has
 no effect on rendered RGB. The primal is captured before any backward pass
 reuses its framebuffer. Raw-linear preview and training loss are unchanged.
 
+### Grid display cost
+
+The grid is a CPU background pass after the renderer, so its cost affects display
+latency and is excluded from **Last render** timing. Toggling it only recomposites
+the displayed image; it does not launch a renderer pass. Background pixels are
+cached by displayed camera, resolution, scene extent, grid visibility and background
+color. Projection uses the displayed renderer camera's full pose and pinhole
+intrinsics, including its focal lengths and principal point. Repeated renders
+at the same camera reuse the cache. A changed camera
+rebuilds independent rows on up to four CPU workers, using unnormalized plane
+intersections and precomputed camera constants. Colored axes use a three-pixel
+width with a one-pixel antialiasing footprint derived from the projected ground
+plane, so they remain readable at grazing angles. Grid lines fade smoothly with
+camera depth; unresolved fine lines fade before producing horizon moire. The fade
+scales with the orbit distance and scene bounds. Screenshot output excludes the grid.
+
+A release-mode CPU microbenchmark at 1280×720 measured about 9 ms for rebuilding
+the antialiased, distance-faded grid, versus 4.6 ms for the previous thinner grid.
+Cached frames reuse the background rather than rebuilding it (previously measured
+at about 0.06 ms for reuse/copy). These are isolated background timings, not total
+viewer frame times; they vary with hardware and load.
+
 ### Transparent screenshots
 
-Click **Save screenshot (PNG)** beside the render controls. Images are saved to
+Click **Save screenshot (PNG)** in **Display**. Images are saved to
 `output/screenshots/viewport_<timestamp>_<sequence>.png` under the repository
 root; the full saved path appears below the button. Each capture gets a new name.
 
@@ -138,6 +356,18 @@ the gray viewport background, grid, gizmos, and UI. **Force opacity = 1** affect
 the viewport display only and is ignored for screenshots. Diagnostic views save
 their selected colors with the rendered surface alpha. If auto-render is off,
 click **Render** first to capture camera or scene edits that have not yet rendered.
+
+### Responsive navigation
+
+While the viewport camera moves, preview rendering temporarily uses two maximum
+splat events and shared local-layer direct lighting. After 180 ms without camera
+motion, a full-quality preview restores the configured settings. The footer keeps
+navigation guidance stable throughout a gesture. Hover it for preview timing and
+rendering details; the window title and header stay fixed. This affects viewport
+rendering only; it does not change
+training settings or the values shown in the inspector. **View → Interaction
+preview** adds independent fast-preview switches for emitter edits (on by
+default) and surfel edits (off by default).
 
 ### Slab distance modes
 
@@ -268,7 +498,7 @@ depth-to-normal calculation and the same normal colors. Switching views recomput
 
 ### Depth-distortion previews
 
-Under **Diagnostics → Display diagnostics → Depth distortion**, choose
+Under **Display → View options → Depth distortion**, choose
 **World distance (absolute)**, **World distance (squared)**, or **Normalized depth (squared)**.
 World modes use camera-forward depth in scene units. Match the training run's
 `depth_distort_world_space` and `depth_distort_squared` settings.
@@ -484,11 +714,10 @@ Python callers can also switch modes on an existing renderer through
 
 ## Transport contribution inspection
 
-Press **R** to load an optimization snapshot, then check **Contribution scores**
-in **Render & display** (also available in the Display menu). The first analysis
+Press **R** to load an optimization snapshot, then select **Contribution scores**
+in **Display**. The first analysis
 renders every saved scene camera at its native resolution using the native
-camera/shadow activity counters. Results are cached while orbiting. In **Display
-diagnostics**, choose a camera, or **All training cameras (one cycle)**, and choose
+camera/shadow activity counters. Results are cached while orbiting. In **Display → View options**, choose a camera, or **All training cameras (one cycle)**, and choose
 combined, camera-only, or shadow-only support. Held-out cameras are available
 individually but excluded from the training aggregate.
 
@@ -523,7 +752,7 @@ through `+`/`-` cycling). This traces only camera rays using surfel footprints a
 slab compositing; it does not change opacity or the training objective.
 
 The unit-weight loss is `max(0, target_attenuation - (1 - T_exit))^2`, with a
-90% target by default. **Display diagnostics → Target attenuation** adjusts it
+90% target by default. **Display → View options → Target attenuation** adjusts it
 from 80% to 100%. Rays with no attenuation are ignored, including intersections
 with zero-opacity surfels. Empty rays, opaque mesh hits, and rays meeting the
 target are black. Other escaping rays use the scalar colormap on a fixed range
@@ -535,7 +764,7 @@ rendering modes.
 
 ### Raw linear RGB preview
 
-Select **Raw linear RGB** under **Render & display → Display** to inspect primal
+Select **Raw linear RGB** under **Display** to inspect primal
 RGB before exposure, sRGB/gamma encoding or alpha compositing. The framebuffer
 is captured before adjoint profiling can overwrite it. Values are mapped directly
 to an opaque 8-bit preview: 0.2 becomes 51/255, with no normalization. Only the

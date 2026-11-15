@@ -69,6 +69,8 @@ def prepare_run(config: OptimizationConfig, renderer_settings: RendererSettingsC
     if config.output_dir_is_explicit:
         run_name = config.output_dir.name
 
+    if config.viewer_session is not None and config.output_dir.exists() and any(config.output_dir.iterdir()):
+        raise ValueError(f"Viewer launches require a fresh output directory: {config.output_dir}")
     config.output_dir = _recreate_output_dir(config.output_dir)
     _copy_scene_xml(config.scene_xml, config.output_dir)
     save_run_config(config.output_dir, config, renderer_settings, run_name)

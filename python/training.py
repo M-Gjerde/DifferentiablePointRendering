@@ -664,7 +664,7 @@ def compute_iteration_gradients(
 
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
-                     renderer_settings: RendererSettingsConfig) -> None:
+                     renderer_settings: RendererSettingsConfig, viewer_session=None) -> None:
     if config.densification_image_space and (
         not getattr(pale, "IMAGE_SPACE_DENSIFICATION", False)
         or getattr(pale, "IMAGE_SPACE_DENSIFICATION_COORDINATES", None) != "ndc"
@@ -1068,6 +1068,27 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             final_mesh_future = mesh_checkpoint_worker.submit_final(points_path)
         return points_path
 
+    def publish_viewer_state(global_step, state, count, seconds, *, force=False):
+        if viewer_session is None:
+            return
+        viewer_session.progress(global_step, state, count, seconds)
+        if force or viewer_session.preview_due():
+            if use_device_training_step:
+                renderer.sync_point_parameters_from_gpu()
+                current = render.fetch_parameters(renderer)
+                values = tuple(current[key] for key in
+                               ("position", "rotation", "scale", "albedo", "opacity", "beta", "power"))
+            else:
+                values = (positions, rotations, scales, albedos, opacities, betas, powers)
+            metadata={}
+            if len(densification_origin_np)==len(values[0]) and len(primitive_birth_iteration_np)==len(values[0]):
+                metadata={"densification_origin":densification_origin_np,
+                          "primitive_age":primitive_ages_from_birth_iterations(primitive_birth_iteration_np,global_step)}
+            viewer_session.publish(global_step, values, force=force,metadata=metadata)
+
+    if viewer_session:
+        publish_viewer_state(resume_iteration_offset, {}, int(positions.shape[0]), 0.0)
+
     density_diagnostics = None
     if config.densification_diagnostics:
         if not use_device_training_step or not config.one_camera_per_iteration:
@@ -1097,6 +1118,21 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 if density_diagnostics:
                     density_diagnostics.begin_iteration()
                 global_iteration = resume_iteration_offset + iteration
+                if viewer_session:
+                    patch = viewer_session.boundary(config, global_iteration - 1)
+                    if patch:
+                        learning_rate_schedules = optimizers.create_learning_rate_schedules(config, position_scene_scale)
+                        depth_distortion_base_weight = float(config.depth_distort_weight)
+                        normal_consistency_weight = float(config.normal_consistency_weight)
+                        intra_slab_depth_weight = float(config.intra_slab_depth_weight)
+                        use_depth_distortion = depth_distortion_base_weight != 0.0
+                        use_normal_consistency = normal_consistency_weight != 0.0
+                        use_intra_slab_depth = intra_slab_depth_weight != 0.0
+                    if viewer_session.stop_requested:
+                        iteration -= 1
+                        if iteration == 0:
+                            return
+                        raise KeyboardInterrupt
                 topology_updates_enabled = helpers.topology_updates_allowed(
                     global_iteration, final_global_iteration, int(config.topology_freeze_last_iterations),
                 )
@@ -1114,6 +1150,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     before_densification=bool(config.save_ply_before_densification),
                     first_iteration=iteration == 1,
                 )
+
+                if viewer_session and viewer_session.save_requested:
+                    should_save_point_cloud = True
+                    viewer_session.save_requested = False
 
                 active_training_camera_ids = helpers.select_active_training_camera_ids(
                     training_camera_ids=training_camera_ids,
@@ -1737,6 +1777,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         ] + (density_diagnostics.values if density_diagnostics else [])
                     )
                     csv_file.flush()
+                    if viewer_session:
+                        if should_save_point_cloud:
+                            viewer_session.state["saved_iteration"] = global_iteration
+                        publish_viewer_state(global_iteration, averaged_loss_state, num_points, iteration_time)
 
                     log_interval = int(config.log_interval)
                     if (
@@ -2341,6 +2385,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 )
 
                 csv_file.flush()
+                if viewer_session:
+                    if should_save_point_cloud:
+                        viewer_session.state["saved_iteration"] = global_iteration
+                    publish_viewer_state(global_iteration, averaged_loss_state, num_points, iteration_time)
 
                 log_interval = int(config.log_interval)
                 if (
@@ -2404,6 +2452,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         finally:
             progress_bar.close()
 
+    if viewer_session:
+        viewer_session.finalizing()
     if use_device_training_step:
         renderer.sync_point_parameters_from_gpu()
         positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(renderer, device)
@@ -2543,6 +2593,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                               snapshot_densification_position_sample_count_np,
                           densification_position_threshold=
                               snapshot_densification_position_threshold)
+
+    if viewer_session:
+        completed_step = resume_iteration_offset + int(iteration)
+        viewer_session.state["saved_iteration"] = completed_step
+        publish_viewer_state(completed_step, {"total_loss_value": final_total_loss,
+                                              "total_rgb_loss_value": final_rgb_loss},
+                             int(positions.shape[0]), 0.0, force=True)
 
     if final_mesh_future is not None and not final_mesh_future.done():
         print_status(

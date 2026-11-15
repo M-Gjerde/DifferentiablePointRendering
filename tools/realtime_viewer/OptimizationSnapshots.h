@@ -14,6 +14,31 @@ namespace viewer {
         uint64_t iteration = 0u;
         std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
     };
+    [[nodiscard]] inline std::size_t checkpointNavigationIndex(const std::vector<PointCloudSnapshot>& saved,uint64_t current,int direction) {
+        if(saved.empty())return 0;
+        if(direction==3)return saved.size()-1;
+        if(direction==-1) {
+            auto it=std::lower_bound(saved.begin(),saved.end(),current,[](const auto& item,uint64_t step){return item.iteration<step;});
+            return it==saved.begin()?0:static_cast<std::size_t>(it-saved.begin()-1);
+        }
+        if(direction==1) {
+            auto it=std::upper_bound(saved.begin(),saved.end(),current,[](uint64_t step,const auto& item){return step<item.iteration;});
+            return it==saved.end()?saved.size()-1:static_cast<std::size_t>(it-saved.begin());
+        }
+        const uint64_t target=direction<0?(current?((current-1)/1000)*1000:0):(current/1000+1)*1000;
+        // Missing boundary checkpoints must still move in the requested
+        // direction, rather than repeatedly selecting the current snapshot.
+        const auto begin=direction<0?saved.begin():std::upper_bound(saved.begin(),saved.end(),current,[](uint64_t step,const auto& item){return step<item.iteration;});
+        const auto end=direction<0?std::lower_bound(saved.begin(),saved.end(),current,[](const auto& item,uint64_t step){return item.iteration<step;}):saved.end();
+        if(begin==end)return direction<0?0:saved.size()-1;
+        auto it=std::lower_bound(begin,end,target,[](const auto& item,uint64_t step){return item.iteration<step;});
+        if(it==end)return static_cast<std::size_t>(end-saved.begin()-1);
+        if(it==begin)return static_cast<std::size_t>(begin-saved.begin());
+        const auto previous=it-1;
+        const bool preferPrevious=target-previous->iteration<it->iteration-target ||
+            (target-previous->iteration==it->iteration-target && direction<0);
+        return static_cast<std::size_t>((preferPrevious?previous:it)-saved.begin());
+    }
 
     [[nodiscard]] inline std::filesystem::file_time_type lastWriteTimeOrMin(const std::filesystem::path& path) {
         std::error_code error;

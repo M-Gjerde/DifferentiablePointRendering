@@ -563,6 +563,10 @@ def configure_paths_from_dataset_folder(config) -> None:
         config.pointcloud_ply = str(resolve_dataset_file(dataset_folder, "points.ply", "pointcloud PLY"))
 
     config.dataset_path = dataset_folder
+    # A portable dataset owns its optional ground-truth geometry.
+    local_ground_truth = dataset_folder / "gt.ply"
+    if config.ground_truth is None and getattr(config, "auto_dataset_ground_truth", True) and local_ground_truth.is_file():
+        config.ground_truth = local_ground_truth.resolve()
 
 def resolve_output_dir(output_dir: Path, output_dir_is_explicit: bool) -> Path:
     python_project_dir = Path(__file__).resolve().parent

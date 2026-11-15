@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 12
+    adjoint_passes: int = 4
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -77,7 +77,7 @@ class OptimizationConfig:
     learning_rate_position: float = 0.00016
     use_position_lr_scene_scale: bool = True  # Multiply position LR by 1.1 * training-camera radius.
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.004
+    learning_rate_scale: float = 0.005
     learning_rate_albedo: float = 0.003
     learning_rate_opacity: float = 0.003
     learning_rate_beta: float = 0.0005
@@ -96,12 +96,12 @@ class OptimizationConfig:
     # Decay duration independent of training length; hold final scales afterward.
     lr_decay_max_steps: int = 30_000
 
-    depth_distort_weight: float = 0.05
+    depth_distort_weight: float = 0.005
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = True  # World-space only: True uses squared depth differences, False absolute; NDC always uses squared differences.
-    depth_distort_start_iteration: int = 1_000
+    depth_distort_start_iteration: int = 2_000
     normal_consistency_weight: float = 1.0e-3
-    normal_consistency_start_iteration: int = 0
+    normal_consistency_start_iteration: int = 3_000
     normal_from_depth_use_mean_depth: bool = False
     median_depth_retain_last_hit: bool = False  # Training median depth and depth-derived normals: retain sub-threshold last hits.
     # Differentiates opacity and footprint geometry; zero disables this term.
@@ -175,6 +175,7 @@ class OptimizationConfig:
     mesh_export_cameras: bool = False
     save_final_mesh: bool = True
     ground_truth: Path | None = None
+    auto_dataset_ground_truth: bool = True
     geometry_samples: int = 5_000_000
     geometry_seed: int = 0
 
@@ -203,6 +204,9 @@ class OptimizationConfig:
     scene_xml_is_explicit: bool = False
     pointcloud_ply_is_explicit: bool = False
     resume_iteration_offset: int = 0
+    viewer_workspace: Path | None = None
+    viewer_session: Path | None = None
+    viewer_live_interval: float = 1.0
 
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     learning_rate_fields = (
@@ -308,12 +312,30 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
         raise FileNotFoundError(f"No saved point-cloud checkpoints found in {checkpoint_dir}")
     saved_iteration, checkpoint_points_path = max(snapshots, key=lambda item: item[0])
 
+    # A run records its initial configuration plus acknowledged iteration-boundary
+    # changes. Restore the configuration that actually generated this checkpoint.
+    history_path = checkpoint_dir / "parameter_changes.jsonl"
+    if history_path.is_file():
+        from viewer_session import validate_patch
+        for line in history_path.read_text().splitlines():
+            try:
+                change = json.loads(line)
+                if int(change["iteration"]) <= saved_iteration:
+                    patch = validate_patch(change["parameters"])
+                    run_config.setdefault("optimization_config", {}).update(patch)
+                    for key, value in patch.items():
+                        if key in run_config:
+                            run_config[key] = value
+            except (ValueError, KeyError, TypeError):
+                continue  # An interrupted final journal append cannot corrupt a saved PLY.
+
     # Restore saved training settings; paths and bookkeeping are handled below.
     excluded = {
         "checkpoint", "output_dir", "pointcloud_ply", "iterations",
         "resume_iteration_offset", "output_dir_is_explicit",
         "scene_xml_is_explicit", "pointcloud_ply_is_explicit",
         "assets_root", "scene_xml", "dataset_path", "target_color_space",
+        "viewer_session", "viewer_live_interval", "viewer_workspace",
     }
     for field_name in type(config).__dataclass_fields__:
         if field_name in excluded or field_name in cli_overrides:
@@ -678,6 +700,12 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     output = parser.add_argument_group("output and monitoring")
+    _add_boolean_argument(output, "--dataset-ground-truth", dest="auto_dataset_ground_truth",
+                          help="Use gt.ply from the selected dataset when --gt is omitted.")
+    output.add_argument("--viewer-workspace", type=Path, help=argparse.SUPPRESS)
+    output.add_argument("--viewer-session", type=Path, help=argparse.SUPPRESS)
+    output.add_argument("--viewer-live-interval", type=float, default=1.0,
+                        help="Minimum seconds between viewer live scene publications.")
     _add_typed_fields(output, int, "log_interval", "save_interval", "save_ply_files_interval")
     _add_boolean_argument(
         output, "--save-snapshot-linear-raw",

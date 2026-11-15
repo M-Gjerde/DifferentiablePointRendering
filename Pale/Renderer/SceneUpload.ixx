@@ -9,6 +9,7 @@ module;
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/Kernels/KernelHelpers.h"
+#include "Core/DeviceAllocation.h"
 
 export module Pale.Render.SceneUpload;
 
@@ -35,36 +36,22 @@ export namespace Pale {
                                               std::uint32_t &currentCount,
                                               std::uint32_t newCount,
                                               sycl::queue queue) {
-            if (currentCount == newCount) {
+            if (currentCount == newCount && (newCount == 0 || devicePointer != nullptr)) {
                 return;
             }
-
-            // Free old memory (if any)
-            freeDeviceArray(devicePointer, queue);
-
+            detail::replaceDeviceAllocation(devicePointer, newCount,
+                [&](std::size_t count) { return sycl::malloc_device<T>(count, queue); },
+                [&](void* pointer) { sycl::free(pointer, queue); });
             currentCount = newCount;
-            if (newCount > 0) {
-                const std::size_t bytes = static_cast<std::size_t>(newCount) * sizeof(T);
-                devicePointer = static_cast<T *>(sycl::malloc_device(bytes, queue));
-            }
         }
 
         template<typename T>
         static void reallocVectorBackedArray(T *&devicePointer,
                                              std::size_t newElementCount,
                                              sycl::queue queue) {
-            if (newElementCount == 0) {
-                // Nothing needed – just free if allocated
-                freeDeviceArray(devicePointer, queue);
-                return;
-            }
-
-            // Always free and reallocate (simple and safe;
-            // can be optimized by tracking old element count if needed)
-            freeDeviceArray(devicePointer, queue);
-
-            const std::size_t bytes = newElementCount * sizeof(T);
-            devicePointer = static_cast<T *>(sycl::malloc_device(bytes, queue));
+            detail::replaceDeviceAllocation(devicePointer, newElementCount,
+                [&](std::size_t count) { return sycl::malloc_device<T>(count, queue); },
+                [&](void* pointer) { sycl::free(pointer, queue); });
         }
 
         // ---------------------------------------------------------------------
@@ -113,142 +100,12 @@ export namespace Pale {
         static GPUSceneBuffers allocate(const SceneBuild::BuildProducts &buildProducts,
                                         sycl::queue queue) {
             GPUSceneBuffers gpuSceneBuffers{};
-
-            // geometry sizes
-            gpuSceneBuffers.vertexCount = static_cast<std::uint32_t>(buildProducts.vertices.size());
-            gpuSceneBuffers.pointCount = static_cast<std::uint32_t>(buildProducts.points.size());
-            gpuSceneBuffers.triangleCount = static_cast<std::uint32_t>(buildProducts.triangles.size());
-            gpuSceneBuffers.blasNodeCount = static_cast<std::uint32_t>(buildProducts.bottomLevelNodes.size());
-            gpuSceneBuffers.pointPackedBvhNodeCount =
-                    static_cast<std::uint32_t>(buildProducts.pointPackedBvhNodes.size());
-            gpuSceneBuffers.pointPackedBvhRangeCount =
-                    static_cast<std::uint32_t>(buildProducts.pointPackedBvhRanges.size());
-            gpuSceneBuffers.pointQbvhNodeCount =
-                    static_cast<std::uint32_t>(buildProducts.pointQbvhNodes.size());
-            gpuSceneBuffers.pointQbvhRangeCount =
-                    static_cast<std::uint32_t>(buildProducts.pointQbvhRanges.size());
-            gpuSceneBuffers.tlasNodeCount = static_cast<std::uint32_t>(buildProducts.topLevelNodes.size());
-
-            // light sizes
-            gpuSceneBuffers.lightCount =
-                    static_cast<std::uint32_t>(buildProducts.lights.size());
-            gpuSceneBuffers.emissiveTriangleCount =
-                    static_cast<std::uint32_t>(buildProducts.emissiveTriangles.size());
-
-            // allocate geometry
-            if (gpuSceneBuffers.vertexCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.vertexCount) * sizeof(Vertex);
-                gpuSceneBuffers.vertices =
-                        static_cast<Vertex *>(sycl::malloc_device(bytes, queue));
+            try {
+                allocateOrReallocate(buildProducts, gpuSceneBuffers, queue);
+            } catch(...) {
+                freeBuffers(gpuSceneBuffers, queue);
+                throw;
             }
-            if (gpuSceneBuffers.triangleCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.triangleCount) * sizeof(Triangle);
-                gpuSceneBuffers.triangles =
-                        static_cast<Triangle *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.pointCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointCount) * sizeof(Point);
-                gpuSceneBuffers.points =
-                        static_cast<Point *>(sycl::malloc_device(bytes, queue));
-            }
-            gpuSceneBuffers.pointTraversalDataCount =
-                    static_cast<std::uint32_t>(buildProducts.pointTraversalData.size());
-            if (gpuSceneBuffers.pointTraversalDataCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointTraversalDataCount) *
-                        sizeof(SurfelTraversalData);
-                gpuSceneBuffers.pointTraversalData =
-                        static_cast<SurfelTraversalData *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.blasNodeCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.blasNodeCount) * sizeof(BVHNode);
-                gpuSceneBuffers.blasNodes =
-                        static_cast<BVHNode *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.pointPackedBvhNodeCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointPackedBvhNodeCount) *
-                        sizeof(PackedPointBVHNode);
-                gpuSceneBuffers.pointPackedBvhNodes =
-                        static_cast<PackedPointBVHNode *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.pointPackedBvhRangeCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointPackedBvhRangeCount) * sizeof(BLASRange);
-                gpuSceneBuffers.pointPackedBvhRanges =
-                        static_cast<BLASRange *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.pointQbvhNodeCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointQbvhNodeCount) *
-                        sizeof(PackedPointQBVHNode);
-                gpuSceneBuffers.pointQbvhNodes =
-                        static_cast<PackedPointQBVHNode *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.pointQbvhRangeCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointQbvhRangeCount) * sizeof(BLASRange);
-                gpuSceneBuffers.pointQbvhRanges =
-                        static_cast<BLASRange *>(sycl::malloc_device(bytes, queue));
-            }
-            if (!buildProducts.bottomLevelRanges.empty()) {
-                const std::size_t bytes =
-                        buildProducts.bottomLevelRanges.size() * sizeof(BLASRange);
-                gpuSceneBuffers.blasRanges =
-                        static_cast<BLASRange *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.tlasNodeCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.tlasNodeCount) * sizeof(TLASNode);
-                gpuSceneBuffers.tlasNodes =
-                        static_cast<TLASNode *>(sycl::malloc_device(bytes, queue));
-            }
-            if (!buildProducts.transforms.empty()) {
-                const std::size_t bytes =
-                        buildProducts.transforms.size() * sizeof(Transform);
-                gpuSceneBuffers.transforms =
-                        static_cast<Transform *>(sycl::malloc_device(bytes, queue));
-            }
-            if (!buildProducts.materials.empty()) {
-                const std::size_t bytes =
-                        buildProducts.materials.size() * sizeof(GPUMaterial);
-                gpuSceneBuffers.materials =
-                        static_cast<GPUMaterial *>(sycl::malloc_device(bytes, queue));
-            }
-            if (!buildProducts.instances.empty()) {
-                const std::size_t bytes =
-                        buildProducts.instances.size() * sizeof(InstanceRecord);
-                gpuSceneBuffers.instances =
-                        static_cast<InstanceRecord *>(sycl::malloc_device(bytes, queue));
-            }
-            gpuSceneBuffers.pointPermutationCount =
-                    static_cast<std::uint32_t>(buildProducts.pointPermutation.size());
-
-            if (gpuSceneBuffers.pointPermutationCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.pointPermutationCount) * sizeof(uint32_t);
-                gpuSceneBuffers.pointPermutation =
-                        static_cast<uint32_t *>(sycl::malloc_device(bytes, queue));
-            }
-            // allocate lights
-            if (gpuSceneBuffers.lightCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.lightCount) * sizeof(GPULightRecord);
-                gpuSceneBuffers.lights =
-                        static_cast<GPULightRecord *>(sycl::malloc_device(bytes, queue));
-            }
-            if (gpuSceneBuffers.emissiveTriangleCount > 0) {
-                const std::size_t bytes =
-                        static_cast<std::size_t>(gpuSceneBuffers.emissiveTriangleCount) *
-                        sizeof(GPUEmissiveTriangle);
-                gpuSceneBuffers.emissiveTriangles =
-                        static_cast<GPUEmissiveTriangle *>(sycl::malloc_device(bytes, queue));
-            }
-
             return gpuSceneBuffers;
         }
 
@@ -626,8 +483,9 @@ export namespace Pale {
         // ---------------------------------------------------------------------
         // 2b) Upload with optional reallocation
         //
-        // If sizes match: behaves like upload().
-        // If sizes differ: frees and reallocates buffers, then uploads.
+        // Counted arrays retain their storage when sizes match. Metadata arrays
+        // without stored capacities are refreshed before copying. Allocation
+        // failures preserve each array's previous pointer/count for recovery.
         // ---------------------------------------------------------------------
         static void uploadOrReallocate(const SceneBuild::BuildProducts &buildProducts,
                                        GPUSceneBuffers &gpuSceneBuffers,
@@ -651,6 +509,15 @@ export namespace Pale {
             if (!sameSizes) {
                 // Reallocate in-place
                 allocateOrReallocate(buildProducts, gpuSceneBuffers, queue);
+            } else {
+                // These arrays have no capacity fields in GPUSceneBuffers.
+                // Equal geometry counts do not imply equal scene metadata;
+                // copying a larger instance/material array into old storage
+                // would otherwise overrun its allocation.
+                reallocVectorBackedArray(gpuSceneBuffers.blasRanges, buildProducts.bottomLevelRanges.size(), queue);
+                reallocVectorBackedArray(gpuSceneBuffers.transforms, buildProducts.transforms.size(), queue);
+                reallocVectorBackedArray(gpuSceneBuffers.materials, buildProducts.materials.size(), queue);
+                reallocVectorBackedArray(gpuSceneBuffers.instances, buildProducts.instances.size(), queue);
             }
 
             upload(buildProducts, gpuSceneBuffers, queue);
@@ -662,7 +529,15 @@ export namespace Pale {
         static GPUSceneBuffers allocateAndUpload(const SceneBuild::BuildProducts &buildProducts,
                                                  sycl::queue queue) {
             GPUSceneBuffers gpuSceneBuffers = allocate(buildProducts, queue);
-            upload(buildProducts, gpuSceneBuffers, queue);
+            try {
+                upload(buildProducts, gpuSceneBuffers, queue);
+            } catch(...) {
+                // Complete any copies already submitted before releasing their
+                // destination buffers, including a failed diagnostic upload.
+                queue.wait();
+                freeBuffers(gpuSceneBuffers, queue);
+                throw;
+            }
             return gpuSceneBuffers;
         }
     };

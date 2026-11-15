@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.28)
 project(PaleRealtimeViewer
-        VERSION 0.1.0
+        VERSION 1.0.0
         DESCRIPTION "ImGui realtime viewer for Pale renderer"
         LANGUAGES C CXX)
 
@@ -295,3 +295,59 @@ add_sycl_to_target(TARGET PaleRealtimeViewer)
 #        "${PALE_ROOT}/python/test/benchmark_splat_events.cpp")
 #target_link_libraries(PaleSplatEventsBenchmark PRIVATE PaleLibRealtime)
 #add_sycl_to_target(TARGET PaleSplatEventsBenchmark)
+
+# Explicit CPU-only launch/protocol/native-loader integration check; no GPU work.
+add_executable(PaleViewerTrainingIntegration EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_viewer_training_integration.cpp")
+target_compile_options(PaleViewerTrainingIntegration PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerTrainingIntegration PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerTrainingIntegration PRIVATE PaleLibRealtime yaml-cpp imgui)
+add_sycl_to_target(TARGET PaleViewerTrainingIntegration)
+
+# Viewport geometry regression; Dear ImGui only, with no display or SYCL work.
+add_executable(PaleViewerViewportLayout EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_viewport_layout.cpp")
+target_compile_options(PaleViewerViewportLayout PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerViewportLayout PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerViewportLayout PRIVATE imgui)
+
+add_executable(PaleViewerLivePacketLease EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_viewer_live_packet_lease.cpp")
+target_compile_options(PaleViewerLivePacketLease PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerLivePacketLease PRIVATE "${PALE_ROOT}")
+
+add_executable(PaleViewerMetricsAxes EXCLUDE_FROM_ALL
+        "${PALE_ROOT}/test/test_training_metrics_axes.cpp")
+target_compile_options(PaleViewerMetricsAxes PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerMetricsAxes PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerMetricsAxes PRIVATE imgui)
+
+foreach(check IN ITEMS responsive_work preview_recovery)
+    add_executable(PaleViewer_${check} EXCLUDE_FROM_ALL "${PALE_ROOT}/test/test_viewer_${check}.cpp")
+    target_compile_options(PaleViewer_${check} PRIVATE -UNDEBUG)
+    target_include_directories(PaleViewer_${check} PRIVATE "${PALE_ROOT}")
+endforeach()
+add_executable(PaleViewerDeviceAllocation EXCLUDE_FROM_ALL "${PALE_ROOT}/test/test_device_allocation.cpp")
+target_compile_options(PaleViewerDeviceAllocation PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerDeviceAllocation PRIVATE "${PALE_ROOT}")
+add_executable(PaleViewerMeshExport EXCLUDE_FROM_ALL "${PALE_ROOT}/test/test_viewer_mesh_export_controls.cpp")
+target_compile_options(PaleViewerMeshExport PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerMeshExport PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerMeshExport PRIVATE imgui yaml-cpp)
+add_executable(PaleViewerLogScroll EXCLUDE_FROM_ALL "${PALE_ROOT}/test/test_viewer_log_scroll.cpp")
+target_compile_options(PaleViewerLogScroll PRIVATE -UNDEBUG)
+target_include_directories(PaleViewerLogScroll PRIVATE "${PALE_ROOT}")
+target_link_libraries(PaleViewerLogScroll PRIVATE imgui yaml-cpp)
+
+# Optional UI verification without a display server or reconstruction device.
+find_library(PALE_VIEWER_EGL EGL)
+if(PALE_VIEWER_EGL)
+    add_executable(PaleViewerTexture EXCLUDE_FROM_ALL "${PALE_ROOT}/test/test_viewport_texture.cpp")
+    target_compile_options(PaleViewerTexture PRIVATE -UNDEBUG)
+    target_include_directories(PaleViewerTexture PRIVATE "${PALE_ROOT}")
+    target_link_libraries(PaleViewerTexture PRIVATE OpenGL::GL "${PALE_VIEWER_EGL}")
+    add_executable(PaleViewerWorkspacePreview EXCLUDE_FROM_ALL "${PALE_ROOT}/test/viewer_workspace_preview.cpp")
+    target_compile_options(PaleViewerWorkspacePreview PRIVATE -UNDEBUG)
+    target_include_directories(PaleViewerWorkspacePreview PRIVATE "${PALE_ROOT}" "${PALE_ROOT}/vendor/stb_image")
+    target_link_libraries(PaleViewerWorkspacePreview PRIVATE yaml-cpp imgui OpenGL::GL "${PALE_VIEWER_EGL}")
+endif()

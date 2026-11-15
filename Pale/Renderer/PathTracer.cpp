@@ -98,7 +98,12 @@ namespace Pale {
         if (events == nullptr) {
             throw std::runtime_error("Unable to allocate the complete camera slab/light event buffer");
         }
-        m_queue.wait_and_throw();
+        try {
+            m_queue.wait_and_throw();
+        } catch(...) {
+            sycl::free(events,m_queue);
+            throw;
+        }
         sycl::free(m_intermediates.measurementTwoPointEvents, m_queue);
         m_intermediates.measurementTwoPointEvents = events;
         m_intermediates.maxMeasurementTwoPointEventCount = static_cast<uint32_t>(required);
