@@ -175,9 +175,12 @@ emitter changes can seed a new run.
 
 **Run monitor → Progress** shows training/viewed/saved iterations, objective history,
 update time with iterations per second, a larger objective plot,
-the output directory and log, and acknowledged **Pause**, **Continue**, **Stop
-training**, and **Save checkpoint** actions. Stop finishes the current update and
-saves the result; initialization and finalization can take time. **Metrics** retains the complete objective and image-loss history, with an optional
+the output directory and log, and **Pause**, **Continue**, **Stop**, and **Save
+checkpoint** actions. **Stop** immediately terminates the viewer-owned optimizer
+and its mesh/glTF workers, including during finalization or an unacknowledged
+command. It keeps the displayed scene and existing saved checkpoints, without
+waiting for a final save or starting an export. Normal completion still performs
+the configured mesh/glTF export. **Metrics** retains the complete objective and image-loss history, with an optional
 rolling iteration window and log scale. Weighted normal and depth regularizers share a separate plot with independent
 left (normal) and right (depth) Y-axes. Alpha/slab losses have their own plot under
 **Other regularizers / raw terms / gradients**. Population, pruning, runtime, gradients and all recorded latest
@@ -197,7 +200,9 @@ arrives; clearing it resumes display updates.
 Dataset selection remains available while stopping. After launch, **Start
 reconstruction** becomes **Reconstructing...** with a spinner and remains disabled.
 It shows **Paused**, **Stopping...** or **Finalizing...** during those stages, then
-returns to **Start reconstruction** after the process exits. New reconstructions cannot be queued; starting the next one always requires
+returns to **Start reconstruction** after the process exits. A **Stop** button
+appears immediately beside it in both the top bar and Reconstruction panel while
+the run is active, and remains available during finalization. New reconstructions cannot be queued; starting the next one always requires
 another click. Editing never sends a pause command. No command forcibly kills an
 unrelated process.
 

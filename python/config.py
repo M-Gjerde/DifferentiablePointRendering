@@ -101,12 +101,12 @@ class OptimizationConfig:
     depth_distort_squared: bool = True  # World-space only: True uses squared depth differences, False absolute; NDC always uses squared differences.
     depth_distort_start_iteration: int = 2_000
     normal_consistency_weight: float = 1.0e-3
-    normal_consistency_start_iteration: int = 3_000
+    normal_consistency_start_iteration: int = 0
     normal_from_depth_use_mean_depth: bool = False
     median_depth_retain_last_hit: bool = False  # Training median depth and depth-derived normals: retain sub-threshold last hits.
     # Differentiates opacity and footprint geometry; zero disables this term.
     alpha_loss_weight: float = 0.0005
-    alpha_loss_start_iteration: int = depth_distort_start_iteration  # Global iteration at which alpha loss becomes active.
+    alpha_loss_start_iteration: int = 10_000  # Global iteration at which alpha loss becomes active.
     alpha_loss_absolute: bool = True  # True: absolute alpha error; False: half squared alpha error.
     alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
 
@@ -152,8 +152,8 @@ class OptimizationConfig:
     densification_diagnostics: bool = True
 
     # Threshold units follow densification_image_space (normalized image or world).
-    densification_grad_abs_min: float = 0.0006
-    densification_grad_abs_min_final: float = 0.0006
+    densification_grad_abs_min: float = 0.0004
+    densification_grad_abs_min_final: float = 0.0004
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.

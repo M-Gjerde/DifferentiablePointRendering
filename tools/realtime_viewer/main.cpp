@@ -3336,7 +3336,8 @@ int main(int argc, char** argv) {
         };
         auto enterTrainingView = [&](viewer::TrainingView view) {
             if (!training.hasRun()) return;
-            if(view==viewer::TrainingView::Live&&(training.openedReconstruction||!training.process.active()))view=viewer::TrainingView::Saved;
+            const bool stoppedPreview=training.stopRequested&&training.live.IsMap();
+            if(view==viewer::TrainingView::Live&&(training.openedReconstruction||(!training.process.active()&&!stoppedPreview)))view=viewer::TrainingView::Saved;
             if (!modelReadOnly()) {
                 if(!saveWorkingSnapshot())return;
                 loadedTrainingSceneRun.clear();
@@ -5360,14 +5361,15 @@ int main(int argc, char** argv) {
                     ImGui::EndMenu();
                 }
                 ImGui::SameLine(); ImGui::TextDisabled("RECONSTRUCTION");
-                ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX()+20,ImGui::GetWindowWidth()-380));
+                const float stopWidth=training.process.active()?viewer::TrainingControls::stopButtonWidth+ImGui::GetStyle().ItemSpacing.x:0.f;
+                ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX()+20,ImGui::GetWindowWidth()-380-stopWidth));
                 ImGui::Checkbox("Auto preview",&autoRender); ImGui::SameLine();
                 if(viewer::ui::iconButton("Refresh preview",viewer::ui::Icon::Refresh,false,ImVec2(25,ImGui::GetFrameHeight()))) {
                     previewRecovery.manualRetry();
                     if(busy)queuedRefresh=true;else renderRequested=true;
                 }
                 ImGui::SameLine();
-                if(training.drawStartButton(ImVec2(182,0),busy&&training.useWorkingSnapshot))start=true;
+                if(training.drawRunButtons(ImVec2(182,0),busy&&training.useWorkingSnapshot))start=true;
                 ImGui::EndMainMenuBar();
             }
             return start;
@@ -5403,9 +5405,10 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
             if (training.hasRun()) {
                 ImGui::SetNextItemWidth(168);
-                const char* source = training.view==viewer::TrainingView::Live ? "Live training" : training.view==viewer::TrainingView::Saved ? (training.openedReconstruction?"Saved reconstruction":"Follow saved") : training.view==viewer::TrainingView::History ? "Checkpoint history" : "Editable snapshot";
+                const char* liveSource=training.process.active()?"Live training":"Latest preview";
+                const char* source = training.view==viewer::TrainingView::Live ? liveSource : training.view==viewer::TrainingView::Saved ? (training.openedReconstruction?"Saved reconstruction":"Follow saved") : training.view==viewer::TrainingView::History ? "Checkpoint history" : "Editable snapshot";
                 if(ImGui::BeginCombo("##SceneSource",source)) {
-                    if(!training.openedReconstruction&&training.process.active()&&ImGui::Selectable("Live training",training.view==viewer::TrainingView::Live)) {
+                    if(!training.openedReconstruction&&(training.process.active()||(training.stopRequested&&training.live.IsMap()))&&ImGui::Selectable(liveSource,training.view==viewer::TrainingView::Live)) {
                         if(busy)queuedSceneSource=viewer::TrainingView::Live;else enterTrainingView(viewer::TrainingView::Live);
                     }
                     if(ImGui::Selectable(training.openedReconstruction?"Latest saved":"Follow saved",training.view==viewer::TrainingView::Saved)) {
@@ -7965,7 +7968,7 @@ int main(int argc, char** argv) {
                 // generation, even if training publishes faster than we draw.
                 if(training.initializedPointCloudRequest&&!holdPreviewForInspector)loadRequestedInitializer();
                 if(!previewWork.busy()&&viewer::canPollTrainingScene(sceneUploadPending,training.loadedGeneration)&&!holdPreviewForInspector&&previewRecovery.dispatchAllowed(now))pollTrainingScene();
-                if(!holdPreviewForInspector&&!previewWork.busy() && previewRecovery.dispatchAllowed(now) && (!modelReadOnly() || training.loadedGeneration!=0) && ((autoRender&&cameraDirty)||renderRequested))
+                if(!holdPreviewForInspector&&!previewWork.busy() && previewRecovery.dispatchAllowed(now) && (!modelReadOnly() || training.loadedGeneration!=0 || training.stopRequested) && ((autoRender&&cameraDirty)||renderRequested))
                     startPreviewJob(renderNow,[&] {
                         updateDisplayTexture();publishDisplayedOverlays();lastPreviewInteractive=interactivePreview;
                         previewRecovery.succeeded();

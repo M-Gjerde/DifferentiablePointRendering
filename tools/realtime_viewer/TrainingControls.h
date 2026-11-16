@@ -186,10 +186,10 @@ namespace viewer {
             try { return status[name].as<uint64_t>(); } catch (...) { return 0; }
         }
         [[nodiscard]] std::string state() const {
-            if(stopRequested&&process.active())return "stopping";
+            if(stopRequested)return process.active()?"stopping":"stopped";
             try { return status["state"].as<std::string>(); } catch (...) { return process.active() ? "starting" : "idle"; }
         }
-        [[nodiscard]] bool pending() const { return process.active() && process.commandSequence > integer("ack"); }
+        [[nodiscard]] bool pending() const { return process.active() && !stopRequested && process.commandSequence > integer("ack"); }
         [[nodiscard]] bool hasRun() const {return openedReconstruction.has_value()||process.launched();}
         [[nodiscard]] bool openingSaved() const {return reconstructionLoad.valid()||preparedReconstruction.has_value();}
         [[nodiscard]] const std::filesystem::path& runDirectory() const {
@@ -298,11 +298,19 @@ namespace viewer {
             if(logReader.update(process.directory / "training.log"))log=logReader.text();
             metrics.update(process.runDirectory/"metrics.csv");
             geometryMetrics.update(process.runDirectory/"geometry_metrics.csv",true);
-            if (process.exitCode && *process.exitCode != 0)
+            if(stopRequested&&process.exitCode)message="Reconstruction stopped";
+            else if (process.exitCode && *process.exitCode != 0)
                 message = "Training exited with code " + std::to_string(*process.exitCode) + ". Open Run monitor > Log for details.";
         }
         void request(const char* command, bool tune = false) {
-            if (!process.active() || pending()) return;
+            if (!process.active() || stopRequested) return;
+            if(std::string(command)=="stop") {
+                // Kill the owned process group without waiting for a training
+                // boundary, final PLY/mesh extraction, or textured glTF export.
+                stopRequested=true;process.shutdown();message="Stopping reconstruction...";
+                return;
+            }
+            if(pending())return;
             YAML::Node request;
             request["sequence"] = jsonNumber(++process.commandSequence); request["command"] = command;
             if (tune) for (std::size_t i = 0; i < parameters.size(); ++i) {
@@ -313,7 +321,6 @@ namespace viewer {
             }
             try { writeJsonAtomic(process.directory / "command.json", request); }
             catch (...) { --process.commandSequence; throw; }
-            if(std::string(command)=="stop")stopRequested=true;
         }
         void send(const char* command, bool tune = false) {
             try { request(command, tune); } catch (const std::exception& error) { message = error.what(); }
@@ -462,7 +469,7 @@ namespace viewer {
                 ImGui::TextDisabled("Emitter power optimization is fixed by the current training backend.");
                 ImGui::TreePop();
             }
-            start=drawStartButton(ImVec2(-1,32),previewBusy&&useWorkingSnapshot);
+            start=drawRunButtons(ImVec2(-1,32),previewBusy&&useWorkingSnapshot);
             if(process.active()||openingSaved())ImGui::BeginDisabled();
             if(ImGui::Button("Open previous reconstruction...",ImVec2(-1,0)))openReconstructionBrowser();
             if(process.active()||openingSaved())ImGui::EndDisabled();
@@ -496,11 +503,17 @@ namespace viewer {
                         const bool disabled=!process.active()||pending()||stopRequested||state()=="finalizing";
                         if(disabled)ImGui::BeginDisabled();
                         if(ImGui::Button(state()=="paused"?"Continue":"Pause"))send(state()=="paused"?"resume":"pause");
-                        ImGui::SameLine(); if(ImGui::Button("Stop"))send("stop");
-                        ImGui::SameLine(); if(ImGui::Button("Save checkpoint"))send("save");
                         if(disabled)ImGui::EndDisabled();
+                        if(process.active()) {ImGui::SameLine();drawStopButton(ImVec2(0,0));}
+                        ImGui::SameLine();
+                        if(disabled||stopRequested)ImGui::BeginDisabled();
+                        if(ImGui::Button("Save checkpoint"))send("save");
+                        if(disabled||stopRequested)ImGui::EndDisabled();
                         if(pending())ImGui::TextDisabled("Waiting for iteration boundary");
-                        else if(!openedReconstruction&&process.exitCode)ImGui::TextDisabled("Process exited: %d",*process.exitCode);
+                        else if(!openedReconstruction&&process.exitCode) {
+                            if(stopRequested)ImGui::TextDisabled("Stopped by user");
+                            else ImGui::TextDisabled("Process exited: %d",*process.exitCode);
+                        }
                         else if(status["iteration_ms"].IsScalar()) {
                             try {
                                 const float milliseconds=status["iteration_ms"].as<float>();
@@ -515,7 +528,7 @@ namespace viewer {
                     if(ImGui::SmallButton("Metrics..."))requestedMonitorTab=1;
                     ImGui::SameLine();
                     if(std::isfinite(geometryMetrics.latest("cd")))ImGui::Text("CD %.5g  Accuracy %.5g  Completion %.5g",geometryMetrics.latest("cd"),geometryMetrics.latest("accuracy"),geometryMetrics.latest("completion"));
-                    if(!openedReconstruction&&process.exitCode&&*process.exitCode!=0)ImGui::TextWrapped("%s",message.c_str());
+                    if(!openedReconstruction&&!stopRequested&&process.exitCode&&*process.exitCode!=0)ImGui::TextWrapped("%s",message.c_str());
                     ImGui::EndTabItem();
                 }
                 if(ImGui::BeginTabItem("Metrics",nullptr,requested==1?ImGuiTabItemFlags_SetSelected:0)) {drawMetrics();ImGui::EndTabItem();}
@@ -565,6 +578,26 @@ namespace viewer {
                 if(!selecting)ImGui::SetScrollY(window,tail);
                 break;
             }
+        }
+        static constexpr float stopButtonWidth=60.f;
+        bool drawRunButtons(ImVec2 size,bool previewBlocked=false) {
+            const bool running=process.active();
+            if(running&&size.x<0)size.x=std::max(1.f,ImGui::GetContentRegionAvail().x-stopButtonWidth-ImGui::GetStyle().ItemSpacing.x);
+            const bool start=drawStartButton(size,previewBlocked);
+            if(running) {ImGui::SameLine();drawStopButton(ImVec2(stopButtonWidth,size.y));}
+            return start;
+        }
+        bool drawStopButton(ImVec2 size) {
+            if(!process.active())return false;
+            const bool disabled=stopRequested;
+            if(disabled)ImGui::BeginDisabled();
+            const bool pressed=ImGui::Button("Stop###StopReconstruction",size);
+            if(disabled)ImGui::EndDisabled();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s",stopRequested?"Stopping reconstruction...":
+                    "Stop reconstruction immediately, including mesh extraction and glTF export. Keep the last displayed scene and existing checkpoints.");
+            if(pressed&&!disabled)send("stop");
+            return pressed&&!disabled;
         }
         bool drawStartButton(ImVec2 size, bool previewBlocked=false) {
             const bool running=process.active(),disabled=running||previewBlocked||openingSaved();
