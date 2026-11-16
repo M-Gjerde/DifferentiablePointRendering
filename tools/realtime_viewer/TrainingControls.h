@@ -182,6 +182,17 @@ namespace viewer {
                 selectDataset(teapot!=datasets.end()?*teapot:datasets.front());
             }
         }
+        void openDatasetFolder() {
+            try {
+                if(!datasetRoot[0])throw std::runtime_error("Set the Dataset library folder in Run options first");
+                const auto root=expandedPath(datasetRoot.data(),std::filesystem::current_path());
+                std::filesystem::create_directories(root);
+                const auto open=ImGui::GetPlatformIO().Platform_OpenInShellFn;
+                if(!open||!open(ImGui::GetCurrentContext(),root.c_str()))
+                    throw std::runtime_error("Could not open dataset folder: "+root.string());
+                message="Dataset library: "+root.string();
+            }catch(const std::exception& error) {message=error.what();}
+        }
         [[nodiscard]] uint64_t integer(const char* name) const {
             try { return status[name].as<uint64_t>(); } catch (...) { return 0; }
         }
@@ -394,7 +405,8 @@ namespace viewer {
             ImGui::Spacing(); ImGui::SeparatorText("Dataset");
             const auto selected=std::find_if(datasets.begin(),datasets.end(),[&](const auto& entry){return entry.directory==std::filesystem::path(dataset.data());});
             const std::string label=selected==datasets.end() ? (dataset[0] ? std::filesystem::path(dataset.data()).filename().string() : "Choose dataset") : selected->label;
-            ImGui::SetNextItemWidth(-38);
+            const float datasetButtonWidth=28.f;
+            ImGui::SetNextItemWidth(-2.f*(datasetButtonWidth+ImGui::GetStyle().ItemSpacing.x));
             if(ImGui::BeginCombo("##Dataset",label.c_str())) {
                 for(const auto& entry:datasets) {
                     const bool active=entry.directory==std::filesystem::path(dataset.data());
@@ -406,7 +418,11 @@ namespace viewer {
             }
             if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",dataset.data());
             ImGui::SameLine();
-            if(ui::iconButton("Refresh dataset library",ui::Icon::Refresh,false,ImVec2(28,ImGui::GetFrameHeight())))refreshDatasets();
+            if(ui::iconButton("Open dataset folder",ui::Icon::Folder,false,ImVec2(datasetButtonWidth,ImGui::GetFrameHeight())))openDatasetFolder();
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)||ImGui::IsItemFocused())
+                ImGui::SetTooltip("Open dataset folder\n%s\n\nPlace each dataset in a subfolder containing\nimages/, scene.xml and points.ply, then refresh the library.",datasetRoot.data());
+            ImGui::SameLine();
+            if(ui::iconButton("Refresh dataset library",ui::Icon::Refresh,false,ImVec2(datasetButtonWidth,ImGui::GetFrameHeight())))refreshDatasets();
             if(!dataset[0])ImGui::BeginDisabled();
             if(ImGui::Button("Load initialized point cloud",ImVec2(-1,0))) {
                 const auto cwd=expandedPath(workingDirectory.data(),std::filesystem::current_path());
