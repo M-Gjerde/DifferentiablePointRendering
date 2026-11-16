@@ -21,6 +21,14 @@ cmake -S tools/realtime_viewer -B build-realtime \
 cmake --build build-realtime -j"$(nproc)"
 ```
 
+Building `PaleRealtimeViewer` also updates the Python training module through
+the existing `pale` target in the repository's `cmake-build-pybind` directory.
+That directory must already be configured with `BUILD_PYBIND=ON`; use
+`-DPALE_TRAINING_BUILD_DIR=/path/to/training-build` when configuring the viewer
+to select another configured training build. The update is incremental and
+requires no installation or `sudo`. The viewer's **Native module directory**
+must point to the training build's output directory.
+
 The AdaptiveCpp driver must use the same LLVM major version as the plugin it
 was built with. Verify this before configuring:
 

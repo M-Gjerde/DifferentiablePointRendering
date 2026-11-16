@@ -267,6 +267,18 @@ target_include_directories(PaleLibRealtime
 add_sycl_to_target(TARGET PaleLibRealtime)
 
 add_executable(PaleRealtimeViewer main.cpp)
+
+# Keep the Python optimizer's native module current when building the viewer.
+set(PALE_TRAINING_BUILD_DIR "${PALE_ROOT}/cmake-build-pybind"
+    CACHE PATH "Configured build directory for the pale training module")
+add_custom_target(PaleTrainingModule
+    COMMAND "${CMAKE_COMMAND}" --build "${PALE_TRAINING_BUILD_DIR}"
+            --target pale
+    COMMENT "Updating the pale training module"
+    USES_TERMINAL
+    VERBATIM)
+add_dependencies(PaleRealtimeViewer PaleTrainingModule)
+
 # The cached world-space overlap diagnostic parallelizes host footprint queries.
 target_link_options(PaleRealtimeViewer PRIVATE -fopenmp=libomp)
 target_compile_options(PaleRealtimeViewer
