@@ -9,6 +9,7 @@
 
 namespace viewer::ui {
     inline constexpr const char* appName="PBdR";
+    inline constexpr const char* sceneTreeTitle = "Scene Tree";
     // PBdR workspace tokens from the approved Figma / supplied SVG.
     inline constexpr ImVec4 canvas{.145f, .157f, .176f, 1};
     inline constexpr ImVec4 panel{.114f, .125f, .141f, 1};
@@ -149,7 +150,7 @@ namespace viewer::ui {
         ImGui::DockBuilderSplitNode(right,ImGuiDir_Up,.30f,&tree,&inspector);
         const float monitorFraction=std::clamp(230.f/viewport->WorkSize.y,.18f,.30f);
         ImGui::DockBuilderSplitNode(main,ImGuiDir_Down,monitorFraction,&monitor,&main);
-        ImGui::DockBuilderDockWindow("Scene Collection",tree); ImGui::DockBuilderDockWindow("Properties",inspector);
+        ImGui::DockBuilderDockWindow(sceneTreeTitle,tree); ImGui::DockBuilderDockWindow("Properties",inspector);
         ImGui::DockBuilderDockWindow("Run monitor",monitor); ImGui::DockBuilderDockWindow("Viewport",main);
         ImGui::DockBuilderGetNode(main)->LocalFlags |= ImGuiDockNodeFlags_HiddenTabBar;
         ImGui::DockBuilderFinish(id);

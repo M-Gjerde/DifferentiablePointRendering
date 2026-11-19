@@ -21,14 +21,17 @@ namespace viewer {
     }
     inline YAML::Node reconstructionSetting(const YAML::Node& config,const char* name) {
         if(config.IsMap()) {
-            if(config[name])return config[name];
-            if(config["optimization_config"].IsMap())return config["optimization_config"][name];
+            if(const auto direct=config[name];direct)return direct;
+            if(const auto optimization=config["optimization_config"];optimization&&optimization.IsMap())
+                if(const auto nested=optimization[name];nested)return nested;
         }
         return {};
     }
     inline bool reconstructionFile(const std::filesystem::path& path) {
         std::error_code error;return std::filesystem::is_regular_file(path,error);
     }
+    inline constexpr uint64_t reconstructionCompletionIteration=30'000;
+    inline constexpr char reconstructionCompletionMarker[]=".viewer_completed";
     inline bool isReconstructionDirectory(const std::filesystem::path& path) {
         return reconstructionFile(path/"run_config.json")||reconstructionFile(path/"metrics.csv")||
             reconstructionFile(path/"points_final.ply");
@@ -84,6 +87,11 @@ namespace viewer {
         TrainingMetrics metrics,geometryMetrics;
         std::string log,launchCommand;
         uint64_t iteration=0,targetIteration=0;
+        bool checkpointIterationKnown=false,manuallyCompleted=false;
+
+        [[nodiscard]] bool completed() const {
+            return iteration>=reconstructionCompletionIteration||manuallyCompleted;
+        }
     };
     inline uint64_t reconstructionIteration(double value) {
         return std::isfinite(value)&&value>=0&&value<static_cast<double>(std::numeric_limits<uint64_t>::max())?
@@ -105,24 +113,29 @@ namespace viewer {
         if(saved.scene.empty())throw std::runtime_error("This reconstruction has no accessible scene.xml. Restore its scene file before opening it.");
         while(saved.metrics.update(root/"metrics.csv")) {}
         while(saved.geometryMetrics.update(root/"geometry_metrics.csv")) {}
-        saved.iteration=reconstructionIteration(saved.metrics.latest("iteration"));
+        const auto lastMetric=saved.metrics.latest("iteration");
+        const auto metricIteration=reconstructionIteration(lastMetric);
+        saved.iteration=metricIteration;
         saved.checkpoints=listOptimizationPointCloudSnapshots(root/"points");
+        saved.checkpointIterationKnown=!saved.checkpoints.empty();
         if(!saved.checkpoints.empty())saved.iteration=std::max(saved.iteration,saved.checkpoints.back().iteration);
         const auto iterations=reconstructionSetting(saved.config,"iterations");
         const auto offset=reconstructionSetting(saved.config,"resume_iteration_offset");
         try {saved.targetIteration=reconstructionIteration(iterations.as<double>(0)+offset.as<double>(0));}catch(...) {}
         const auto final=root/"points_final.ply";
-        if(reconstructionFile(final)&&(saved.checkpoints.empty()||lastWriteTimeOrMin(final)>=saved.checkpoints.back().writeTime)) {
-            // The CSV is authoritative for stopped runs; the target is only a
-            // fallback for a final output whose metrics were not retained.
-            const auto step=saved.iteration?saved.iteration:saved.targetIteration;
-            const PointCloudSnapshot snapshot{final,step,lastWriteTimeOrMin(final)};
-            if(!saved.checkpoints.empty()&&saved.checkpoints.back().iteration==step)saved.checkpoints.back()=snapshot;
+        const bool finalIterationKnown=std::isfinite(lastMetric)&&lastMetric>=0&&metricIteration>=saved.iteration;
+        if(reconstructionFile(final)&&(saved.checkpoints.empty()||
+            (finalIterationKnown&&lastWriteTimeOrMin(final)>=saved.checkpoints.back().writeTime))) {
+            // An early stop can also produce a final PLY. Use recorded progress
+            // for its iteration and prefer a numbered checkpoint if it is unknown.
+            const PointCloudSnapshot snapshot{final,metricIteration,lastWriteTimeOrMin(final)};
+            if(!saved.checkpoints.empty()&&saved.checkpoints.back().iteration==metricIteration)saved.checkpoints.back()=snapshot;
             else saved.checkpoints.push_back(snapshot);
-            saved.iteration=step;
+            saved.checkpointIterationKnown=finalIterationKnown;
         }
         if(saved.checkpoints.empty())throw std::runtime_error("No saved point cloud found. Expected points/iter_*_points.ply or points_final.ply.");
-        saved.targetIteration=std::max(saved.targetIteration,saved.iteration);
+        saved.targetIteration=std::max({saved.targetIteration,saved.iteration,reconstructionCompletionIteration});
+        saved.manuallyCompleted=reconstructionFile(root/reconstructionCompletionMarker);
         auto logPath=root/"training.log";
         auto commandPath=root/"launch_command.txt";
         // Viewer logs live beside outputs in .viewer_sessions. Match by the

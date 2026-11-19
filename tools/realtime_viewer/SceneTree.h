@@ -23,7 +23,7 @@ namespace viewer {
         std::optional<SceneTreeItem> draw(const std::string& sceneName,const std::vector<SceneTreeGroup>& groups,bool& visible) {
             if(!visible)return {};
             std::optional<SceneTreeItem> picked;
-            ImGui::Begin("Scene Collection",&visible);
+            ImGui::Begin(ui::sceneTreeTitle,&visible);
             ImGui::SetNextItemWidth(-1);
             ImGui::InputTextWithHint("##sceneSearch","Search scene...",search.data(),search.size());
             const auto query=lower(search.data());

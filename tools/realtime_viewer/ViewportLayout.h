@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CameraImageView.h"
+#include <array>
 
 namespace viewer {
     struct ViewportCanvas {
@@ -23,6 +24,14 @@ namespace viewer {
         // must fill that same rectangle while the next frame is in flight.
         return calibrated ? image.placement(canvas.min, canvas.size, width, height)
                           : CameraImageView::Placement{canvas.min, canvas.size};
+    }
+
+    [[nodiscard]] inline std::array<ViewportCanvas, 2> viewportComparisonCanvases(
+        const ViewportCanvas& canvas, float spacing) {
+        const float gap = std::clamp(spacing, 0.f, std::max(0.f, canvas.size.x - 2.f));
+        const ImVec2 size{(canvas.size.x - gap) * 0.5f, canvas.size.y};
+        return {ViewportCanvas{canvas.min, size},
+                ViewportCanvas{ImVec2(canvas.min.x + size.x + gap, canvas.min.y), size}};
     }
 
     inline void finishViewportCanvas(const ViewportCanvas& canvas) {

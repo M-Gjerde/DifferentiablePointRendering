@@ -16,18 +16,19 @@ cmake -S tools/realtime_viewer -B build-realtime \
   -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_C_COMPILER=/usr/bin/clang-22 \
   -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
+  -DPALE_TRAINING_BUILD_DIR=/path/to/training-build \
   -DAdaptiveCpp_DIR=/usr/local/lib/cmake/AdaptiveCpp
 
 cmake --build build-realtime -j"$(nproc)"
 ```
 
 Building `PaleRealtimeViewer` also updates the Python training module through
-the existing `pale` target in the repository's `cmake-build-pybind` directory.
-That directory must already be configured with `BUILD_PYBIND=ON`; use
-`-DPALE_TRAINING_BUILD_DIR=/path/to/training-build` when configuring the viewer
-to select another configured training build. The update is incremental and
-requires no installation or `sudo`. The viewer's **Native module directory**
-must point to the training build's output directory.
+an existing `pale` target. Set `PALE_TRAINING_BUILD_DIR` explicitly when configuring
+the viewer, for example to this checkout's `cmake-build-pybind_install_release`.
+That directory must already be configured from this repository with
+`BUILD_PYBIND=ON`. The update is incremental and
+requires no installation or `sudo`. The viewer's default **Native module directory**
+uses the same training build; saved environment preferences still take precedence.
 
 The AdaptiveCpp driver must use the same LLVM major version as the plugin it
 was built with. Verify this before configuring:
@@ -57,12 +58,19 @@ Open **Reconstruction → Training setup** or the sliders icon in Properties. Th
 dataset dropdown discovers complete datasets directly beneath
 `~/ValeDrive/phd/pbdr/datasets/pbdr_synthetic`. A complete entry has `images/`,
 `scene.xml` and `points.ply`; optional ground truth lives alongside them as
-`gt.ply`. Selecting a dataset configures the next reconstruction and leaves the
+`gt.ply`. Use the folder icon beside the dropdown (or **Choose dataset folder...**
+in the dropdown) to open the native directory picker. On Linux this uses
+`zenity`; press **Ctrl+L** in the picker to paste a dataset path. Custom folders
+do not need to be in the dataset library. They use the
+same validation and local ground-truth discovery, survive library refreshes, and
+are remembered after launching a reconstruction. Selecting a dataset configures
+the next reconstruction and leaves the
 currently inspected scene and camera unchanged. **Load initialized point cloud**
-below the dropdown explicitly opens that dataset's starting scene without
-launching training, preserving the previous editing workspace on disk. **Start
-reconstruction** launches the selected dataset and follows its new live scene. The last selected dataset opens on startup, unless
-explicit scene/point-cloud CLI arguments are supplied.
+below the dropdown opens that dataset's starting scene and preserves the
+previous editing workspace on disk. **Open output folder** is disabled while
+viewing the initialized point cloud. **Start reconstruction** creates a new run
+for the selected dataset and follows its live scene. The last selected dataset
+opens on startup unless explicit scene/point-cloud CLI arguments are supplied.
 
 The equivalent command is now:
 
@@ -72,9 +80,11 @@ python main.py -s ~/ValeDrive/phd/pbdr/datasets/pbdr_synthetic/teapot_pbdr \
 ```
 
 Use **Open previous reconstruction...** in the Reconstruction panel or menu to
-reopen a saved run. **App outputs** lists reconstructions beneath the configured
-output root, including nested run folders, newest creation time first. The table
-shows dataset, creation time, run folder and available loss/GT histories. Filter
+reopen a saved run. **Open output folder** in the Reconstruction setup sidebar
+or menu opens the current run's directory in the system file manager.
+**App outputs** lists reconstructions beneath the configured output root,
+including nested run folders, newest creation time first. The table shows
+dataset, creation time, run folder and available loss/GT histories. Filter
 by dataset or folder, or choose a dataset from the dropdown; click headers to
 sort. A single click selects a row. Use **Open selected reconstruction**, Enter,
 or a double-click to open it; Up/Down moves the selection. **Choose folder** opens
@@ -91,27 +101,37 @@ monitor selects **Metrics** automatically; **Checkpoints** and `M`/`N` browse th
 saved scene history, while `R` reloads the selected run's newest saved PLY and
 metrics, preserving the camera. With no run selected, `R` selects the newest
 loadable reconstruction under the configured output root (or anchored folder).
-Incomplete output folders are skipped. The source is
-read-only until an edit creates a private working snapshot. Missing GT metrics
+Folders without loadable outputs are skipped. The saved scene opens read-only,
+and editing creates a private working snapshot. Missing GT metrics
 are reported explicitly; opening a run does not recompute them.
 
-The browser and history loading run in the background. Opening a saved run does
-not launch, resume or control an optimizer, or replace the dataset/configuration
-selected for the next reconstruction. Finish or stop an active reconstruction
-before opening another output. Starting a new reconstruction returns to live
-inspection and clears the older run's plots.
+The browser and history loading run in the background. Opening a saved run
+restores it for inspection. For a run below 30,000 iterations, **Continue
+reconstruction** starts from its latest checkpoint with a recorded iteration,
+restores its optimization settings and global iteration, and trains toward
+30,000. The continuation writes to a new folder under the configured output
+root. The checkpoint stores point parameters, so Adam moments and RNG state
+restart. **Mark as completed** in the Reconstruction panel or menu records
+manual completion in the run folder. Reaching 30,000 also counts as completion,
+even when the run's configured target differs.
+
+Use **Reconstruction → Start new reconstruction** to launch the selected
+dataset while inspecting an unfinished run. Finish or stop an active
+reconstruction before opening another output. Launching training returns to
+live inspection and follows the new output's plots.
 
 Both CLI training and the viewer discover dataset-local `gt.ply`. Disable
 **Evaluate with dataset ground truth** to skip evaluation (CLI:
 `--no-dataset-ground-truth`). An explicit `--gt` still overrides discovery.
-**Run options** contains output root, library location, custom-folder fallback,
+**Run options** contains output root, library location,
 and checkpoint/live-publication cadence. Select the interpreter
 and working directory under **Python environment**; the working directory must
 contain this repository's updated `main.py`. If needed, set **Native module
 directory** to the directory containing the compatible `pale.so`. An empty value
 inherits `PYTHONPATH`. The interpreter needs the same dependencies as CLI training.
-The initial setup prefers an active virtual environment, an existing repository
-`.venv`, or a local Conda environment named `pale`. It also detects this
+The initial setup prefers an active virtual environment, a local Conda environment
+named after the repository (such as `DifferentiablePointRendering`), an existing
+repository `.venv`, or a local Conda environment named `pale`. It also detects this
 repository's `cmake-build-pybind/pale.so` when present. Explicit saved environment choices take precedence over detection. Legacy
 preferences that only recorded the generic `python3` default migrate to the
 detected environment; **Use detected environment** restores that choice.
@@ -125,13 +145,23 @@ attachment or process-discovery interface. Closing the viewer terminates its rec
 A viewer crash also triggers cleanup. Existing logs and completed checkpoints
 remain on disk; closing is not a request to finish another training update.
 
-Each launch reads the current `python/config.py` defaults. **Override run settings
-from config.py** explicitly overrides iterations, checkpoint cadence and adjoint
-sampling; **Hyperparameters → Override launch defaults** independently overrides
-the listed learning rates and regularizer weights. Leave both off to pick up
-subsequent edits to `config.py`. Dataset, output, GT evaluation and viewer live
-publication settings are still supplied by the viewer. Applying a live tuning
-patch does not automatically enable overrides for the next launch.
+Each new reconstruction reads the current `python/config.py` defaults. **Override run settings
+from config.py** overrides iterations, checkpoint cadence and adjoint sampling.
+Enter a learning rate or loss weight directly under **Hyperparameters** to use it
+when starting a new reconstruction. Blank fields use `config.py`.
+
+The separate **Densification** section offers **Python defaults**, **Object level**,
+and **Scene level** for new reconstructions. The factory profiles share the same defaults except
+for the densification interval, which is 200 iterations for Object level and
+1,000 for Scene level. The viewer saves edits to each profile as you make them
+and restores both profiles and the selected option when reopened. **Reset
+profile** restores the selected profile's factory values. **Current run values**
+shows the optimizer's recorded densification settings while you edit the profile
+for your next run. **Continue reconstruction** uses the checkpoint's saved settings.
+
+Select **Python defaults**, clear the hyperparameter fields, and turn off the run
+settings override to pick up subsequent edits to `config.py`. Dataset, output, GT
+evaluation and viewer live publication settings are supplied by the viewer.
 
 The viewport's scene-source dropdown offers these modes:
 
@@ -173,10 +203,10 @@ new run's initialization. This starts a new optimizer; it does not resume Adam m
 
 **Hyperparameters** exposes position, rotation, scale, albedo, opacity and beta
 learning rates, plus alpha, depth distortion, normal consistency and intra-slab
-depth weights. Leave **Override launch defaults** off to use Python defaults.
-During a run, **Apply to training at next iteration** validates the complete patch,
-waits for an iteration boundary, and records its effective iteration in
-`parameter_changes.jsonl`. Checkpoint resume restores applicable journal entries.
+depth weights. During a run, edited fields show the value in use alongside the
+pending value. **Apply at next iteration** sends the changed fields to the
+optimizer, which records the update in `parameter_changes.jsonl`. Live edits
+and new-run values are independent. Checkpoint resume restores applicable journal entries.
 Learning rates precede existing scene/schedule scaling. The current backend keeps
 emitter power learning rates at zero; this UI preserves that behavior. Editable
 emitter changes can seed a new run.
@@ -252,10 +282,11 @@ connection. An informational AdaptiveCpp JIT warning alone is not an error.
 ./build-realtime/PaleRealtimeViewer --assets Assets --pointcloud points.ply --scene cbox.xml
 ```
 
-**Scene Collection** groups surfel geometry, mesh materials, emitters and
-calibrated cameras. Search by name; click a row to select its model element or
-camera. Large surfel-emitter collections show the first 256 plus an explicitly
-selected emitter; viewport picking remains available beyond that list.
+**Scene Tree** groups surfel geometry, mesh materials, emitters and
+calibrated cameras. Search by name and click a row to select it. Clicking a
+camera also opens **Ground truth comparison**. Large surfel-emitter collections
+show the first 256 plus an explicitly selected emitter. Viewport picking remains
+available beyond that list.
 
 The Properties icon rail has hover/focus tooltips:
 
@@ -287,7 +318,7 @@ Controls:
 - Default camera source: viewport camera only
 - Viewport camera convention: world `Z` is up; camera local forward remains `-Z`
 - `Camera source`: switch between the orbit viewport camera and one selected `scene.xml` camera
-- Left-drag over the rendered image: orbit camera
+- Left-drag over the rendered image to orbit around the pivot. Horizontal motion rotates around world `Z`, and vertical motion tilts around the camera's right axis and can pass through vertical.
 - Click a gold light marker: select a mesh area light or emissive surfel and open/scroll to its editing controls. Markers remain visible through geometry, show names on hover, and highlight the selection. Dragging a marker does not orbit or select a surfel.
 - Selected mesh lights support move/rotate/scale; selected surfels support move/rotate in editable snapshots, in both viewport and scene camera views. The viewport's left tool rail chooses select/move/rotate/scale.
 - Left-click elsewhere over the rendered image: select the surfel under that pixel for editing, including after resizing or using a scene camera
@@ -296,6 +327,8 @@ Controls:
 - Right-drag or middle-drag: pan target
 - Mouse wheel in the orbit view: zoom the camera
 - Calibrated scene-camera images are centered with their aspect ratio preserved. Wheel zooms the displayed image around the pointer; right/middle-drag pans it without changing camera calibration. **Fit camera image** restores the fitted view. Left-drag switches to orbit navigation.
+- **Window → Ground truth comparison** splits a calibrated camera view into the current render or diagnostic on the left and the matching dataset image on the right. The comparison follows the displayed camera as you cycle through views. Pan and zoom in either pane apply to both.
+- Ground truth is matched by camera name and native image dimensions in the dataset's `images/` folder. Reconstructions use the dataset path and target color space from `run_config.json` when available. The reference is displayed in sRGB at unity exposure.
 - `Space`: restore the initial orbit view and switch to the viewport camera
 - `\`: enter walk navigation from the current viewport or selected scene camera
 - In walk mode: mouse look, `W/A/S/D` move, `Q/E` down/up, `Shift` faster, `Alt` slower, wheel adjusts speed

@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 16
+    adjoint_passes: int = 4
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -105,8 +105,8 @@ class OptimizationConfig:
     normal_from_depth_use_mean_depth: bool = False
     median_depth_retain_last_hit: bool = False  # Training median depth and depth-derived normals: retain sub-threshold last hits.
     # Differentiates opacity and footprint geometry; zero disables this term.
-    alpha_loss_weight: float = 0.0005
-    alpha_loss_start_iteration: int = 10_000  # Global iteration at which alpha loss becomes active.
+    alpha_loss_weight: float = 0.000010
+    alpha_loss_start_iteration: int = 5_000  # Global iteration at which alpha loss becomes active.
     alpha_loss_absolute: bool = True  # True: absolute alpha error; False: half squared alpha error.
     alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
 
@@ -305,17 +305,23 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
         raise NotADirectoryError(f"--checkpoint is not an existing run directory: {checkpoint_dir}")
 
     run_config = _load_checkpoint_run_config(checkpoint_dir)
-    snapshots = []
-    for path in (checkpoint_dir / "points").glob("iter_*_points.ply"):
-        match = re.fullmatch(r"iter_(\d+)_points\.ply", path.name)
-        if match and path.is_file() and path.stat().st_size > 0:
-            snapshots.append((int(match.group(1)), path))
-    final_points = checkpoint_dir / "points_final.ply"
-    if final_points.is_file():
-        snapshots.append((_checkpoint_resume_iteration_offset(checkpoint_dir, run_config), final_points))
-    if not snapshots:
-        raise FileNotFoundError(f"No saved point-cloud checkpoints found in {checkpoint_dir}")
-    saved_iteration, checkpoint_points_path = max(snapshots, key=lambda item: item[0])
+    if {"pointcloud_ply", "resume_iteration_offset"} <= cli_overrides:
+        checkpoint_points_path = Path(config.pointcloud_ply).expanduser().resolve()
+        if not checkpoint_points_path.is_file() or checkpoint_points_path.stat().st_size == 0:
+            raise FileNotFoundError(f"No saved point-cloud checkpoint at {checkpoint_points_path}")
+        saved_iteration = config.resume_iteration_offset
+    else:
+        snapshots = []
+        for path in (checkpoint_dir / "points").glob("iter_*_points.ply"):
+            match = re.fullmatch(r"iter_(\d+)_points\.ply", path.name)
+            if match and path.is_file() and path.stat().st_size > 0:
+                snapshots.append((int(match.group(1)), path))
+        final_points = checkpoint_dir / "points_final.ply"
+        if final_points.is_file():
+            snapshots.append((_checkpoint_resume_iteration_offset(checkpoint_dir, run_config), final_points))
+        if not snapshots:
+            raise FileNotFoundError(f"No saved point-cloud checkpoints found in {checkpoint_dir}")
+        saved_iteration, checkpoint_points_path = max(snapshots, key=lambda item: item[0])
 
     # A run records its initial configuration plus acknowledged iteration-boundary
     # changes. Restore the configuration that actually generated this checkpoint.
@@ -445,9 +451,8 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     inputs.add_argument(
         "--target-color-space",
         choices=["auto", "srgb", "linear"],
-        default="linear",
         help=(
-            "Target image encoding (default: auto). 'auto' uses ICC metadata, "
+            "Target image encoding (default: linear). 'auto' uses ICC metadata, "
             "decodes untagged integer images as sRGB, and treats EXR/HDR as linear; "
             "all targets are converted to linear sRGB for preview, optimization itself uses linear."
         ),
@@ -461,6 +466,7 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
         help=(
             "Resume the latest saved point cloud from a run directory (defaults to -o). "
             "Restores saved settings and continues to --iterations total (default 30000). "
+            "Use --ply and --resume-iteration-offset together to select a specific checkpoint. "
             "Optimizer moments restart; output defaults to a new sibling directory."
         ),
     )
@@ -480,7 +486,6 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
         "--optimizer",
         dest="optimizer_type",
         type=str,
-        default="adam",
         choices=["adam", "sgd"],
     )
     optimizer.add_argument(

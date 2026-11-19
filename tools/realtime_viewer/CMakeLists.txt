@@ -269,8 +269,13 @@ add_sycl_to_target(TARGET PaleLibRealtime)
 add_executable(PaleRealtimeViewer main.cpp)
 
 # Keep the Python optimizer's native module current when building the viewer.
-set(PALE_TRAINING_BUILD_DIR "${PALE_ROOT}/cmake-build-pybind"
-    CACHE PATH "Configured build directory for the pale training module")
+set(PALE_TRAINING_BUILD_DIR "" CACHE PATH "Configured build directory for the pale training module")
+if(NOT EXISTS "${PALE_TRAINING_BUILD_DIR}/CMakeCache.txt")
+    message(FATAL_ERROR
+        "Set PALE_TRAINING_BUILD_DIR to an existing build directory configured "
+        "from this repository with BUILD_PYBIND=ON.")
+endif()
+message(STATUS "Viewer training build: ${PALE_TRAINING_BUILD_DIR}")
 add_custom_target(PaleTrainingModule
     COMMAND "${CMAKE_COMMAND}" --build "${PALE_TRAINING_BUILD_DIR}"
             --target pale
@@ -288,6 +293,7 @@ target_compile_options(PaleRealtimeViewer
         $<$<CONFIG:Release>:-O3>)
 target_compile_definitions(PaleRealtimeViewer
         PRIVATE
+        PALE_TRAINING_MODULE_DIR=\"${PALE_TRAINING_BUILD_DIR}\"
         PALE_DEFAULT_ASSET_DIR=\"${PALE_ROOT}/Assets\")
 target_include_directories(PaleRealtimeViewer
         PRIVATE

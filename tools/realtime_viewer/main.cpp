@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -17,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <tuple>
 #include <type_traits>
@@ -387,24 +389,39 @@ namespace {
     struct OrbitCamera {
         glm::vec3 target{0.0f};
         float distance = 3.0f;
-        float yaw = 0.0f;
-        float pitch = 0.0f;
+        // Camera-to-world rotation. The camera looks along local -Z.
+        glm::quat orientation{0.5f, 0.5f, 0.5f, 0.5f};
         float fovyDegrees = 30.0f;
         float nearClip = 0.01f;
         float farClip = 1000.0f;
 
+        [[nodiscard]] glm::vec3 forward() const {
+            return orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+        }
+
         [[nodiscard]] glm::vec3 position() const {
-            const float cosPitch = std::cos(pitch);
-            const glm::vec3 offset{
-                distance * cosPitch * std::cos(yaw),
-                distance * cosPitch * std::sin(yaw),
-                distance * std::sin(pitch),
-            };
-            return target + offset;
+            return target - distance * forward();
         }
 
         [[nodiscard]] glm::mat4 viewMatrix() const {
-            return glm::lookAt(position(), target, kWorldUp);
+            return glm::translate(glm::mat4_cast(glm::conjugate(orientation)), -position());
+        }
+
+        void lookAlong(glm::vec3 direction) {
+            direction = glm::normalize(direction);
+            const auto up = std::abs(glm::dot(direction, kWorldUp)) > 0.9999f
+                ? glm::vec3(0.0f, 1.0f, 0.0f) : kWorldUp;
+            orientation = glm::normalize(glm::quatLookAtRH(direction, up));
+        }
+
+        bool adoptViewRotation(const glm::mat4& view) {
+            // A rigid view matrix stores the inverse rotation. Ignore the
+            // gizmo's translation so the orbit pivot and distance stay fixed.
+            const auto rotation = glm::quat_cast(glm::transpose(glm::mat3(view)));
+            const float lengthSquared = glm::dot(rotation, rotation);
+            if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) return false;
+            orientation = glm::normalize(rotation);
+            return true;
         }
 
         [[nodiscard]] glm::mat4 projectionMatrix(uint32_t width, uint32_t height) const {
@@ -424,50 +441,34 @@ namespace {
         }
 
         void orbit(const ImVec2 delta) {
-            yaw -= delta.x * 0.005f;
-            pitch += delta.y * 0.005f;
-            pitch = std::clamp(pitch, -1.50f, 1.50f);
+            const auto yaw = glm::angleAxis(-delta.x * kLookSensitivity, kWorldUp);
+            const auto pitch = glm::angleAxis(-delta.y * kLookSensitivity, glm::vec3(1.0f, 0.0f, 0.0f));
+            // World-space yaw multiplies on the left, and camera-local pitch on the right.
+            orientation = glm::normalize(yaw * orientation * pitch);
         }
 
         void lookAround(const ImVec2 delta) {
             const glm::vec3 eye = position();
-            constexpr float walkLookSensitivity = 0.5f;
-            orbit({delta.x * walkLookSensitivity, delta.y * walkLookSensitivity});
-            target += eye - position();
+            constexpr float sensitivity = 0.5f * kLookSensitivity;
+            const auto yaw = glm::angleAxis(-delta.x * sensitivity, glm::vec3(0.0f, 1.0f, 0.0f));
+            const auto pitch = glm::angleAxis(-delta.y * sensitivity, glm::vec3(1.0f, 0.0f, 0.0f));
+            orientation = glm::normalize(orientation * yaw * pitch);
+            target = eye + distance * forward();
         }
 
         void walk(const glm::vec3& localDirection, float travelDistance) {
-            const glm::vec3 forward = glm::normalize(target - position());
-            const glm::vec3 right = glm::normalize(glm::cross(forward, kWorldUp));
+            const glm::vec3 right = orientation * glm::vec3(1.0f, 0.0f, 0.0f);
             const glm::vec3 direction =
-                right * localDirection.x + forward * localDirection.y + kWorldUp * localDirection.z;
-            const float length = glm::length(direction);
-            if (length > 0.0f) {
-                target += direction * (travelDistance / length);
+                right * localDirection.x + forward() * localDirection.y + kWorldUp * localDirection.z;
+            const float lengthSquared = glm::dot(direction, direction);
+            if (lengthSquared > 1.0e-12f) {
+                target += direction * (travelDistance / std::sqrt(lengthSquared));
             }
         }
 
         void pan(const ImVec2 delta) {
-            const glm::vec3 pos = position();
-            const glm::vec3 forward = glm::normalize(target - pos);
-            glm::vec3 right = glm::normalize(glm::cross(forward, kWorldUp));
-            if (!std::isfinite(right.x) || !std::isfinite(right.y) || !std::isfinite(right.z)) {
-                right = glm::vec3(1.0f, 0.0f, 0.0f);
-            }
-            const glm::vec3 up = glm::normalize(glm::cross(right, forward));
             const float scale = distance * 0.0015f;
-            target -= right * (delta.x * scale);
-            target += up * (delta.y * scale);
-        }
-
-        void setPositionKeepingTarget(const glm::vec3& newPosition) {
-            const glm::vec3 offset = newPosition - target;
-            distance = std::max(glm::length(offset), 0.001f);
-            pitch = std::clamp(
-                std::asin(std::clamp(offset.z / distance, -1.0f, 1.0f)),
-                -1.50f,
-                1.50f);
-            yaw = std::atan2(offset.y, offset.x);
+            target += orientation * glm::vec3(-delta.x * scale, delta.y * scale, 0.0f);
         }
 
         void zoom(float wheelDelta) {
@@ -478,8 +479,8 @@ namespace {
         [[nodiscard]] Pale::CameraGPU makeGpuCamera(uint32_t width, uint32_t height) const {
             Pale::CameraGPU camera{};
             const glm::vec3 pos = position();
-            const glm::mat4 view = viewMatrix();
-            const glm::mat4 worldFromCamera = glm::inverse(view);
+            glm::mat4 worldFromCamera = glm::mat4_cast(orientation);
+            worldFromCamera[3] = glm::vec4(pos, 1.0f);
 
             const float h = static_cast<float>(std::max(width, 1u));
             const float v = static_cast<float>(std::max(height, 1u));
@@ -491,14 +492,13 @@ namespace {
 
             const glm::mat4 proj = projectionMatrix(width, height);
 
-            camera.view = Pale::glm2sycl(view);
+            camera.view = Pale::glm2sycl(viewMatrix());
             camera.proj = Pale::glm2sycl(proj);
             camera.invView = Pale::glm2sycl(worldFromCamera);
             camera.invProj = Pale::glm2sycl(glm::inverse(proj));
             camera.pos = Pale::float3{pos.x, pos.y, pos.z};
 
-            const glm::vec3 forward = glm::normalize(target - pos);
-            camera.forward = Pale::float3{forward.x, forward.y, forward.z};
+            camera.forward = Pale::glm2sycl(forward());
             camera.width = width;
             camera.height = height;
             camera.fovy = fovyDegrees;
@@ -513,6 +513,8 @@ namespace {
         }
 
     private:
+        static constexpr float kLookSensitivity = 0.005f;
+
         static glm::mat4 perspectiveOffCenterRhZo(
             float left,
             float right,
@@ -1731,21 +1733,16 @@ namespace {
         orbit.distance = bounds.radius * 2.5f;
         orbit.farClip = std::max(1000.0f, bounds.radius * 20.0f);
 
-        glm::vec3 cameraOffset{orbit.distance, 0.0f, 0.0f};
         if (!buildProducts.cameraGPUs.empty()) {
             const Pale::CameraGPU& firstCamera = buildProducts.cameraGPUs.front();
-            const glm::vec3 cameraPosition = Pale::sycl2glm(firstCamera.pos);
-            cameraOffset = cameraPosition - orbit.target;
-            orbit.distance = std::max(glm::length(cameraOffset), bounds.radius * 0.5f);
+            const glm::vec3 direction = orbit.target - Pale::sycl2glm(firstCamera.pos);
+            const float distance = glm::length(direction);
+            if (std::isfinite(distance) && distance > 1.0e-10f) {
+                orbit.distance = std::max(distance, bounds.radius * 0.5f);
+                orbit.lookAlong(direction);
+            }
             // Keep the viewport's default FOV when borrowing the scene camera position.
         }
-
-        const float safeDistance = std::max(glm::length(cameraOffset), 0.001f);
-        orbit.pitch = std::clamp(
-            std::asin(std::clamp(cameraOffset.z / safeDistance, -1.0f, 1.0f)),
-            -1.50f,
-            1.50f);
-        orbit.yaw = std::atan2(cameraOffset.y, cameraOffset.x);
         return orbit;
     }
 
@@ -1755,26 +1752,23 @@ namespace {
         const OrbitCamera& fallback) {
         OrbitCamera orbit = fallback;
         const glm::vec3 cameraPosition = Pale::sycl2glm(camera.pos);
-        glm::vec3 cameraForward = Pale::sycl2glm(camera.forward);
-        if (!std::isfinite(cameraForward.x) ||
-            !std::isfinite(cameraForward.y) ||
-            !std::isfinite(cameraForward.z) ||
-            glm::dot(cameraForward, cameraForward) <= 1.0e-20f) {
-            const glm::vec3 centerDirection = bounds.center - cameraPosition;
-            cameraForward =
-                glm::dot(centerDirection, centerDirection) > 1.0e-20f
-                    ? glm::normalize(centerDirection)
-                    : glm::vec3(0.0f, 0.0f, -1.0f);
+        const glm::vec3 cameraForward = Pale::sycl2glm(camera.forward);
+        const float forwardLengthSquared = glm::dot(cameraForward, cameraForward);
+        if (std::isfinite(forwardLengthSquared) && forwardLengthSquared > 1.0e-20f) {
+            orbit.orientation = extractRotationQuaternion(syclMatrixToGlm(camera.invView));
         } else {
-            cameraForward = glm::normalize(cameraForward);
+            const glm::vec3 centerDirection = bounds.center - cameraPosition;
+            orbit.lookAlong(glm::dot(centerDirection, centerDirection) > 1.0e-20f
+                ? centerDirection : glm::vec3(0.0f, 0.0f, -1.0f));
         }
 
-        float targetDistance = glm::dot(bounds.center - cameraPosition, cameraForward);
+        const glm::vec3 forward = orbit.forward();
+        float targetDistance = glm::dot(bounds.center - cameraPosition, forward);
         if (!std::isfinite(targetDistance) || targetDistance <= 0.001f) {
             targetDistance = std::max(bounds.radius * 2.5f, 0.001f);
         }
 
-        orbit.target = cameraPosition + cameraForward * targetDistance;
+        orbit.target = cameraPosition + forward * targetDistance;
         orbit.distance = targetDistance;
         orbit.farClip = std::max(orbit.farClip, bounds.radius * 20.0f);
         if (camera.hasPinholeIntrinsics != 0u && camera.fy > 0.0f && camera.height > 0) {
@@ -1783,7 +1777,6 @@ namespace {
         } else if (camera.fovy > 0.0f) {
             orbit.fovyDegrees = camera.fovy;
         }
-        orbit.setPositionKeepingTarget(cameraPosition);
         return orbit;
     }
 
@@ -2061,8 +2054,34 @@ namespace {
         return value;
     }
 
+    std::vector<std::filesystem::path> findCameraTargets(const std::filesystem::path& images,
+            std::string_view cameraName) {
+        std::vector<std::filesystem::path> matches;
+        for (const auto& entry : std::filesystem::directory_iterator(images)) {
+            if (entry.path().stem() != cameraName || !entry.is_regular_file()) continue;
+            const auto suffix = toLower(entry.path().extension().string());
+            if (suffix == ".exr" || suffix == ".hdr" || suffix == ".png" || suffix == ".jpg" ||
+                suffix == ".jpeg" || suffix == ".bmp" || suffix == ".tga" || suffix == ".tif" || suffix == ".tiff")
+                matches.push_back(entry.path());
+        }
+        return matches;
+    }
+
+    std::filesystem::path runDatasetPath(const YAML::Node& config,
+            const std::filesystem::path& runDirectory, const std::filesystem::path& repositoryRoot) {
+        if (!config["dataset_path"]) return {};
+        std::filesystem::path dataset = config["dataset_path"].as<std::string>();
+        if (!dataset.empty() && dataset.is_relative()) {
+            // Training normally resolves paths; also accept older configs.
+            for (const auto& base : {repositoryRoot / "python", runDirectory, repositoryRoot}) {
+                if (std::filesystem::is_directory(base / dataset)) return base / dataset;
+            }
+        }
+        return dataset;
+    }
+
     std::vector<float> loadDebugTarget(const std::filesystem::path& path,
-            const Pale::CameraGPU& camera, bool srgb) {
+            uint32_t expectedWidth, uint32_t expectedHeight, bool srgb) {
         std::vector<float> rgba;
         uint32_t width = 0, height = 0;
         if (toLower(path.extension().string()) == ".exr") {
@@ -2072,9 +2091,9 @@ namespace {
             const auto filename = path.string();
             auto copy = [&](auto* data, float scale) {
                 if (!data) throw std::runtime_error("Cannot load target " + filename + ": " + stbi_failure_reason());
+                const std::unique_ptr<void, decltype(&stbi_image_free)> owned(data, stbi_image_free);
                 rgba.resize(static_cast<std::size_t>(w) * h * 4);
                 for (std::size_t i = 0; i < rgba.size(); ++i) rgba[i] = float(data[i]) * scale;
-                stbi_image_free(data);
                 width = static_cast<uint32_t>(w);
                 height = static_cast<uint32_t>(h);
             };
@@ -2082,7 +2101,7 @@ namespace {
             else if (stbi_is_16_bit(filename.c_str())) copy(stbi_load_16(filename.c_str(), &w, &h, &channels, 4), 1.0f / 65535.0f);
             else copy(stbi_load(filename.c_str(), &w, &h, &channels, 4), 1.0f / 255.0f);
         }
-        if (width != camera.width || height != camera.height)
+        if (width != expectedWidth || height != expectedHeight)
             throw std::runtime_error("Target dimensions disagree with scene camera: " + path.string());
         if (srgb) {
             for (std::size_t i = 0; i < rgba.size(); ++i) {
@@ -2092,6 +2111,46 @@ namespace {
             }
         }
         return rgba;
+    }
+
+    struct DatasetReferenceRequest {
+        std::filesystem::path scene;
+        std::filesystem::path runConfig;
+        std::string cameraName;
+        uint32_t width, height;
+        bool operator==(const DatasetReferenceRequest&) const = default;
+    };
+
+    std::vector<uint8_t> loadDatasetReference(const DatasetReferenceRequest& request,
+            const std::filesystem::path& repositoryRoot) {
+        auto dataset = request.scene.parent_path();
+        auto colorSpace = std::string(viewer::defaults::targetColorSpace);
+        const auto configPath = request.runConfig.empty() ? dataset / "run_config.json" : request.runConfig;
+        if (std::filesystem::is_regular_file(configPath)) {
+            const auto config = YAML::LoadFile(configPath.string());
+            if (const auto path = runDatasetPath(config, configPath.parent_path(), repositoryRoot); !path.empty()) dataset = path;
+            const auto optimization = config["optimization_config"];
+            if (optimization && optimization["target_color_space"])
+                colorSpace = optimization["target_color_space"].as<std::string>();
+        }
+
+        const auto images = dataset / "images";
+        const auto matches = std::filesystem::is_directory(images) ? findCameraTargets(images, request.cameraName)
+                                                                   : std::vector<std::filesystem::path>{};
+        if (matches.empty()) throw std::runtime_error("No image for " + request.cameraName + " in " + images.string());
+        if (matches.size() > 1) throw std::runtime_error("Multiple images for " + request.cameraName + " in " + images.string());
+
+        const auto& path = matches.front();
+        const auto suffix = toLower(path.extension().string());
+        const bool srgb = colorSpace == "srgb" || (colorSpace == "auto" && suffix != ".exr" && suffix != ".hdr");
+        const auto rgba = loadDebugTarget(path, request.width, request.height, srgb);
+        std::vector<uint8_t> preview(rgba.size(), 255u);
+        const viewer::DisplayTransform display;
+        for (std::size_t i = 0; i < rgba.size(); i += 4u) {
+            for (std::size_t c = 0; c < 3u; ++c)
+                preview[i + c] = viewer::displayByte(viewer::encodeDisplay(rgba[i + c], display));
+        }
+        return preview;
     }
 
     Pale::PathTracerSettings makeDefaultSettings() {
@@ -2554,7 +2613,7 @@ int main(int argc, char** argv) {
         bool showMeshExport=false,meshExportRequested=false;
         YAML::Node displayedExportMetadata;
         std::filesystem::path displayedExportRunConfig;
-        if (!args.sceneInputSpecified && !training.datasets.empty()) {
+        if (!args.sceneInputSpecified && viewer::isDatasetDirectory(training.dataset.data())) {
             args.scenePath = std::filesystem::path(training.dataset.data()) / "scene.xml";
             args.pointCloudPath = std::filesystem::path(training.dataset.data()) / "points.ply";
         }
@@ -2632,7 +2691,8 @@ int main(int argc, char** argv) {
         std::filesystem::path workingDirectory, workingSourceScene;
         uint64_t workingIteration = 0;
         bool hasWorkingSnapshot = false;
-        auto modelReadOnly = [&]() { return training.hasRun() && training.view != viewer::TrainingView::Snapshot; };
+        auto workingView = viewer::TrainingView::Snapshot;
+        auto modelReadOnly = [&]() { return training.hasRun() && !training.viewingEditableScene(); };
 
         uint32_t renderWidth = args.width;
         uint32_t renderHeight = args.height;
@@ -2826,11 +2886,16 @@ int main(int argc, char** argv) {
             displayedRenderWidth=prior.width;displayedRenderHeight=prior.height;
         };
         Texture2D texture;
+        Texture2D datasetReferenceTexture;
+        bool showDatasetReference = false;
+        std::optional<DatasetReferenceRequest> pendingDatasetReference, resolvedDatasetReference;
+        std::future<std::vector<uint8_t>> datasetReferenceWork;
+        std::string datasetReferenceError;
         bool showTrainingProgress = true;
         bool selectTrainingTab = false;
         bool showSceneTree = true;
         constexpr bool showAdvancedTools = true;
-        bool launchTrainingRequested = false;
+        std::optional<viewer::TrainingLaunch> launchTrainingRequested;
         viewer::ui::Inspector inspectorPage = viewer::ui::Inspector::Reconstruction;
         viewer::SceneTree sceneTree;
         viewer::SceneItemKind sceneSelectionKind = viewer::SceneItemKind::Geometry;
@@ -3244,6 +3309,7 @@ int main(int argc, char** argv) {
                 if (!state["entities"]) state["entities"] = YAML::Node(YAML::NodeType::Sequence);
                 viewer::writeJsonAtomic(workingDirectory / "workspace.json", state);
                 hasWorkingSnapshot = true;
+                workingView = training.view;
                 training.message = "Saved editable snapshot: " + workingDirectory.string();
                 return true;
             } catch (const std::exception& error) { training.message = error.what(); return false; }
@@ -3330,7 +3396,7 @@ int main(int argc, char** argv) {
                 }
             }
             rebuildSceneGpu();
-            training.view = viewer::TrainingView::Snapshot;
+            training.view = workingView;
             training.viewedIteration = workingIteration;
             return true;
         };
@@ -3782,15 +3848,7 @@ int main(int argc, char** argv) {
                         const auto configPath = directory / "run_config.json";
                         if (!std::filesystem::is_regular_file(configPath)) continue;
                         const auto config = YAML::LoadFile(configPath.string());
-                        if (config["dataset_path"]) {
-                            dataset = config["dataset_path"].as<std::string>();
-                            if (dataset.is_relative()) {
-                                // Training normally resolves paths; also accept older configs.
-                                for (const auto& base : {repositoryRoot / "python", directory, repositoryRoot}) {
-                                    if (std::filesystem::is_directory(base / dataset)) { dataset = base / dataset; break; }
-                                }
-                            }
-                        }
+                        dataset = runDatasetPath(config, directory, repositoryRoot);
                         if (!dataset.empty()) copyPathToBuffer(dataset, targetDatasetBuffer);
                         const auto optimization = config["optimization_config"];
                         if (optimization && optimization["target_color_space"]) {
@@ -3826,17 +3884,10 @@ int main(int argc, char** argv) {
                 Pale::PathTracer lossTracer(queue, lossSettings);
                 std::size_t missing = 0;
                 for (const auto& camera : buildProducts.cameraGPUs) {
-                    std::vector<std::filesystem::path> matches;
-                    for (const auto& entry : std::filesystem::directory_iterator(images)) {
-                        const auto suffix = toLower(entry.path().extension().string());
-                        if (entry.is_regular_file() && entry.path().stem() == camera.name &&
-                            (suffix == ".exr" || suffix == ".hdr" || suffix == ".png" || suffix == ".jpg" ||
-                             suffix == ".jpeg" || suffix == ".bmp" || suffix == ".tga" || suffix == ".tif" || suffix == ".tiff"))
-                            matches.push_back(entry.path());
-                    }
+                    const auto matches = findCameraTargets(images, camera.name);
                     if (matches.empty()) { ++missing; continue; }
                     if (matches.size() != 1) throw std::runtime_error("Ambiguous target files for camera " + std::string(camera.name));
-                    const auto target = loadDebugTarget(matches.front(), camera, targetColorSpace == 1);
+                    const auto target = loadDebugTarget(matches.front(), camera.width, camera.height, targetColorSpace == 1);
                     auto lossBuild = buildProducts;
                     lossBuild.cameraGPUs = {camera};
                     lossTracer.setScene(sceneGpu, lossBuild);
@@ -5336,7 +5387,7 @@ int main(int argc, char** argv) {
         };
 
         const auto drawApplicationMenu=[&](bool busy) {
-            bool start=false;
+            std::optional<viewer::TrainingLaunch> launch;
             if (ImGui::BeginMainMenuBar()) {
                 ImGui::TextColored(kUiAccent,"%s",viewer::ui::appName); ImGui::Spacing();
                 if (ImGui::BeginMenu("File")) {
@@ -5350,11 +5401,20 @@ int main(int argc, char** argv) {
                     }
                     if(ImGui::MenuItem("Open previous reconstruction...",nullptr,false,!training.process.active()&&!training.openingSaved()))
                         training.openReconstructionBrowser();
+                    if(ImGui::MenuItem("Open output folder",nullptr,false,training.hasCurrentRun()))
+                        training.openRunOutputFolder();
+                    if(training.continuesSavedRun()) {
+                        const bool available=!training.process.active()&&!training.openingSaved();
+                        if(ImGui::MenuItem("Start new reconstruction",nullptr,false,available&&(!busy||!training.useWorkingSnapshot)))
+                            launch=viewer::TrainingLaunch::New;
+                        if(ImGui::MenuItem("Mark as completed",nullptr,false,available))training.markSavedRunCompleted();
+                    }
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Window")) {
-                    ImGui::MenuItem("Scene Collection", nullptr, &showSceneTree);
+                    ImGui::MenuItem(viewer::ui::sceneTreeTitle, nullptr, &showSceneTree);
                     ImGui::MenuItem("Run monitor", nullptr, &showTrainingProgress);
+                    ImGui::MenuItem("Ground truth comparison", nullptr, &showDatasetReference);
                     if (ImGui::MenuItem("Restore workspace layout")) dockLayoutInitialized=false;
                     ImGui::Separator();
                     ImGui::MenuItem("Profiling", nullptr, &showProfilingWindow);
@@ -5369,10 +5429,10 @@ int main(int argc, char** argv) {
                     if(busy)queuedRefresh=true;else renderRequested=true;
                 }
                 ImGui::SameLine();
-                if(training.drawRunButtons(ImVec2(182,0),busy&&training.useWorkingSnapshot))start=true;
+                if(training.drawRunButtons(ImVec2(182,0),busy&&training.useWorkingSnapshot))launch=viewer::TrainingLaunch::Primary;
                 ImGui::EndMainMenuBar();
             }
-            return start;
+            return launch;
         };
         const auto drawViewportStatus=[&](bool busy) {
             // Work begins and ends many times during a single gesture. Keep the
@@ -5406,7 +5466,8 @@ int main(int argc, char** argv) {
             if (training.hasRun()) {
                 ImGui::SetNextItemWidth(168);
                 const char* liveSource=training.process.active()?"Live training":"Latest preview";
-                const char* source = training.view==viewer::TrainingView::Live ? liveSource : training.view==viewer::TrainingView::Saved ? (training.openedReconstruction?"Saved reconstruction":"Follow saved") : training.view==viewer::TrainingView::History ? "Checkpoint history" : "Editable snapshot";
+                const char* source = training.view==viewer::TrainingView::Live ? liveSource : training.view==viewer::TrainingView::Saved ? (training.openedReconstruction?"Saved reconstruction":"Follow saved") :
+                    training.view==viewer::TrainingView::History ? "Checkpoint history" : training.view==viewer::TrainingView::Initializer ? "Initialized point cloud" : "Editable snapshot";
                 if(ImGui::BeginCombo("##SceneSource",source)) {
                     if(!training.openedReconstruction&&(training.process.active()||(training.stopRequested&&training.live.IsMap()))&&ImGui::Selectable(liveSource,training.view==viewer::TrainingView::Live)) {
                         if(busy)queuedSceneSource=viewer::TrainingView::Live;else enterTrainingView(viewer::TrainingView::Live);
@@ -5439,8 +5500,8 @@ int main(int argc, char** argv) {
                     ImGui::Text("Displayed surfel iteration: %llu",static_cast<unsigned long long>(training.viewedIteration));
                     if(requestedIteration&&*requestedIteration!=training.viewedIteration)
                         ImGui::Text("Loading checkpoint: %llu",static_cast<unsigned long long>(*requestedIteration));
-                    ImGui::Text("Run iteration: %llu",static_cast<unsigned long long>(training.integer("iteration")));
-                    ImGui::TextUnformatted(modelReadOnly()?"Read-only inspection":"Editable snapshot");
+                    if(training.hasCurrentRun())ImGui::Text("Run iteration: %llu",static_cast<unsigned long long>(training.integer("iteration")));
+                    ImGui::TextUnformatted(modelReadOnly()?"Read-only inspection":source);
                     ImGui::EndTooltip();
                 }
                 ImGui::SameLine();
@@ -5501,6 +5562,76 @@ int main(int argc, char** argv) {
             for(const auto& marker:surfelLightMarkers)displayedLightMarkers.push_back({marker.worldCenter,{-1,marker.editorIndex},"Surfel light "+std::to_string(marker.editorIndex)});
             displayedOverlayPointCloud=currentPointCloudPath;displayedOverlayScene=currentScenePath;
         };
+        const auto drawDatasetComparison = [&](const viewer::ViewportCanvas& canvas,
+                                               CameraSource source, const Pale::CameraGPU& camera,
+                                               bool navigationCaptured) {
+            if (!texture.id || source != CameraSource::SceneXml) return canvas;
+            const std::string key = displayedOverlayScene.string() + "/" + camera.name;
+            if (key != cameraImageKey) {
+                cameraImageView.reset();
+                cameraImageKey = key;
+            }
+            if (!showDatasetReference || canvas.size.x < 2.0f) return canvas;
+
+            const DatasetReferenceRequest request{displayedOverlayScene, displayedExportRunConfig,
+                                                  camera.name, camera.width, camera.height};
+            if (datasetReferenceWork.valid() &&
+                datasetReferenceWork.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                const bool matches = pendingDatasetReference == request;
+                try {
+                    const auto pixels = datasetReferenceWork.get();
+                    if (matches) {
+                        datasetReferenceTexture.update(pixels, request.width, request.height);
+                        datasetReferenceError.clear();
+                    }
+                } catch (const std::exception& error) {
+                    if (matches) datasetReferenceError = error.what();
+                }
+                if (matches) resolvedDatasetReference = std::move(pendingDatasetReference);
+                pendingDatasetReference.reset();
+            }
+            if (resolvedDatasetReference != request && !datasetReferenceWork.valid()) {
+                try {
+                    pendingDatasetReference = request;
+                    datasetReferenceWork = std::async(std::launch::async, loadDatasetReference, request, repositoryRoot);
+                } catch (const std::exception& error) {
+                    pendingDatasetReference.reset();
+                    resolvedDatasetReference = request;
+                    datasetReferenceError = error.what();
+                }
+            }
+
+            const auto [render, reference] = viewer::viewportComparisonCanvases(canvas, ImGui::GetStyle().ItemSpacing.x);
+            const ImVec2 referenceMax(reference.min.x + reference.size.x, reference.min.y + reference.size.y);
+            if (!navigationCaptured && !io.WantTextInput && !ImGui::GetTopMostPopupModal() &&
+                ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(reference.min, referenceMax)) {
+                if (ImGui::IsMouseDragging(ImGuiMouseButton_Right) || ImGui::IsMouseDragging(ImGuiMouseButton_Middle))
+                    cameraImageView.drag(io.MouseDelta);
+                if (io.MouseWheel != 0.0f)
+                    cameraImageView.zoomAt(io.MousePos, reference.min, reference.size, io.MouseWheel);
+            }
+
+            auto* draw = ImGui::GetWindowDrawList();
+            const auto labelColor = ImGui::GetColorU32(viewer::ui::text);
+            draw->AddRectFilled(reference.min, referenceMax, ImGui::GetColorU32(viewer::ui::canvas));
+            draw->PushClipRect(reference.min, referenceMax, true);
+            const bool resolved = resolvedDatasetReference == request;
+            if (resolved && datasetReferenceError.empty()) {
+                const auto placement = cameraImageView.placement(reference.min, reference.size, request.width, request.height);
+                draw->AddImage(toImTextureId(datasetReferenceTexture.id), placement.min,
+                    ImVec2(placement.min.x + placement.size.x, placement.min.y + placement.size.y));
+            } else {
+                draw->AddText(nullptr, 0.0f, ImVec2(reference.min.x + 12.0f, reference.min.y + 38.0f), labelColor,
+                    resolved ? datasetReferenceError.c_str() : "Loading dataset image…", nullptr, std::max(1.0f, reference.size.x - 24.0f));
+            }
+            const ImVec2 labelMin(reference.min.x + 8.0f, reference.min.y + 7.0f);
+            const auto labelSize = ImGui::CalcTextSize("Ground truth");
+            draw->AddRectFilled(labelMin, ImVec2(labelMin.x + labelSize.x + 8.0f, labelMin.y + labelSize.y + 4.0f),
+                ImGui::GetColorU32(viewer::ui::panel), 3.0f);
+            draw->AddText(ImVec2(labelMin.x + 4.0f, labelMin.y + 2.0f), labelColor, "Ground truth");
+            draw->PopClipRect();
+            return render;
+        };
         const auto drawViewportToolRail=[&](ImVec2 canvas,bool surfelSelected) {
             const auto after=ImGui::GetCursorScreenPos();ImGui::SetCursorScreenPos(ImVec2(canvas.x+8,canvas.y+42));ImGui::BeginGroup();
             for(const auto& [tool,icon,label]:std::array<std::tuple<int,viewer::ui::Icon,const char*>,4>{{
@@ -5556,7 +5687,7 @@ int main(int argc, char** argv) {
             busySelectedLightIndex=selectedLightIndex;
             busyHasWorkspace=hasWorkingSnapshot||(!modelReadOnly()&&firstPointCloudHandle(scene).has_value());
             cachedSceneGroups=makeSceneGroups();cachedSceneName=currentScenePath.stem().string();
-            queuedOrbit=orbit;busyBounds=bounds;busyCamera=displayedCamera;busyCameraSource=cameraSource;
+            queuedOrbit=orbit;busyBounds=displayedBounds;busyCamera=displayedCamera;busyCameraSource=displayedCameraSource;
             busyPointCount=static_cast<uint32_t>(buildProducts.points.size());busyRenderMs=lastRenderMs;
             busyCameraNames.clear();for(const auto& camera:buildProducts.cameraGPUs)busyCameraNames.emplace_back(camera.name);
             busyHasSelection=false;busySelectionName=selectedTreeEntity;busySelectionKind=sceneSelectionKind;
@@ -5610,7 +5741,7 @@ int main(int argc, char** argv) {
                 }
             },[&,directory,loaded] {
                 if(!*loaded) {training.message=pointCloudStatus;return;}
-                training.view=viewer::TrainingView::Snapshot;
+                training.view=viewer::TrainingView::Initializer;
                 workingDirectory.clear();workingSourceScene=std::filesystem::absolute(currentScenePath);
                 hasWorkingSnapshot=false;workingIteration=training.viewedIteration=0;
                 training.loadedGeneration=0;loadedTrainingSceneRun.clear();framedTrainingRun.clear();
@@ -5618,6 +5749,7 @@ int main(int argc, char** argv) {
                 sceneSelectionKind=viewer::SceneItemKind::Geometry;
                 training.message="Initialized point cloud loaded · "+directory.filename().string();
             },"Updating training scene");
+            training.loadingInitializer=previewWork.busy();
         };
         const auto drawBusyFrame=[&] {
             // The worker exclusively owns scene/renderer state. This frame reads
@@ -5625,14 +5757,14 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();
             io.ConfigInputTrickleEventQueue=true;ImGui::NewFrame();
             handleViewportModeShortcuts(true);
-            bool start=launchTrainingRequested;
-            launchTrainingRequested=false;
+            auto launch=launchTrainingRequested;
+            launchTrainingRequested.reset();
             if(!io.WantTextInput&&!io.KeyCtrl&&!io.KeyAlt&&!io.KeySuper&&!ImGui::GetTopMostPopupModal()) {
                 if(ImGui::IsKeyPressed(ImGuiKey_R))training.checkpointNavigation=0;
                 if(ImGui::IsKeyPressed(ImGuiKey_N))training.checkpointNavigation=-2;
                 if(ImGui::IsKeyPressed(ImGuiKey_M))training.checkpointNavigation=2;
             }
-            start=drawApplicationMenu(true)||start;
+            if(const auto requested=drawApplicationMenu(true))launch=requested;
             auto* viewport=ImGui::GetMainViewport();const auto dock=ImHashStr("PaleRealtimeViewerDockSpace");
             if(!dockLayoutInitialized) {viewer::ui::defaultDockLayout(dock,viewport);dockLayoutInitialized=true;}
             ImGui::DockSpaceOverViewport(dock,viewport,ImGuiDockNodeFlags_PassthruCentralNode);ImGuizmo::BeginFrame();ImGuizmo::Enable(!ImGui::GetTopMostPopupModal());
@@ -5650,7 +5782,9 @@ int main(int argc, char** argv) {
             if(inspectorPage!=viewer::ui::Inspector::Reconstruction&&cachedInspector.valid)
                 ImGui::SetNextWindowScroll(ImVec2(-1,cachedInspector.scroll));
             ImGui::BeginChild("InspectorContents",ImVec2(0,0));
-            if(inspectorPage==viewer::ui::Inspector::Reconstruction)start=training.drawSetup(busyHasWorkspace,true)||start;
+            if(inspectorPage==viewer::ui::Inspector::Reconstruction) {
+                if(training.drawSetup(busyHasWorkspace,true))launch=viewer::TrainingLaunch::Primary;
+            }
             else if(cachedInspector.valid) {
                 cachedInspector.geometry.draw(*ImGui::GetWindowDrawList(),ImGui::GetWindowPos(),cachedInspector.size);
                 ImGui::Dummy(ImVec2(1,std::max(1.f,cachedInspector.contentHeight)));
@@ -5659,16 +5793,19 @@ int main(int argc, char** argv) {
                     inspectorInput.queue(static_cast<int>(inspectorPage),cachedInspector.key,io.MousePos,io.MouseWheel,ImGui::IsMouseClicked(ImGuiMouseButton_Left));
             }
             ImGui::EndChild();ImGui::End();
-            if(start&&!training.process.active()) {
-                if(training.useWorkingSnapshot) {training.message="Wait for the current preview before starting from an edited snapshot";}
+            if(launch&&!training.process.active()) {
+                if(training.usesWorkingSnapshot(*launch)) {training.message="Wait for the current preview before starting from an edited snapshot";}
                 else try {
-                    const bool preserve=!modelReadOnly();training.launch();showTrainingProgress=true;
-                    if(preserve) {training.view=viewer::TrainingView::Snapshot;followLaunchAfterPreview=true;}
+                    const bool preserve=!modelReadOnly();
+                    const auto previousView=training.view;
+                    training.launch({},*launch);showTrainingProgress=true;
+                    if(preserve) {training.view=previousView;followLaunchAfterPreview=true;}
                 } catch(const std::exception& error) {training.message=error.what();}
             }
             ImGui::Begin("Viewport",nullptr,ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
             drawViewportToolbar(true);
-            const auto viewportCanvas=viewer::viewportCanvas();
+            const auto fullCanvas = viewer::viewportCanvas();
+            const auto viewportCanvas = drawDatasetComparison(fullCanvas, busyCameraSource, busyCamera, walkNavigationActive);
             const auto available=viewportCanvas.size;
             const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,true);
             if(texture.id) {
@@ -5726,13 +5863,8 @@ int main(int argc, char** argv) {
                     auto view=replacingScene?syclMatrixToGlm(busyCamera.view):queuedOrbit.viewMatrix();
                     const ImVec2 gizmoSize(92,92),gizmoPosition(origin.x+size.x-104,origin.y+12);
                     ImGuizmo::ViewManipulate(glm::value_ptr(view),queuedOrbit.distance,gizmoPosition,gizmoSize,IM_COL32(16,16,16,96));
-                    if(ImGuizmo::IsUsingViewManipulate()) {
-                        const auto cameraFromWorld=glm::inverse(view);
-                        const auto forward=-glm::normalize(glm::vec3(cameraFromWorld[2]));
-                        if(std::isfinite(forward.x)&&std::isfinite(forward.y)&&std::isfinite(forward.z)) {
-                            queuedOrbit.setPositionKeepingTarget(queuedOrbit.target-forward*queuedOrbit.distance);
-                            queuedOrbitChanged=true;lastNavigationInput=std::chrono::steady_clock::now();
-                        }
+                    if(ImGuizmo::IsUsingViewManipulate() && queuedOrbit.adoptViewRotation(view)) {
+                        queuedOrbitChanged=true;lastNavigationInput=std::chrono::steady_clock::now();
                     }
                     gizmoCapturing=gizmoCapturing||ImGuizmo::IsViewManipulateHovered()||ImGuizmo::IsUsingViewManipulate();
                 }
@@ -5752,7 +5884,7 @@ int main(int argc, char** argv) {
                         queuedOrbitChanged=true;
                     }
                 }
-                ImGui::PopClipRect();viewer::finishViewportCanvas(viewportCanvas);
+                ImGui::PopClipRect();viewer::finishViewportCanvas(fullCanvas);
             } else ImGui::TextWrapped("The first preview will appear when compilation finishes.");
             if(walkNavigationActive&&!queuedWalkFinish) {
                 queuedOrbit.lookAround(io.MouseDelta);
@@ -5809,6 +5941,7 @@ int main(int argc, char** argv) {
                 catch(const std::exception& error) {completionFailed(error.what());}
                 catch(...) {completionFailed("Unknown preview worker failure");}
                 previewCompletion={};
+                training.loadingInitializer=false;
                 if(queuedProfilingSettings) {
                     if(gpuCounterProfilingEnabled!=busyGpuCounterProfilingEnabled)tracerDirty=true;
                     timerProfilingEnabled=busyTimerProfilingEnabled;gpuCounterProfilingEnabled=busyGpuCounterProfilingEnabled;
@@ -5990,7 +6123,7 @@ int main(int argc, char** argv) {
                 ImGui::BeginDisabled();
                 ImGui::PopStyleVar();
             }
-            if(drawApplicationMenu(false))launchTrainingRequested=true;
+            if(const auto launch=drawApplicationMenu(false))launchTrainingRequested=launch;
 
             ImGuiViewport* mainViewport = ImGui::GetMainViewport();
             const ImGuiID dockspaceId = ImHashStr("PaleRealtimeViewerDockSpace");
@@ -6079,7 +6212,8 @@ int main(int argc, char** argv) {
             auto sceneGroups=makeSceneGroups();
             cachedSceneGroups=sceneGroups;cachedSceneName=currentScenePath.stem().string();
             auto treePick=sceneTree.draw(cachedSceneName,sceneGroups,showSceneTree);
-            if(!treePick&&queuedScenePick) {treePick=queuedScenePick;queuedScenePick.reset();}
+            if (!treePick) treePick = std::move(queuedScenePick);
+            queuedScenePick.reset();
             if (auto picked=treePick) {
                 if(picked->kind==viewer::SceneItemKind::Emitter && (picked->index<0 || static_cast<std::size_t>(picked->index)>=areaLights.size()))picked.reset();
                 if(picked && picked->kind==viewer::SceneItemKind::SurfelEmitter && (picked->index<0 || static_cast<std::size_t>(picked->index)>=sceneTreeEmitterIndices.size()))picked.reset();
@@ -6093,6 +6227,7 @@ int main(int argc, char** argv) {
                     selectedSurfelLightIndex=picked->index; selectedSurfelEditorIndex=static_cast<int>(sceneTreeEmitterIndices[picked->index]); openLightControls=true;
                 } else if (picked->kind==viewer::SceneItemKind::Camera) {
                     selectedSceneCameraIndex=picked->index; cameraSource=CameraSource::SceneXml;
+                    showDatasetReference = true;
                     inspectorPage=viewer::ui::Inspector::Camera; cameraDirty=tracerDirty=renderRequested=true;
                 } else if (picked->kind==viewer::SceneItemKind::Geometry || (picked->kind==viewer::SceneItemKind::Material && picked->index==-1)) {
                     sceneSelectionKind=viewer::SceneItemKind::Geometry; openSurfelControls=true;
@@ -6112,7 +6247,8 @@ int main(int argc, char** argv) {
             ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * .52f);
             if (inspectorPage == viewer::ui::Inspector::Reconstruction) {
                 try {
-                    if (training.drawSetup(hasWorkingSnapshot || (!modelReadOnly() && firstPointCloudHandle(scene).has_value()))) launchTrainingRequested = true;
+                    if (training.drawSetup(hasWorkingSnapshot || (!modelReadOnly() && firstPointCloudHandle(scene).has_value())))
+                        launchTrainingRequested=viewer::TrainingLaunch::Primary;
                 } catch (const std::exception& error) { training.message = error.what(); }
             }
             if (inspectorPage == viewer::ui::Inspector::View) {
@@ -6677,6 +6813,8 @@ int main(int argc, char** argv) {
                 }
 
                 if(cameraSource==CameraSource::SceneXml&&ImGui::Button("Fit camera image"))cameraImageView.reset();
+                ImGui::Checkbox("Ground truth comparison", &showDatasetReference);
+                ImGui::SetItemTooltip("Show the matching dataset image alongside the scene camera preview.");
                 if (ImGui::Button("Reset view")) {
                     resetOrbitView();
                 }
@@ -7598,14 +7736,16 @@ int main(int argc, char** argv) {
                 training.datasetChanged=false;
                 training.message="Dataset selected for the next reconstruction";
             }
-            if (launchTrainingRequested && training.process.active()) {
-                launchTrainingRequested=false;
-            }
-            if (launchTrainingRequested) {
-                launchTrainingRequested = false;
+            if (const auto launch=launchTrainingRequested;launch) {
+                launchTrainingRequested.reset();
                 try {
-                    if (!modelReadOnly() && !saveWorkingSnapshot()) training.message = "Could not preserve the editable scene";
-                    else { training.launch(training.useWorkingSnapshot ? workingDirectory / "workspace.json" : std::filesystem::path{}); showTrainingProgress = true; }
+                    if (!training.process.active()) {
+                        if (!modelReadOnly() && !saveWorkingSnapshot()) training.message = "Could not preserve the editable scene";
+                        else {
+                            training.launch(training.usesWorkingSnapshot(*launch)?workingDirectory/"workspace.json":std::filesystem::path{},*launch);
+                            showTrainingProgress=true;
+                        }
+                    }
                 } catch (const std::exception& error) { training.message = error.what(); }
             }
 
@@ -7615,12 +7755,13 @@ int main(int argc, char** argv) {
                 ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
 
             drawViewportToolbar(false);
-            const auto viewportCanvas=viewer::viewportCanvas();
+            const auto fullCanvas = viewer::viewportCanvas();
+            const auto viewportCanvas = drawDatasetComparison(fullCanvas, displayedCameraSource, displayedCamera, navigationInputCaptured);
             const auto available=viewportCanvas.size;
             const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,false);
             if (cameraSource == CameraSource::Viewport) {
-                const uint32_t targetRenderWidth = renderExtentFromAvailable(available.x);
-                const uint32_t targetRenderHeight = renderExtentFromAvailable(available.y);
+                const uint32_t targetRenderWidth = renderExtentFromAvailable(fullCanvas.size.x);
+                const uint32_t targetRenderHeight = renderExtentFromAvailable(fullCanvas.size.y);
                 if (renderWidth != targetRenderWidth || renderHeight != targetRenderHeight) {
                     renderWidth = targetRenderWidth;
                     renderHeight = targetRenderHeight;
@@ -7631,11 +7772,8 @@ int main(int argc, char** argv) {
             if (texture.id != 0) {
                 const ImVec2 imageCanvasMin=viewportCanvas.min;
                 const ImVec2 imageCanvasMax(imageCanvasMin.x+available.x,imageCanvasMin.y+available.y);
-                if(cameraSource==CameraSource::SceneXml) {
-                    const std::string key=currentScenePath.string()+"/"+buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)].name;
-                    if(key!=cameraImageKey) {cameraImageView.reset();cameraImageKey=key;}
-                }
-                const auto placement=viewer::viewportImagePlacement(viewportCanvas,cameraSource==CameraSource::SceneXml,cameraImageView,texture.width,texture.height);
+                const bool calibrated = displayedCameraSource == CameraSource::SceneXml;
+                const auto placement=viewer::viewportImagePlacement(viewportCanvas,calibrated,cameraImageView,texture.width,texture.height);
                 const ImVec2 imageSize=placement.size;
                 ImGui::SetCursorScreenPos(placement.min);
                 ImGui::PushClipRect(imageCanvasMin,imageCanvasMax,true);
@@ -7647,7 +7785,7 @@ int main(int argc, char** argv) {
                 const bool imageHovered = ImGui::IsItemHovered() && !toolsHovered;
                 drawViewportToolRail(imageCanvasMin,selectedSurfelEditorIndex>=0);
                 auto* overlay=ImGui::GetWindowDrawList();
-                overlay->AddText(ImVec2(imageMin.x+12,imageMin.y+10),ImGui::GetColorU32(viewer::ui::muted),cameraSource==CameraSource::SceneXml ? displayedCamera.name : "User perspective");
+                overlay->AddText(ImVec2(imageMin.x+12,imageMin.y+10),ImGui::GetColorU32(viewer::ui::muted),calibrated ? displayedCamera.name : "User perspective");
 
                 const bool overlayMatchesScene=displayedOverlayPointCloud==currentPointCloudPath&&displayedOverlayScene==currentScenePath;
                 if(overlayMatchesScene)refreshLightMarkerMetadata();
@@ -7777,7 +7915,7 @@ int main(int argc, char** argv) {
                 }
                 if(overlayMatchesScene)displayedSelectedHandles.capture(*ImGui::GetWindowDrawList(),firstHandleIndex,imageMin,imageSize);
                 ImGuizmo::Enable(!ImGui::GetTopMostPopupModal());
-                if (!navigationInputCaptured && cameraSource == CameraSource::Viewport) {
+                if (!navigationInputCaptured && !calibrated && cameraSource == CameraSource::Viewport) {
                     glm::mat4 viewGizmoMatrix = orbit.viewMatrix();
                     const ImVec2 viewGizmoSize{92.0f, 92.0f};
                     const ImVec2 viewGizmoPosition{
@@ -7790,13 +7928,8 @@ int main(int argc, char** argv) {
                         viewGizmoPosition,
                         viewGizmoSize,
                         IM_COL32(16, 16, 16, 96));
-                    if (ImGuizmo::IsUsingViewManipulate()) {
-                        const glm::mat4 cameraFromWorld = glm::inverse(viewGizmoMatrix);
-                        const glm::vec3 forward = -glm::normalize(glm::vec3(cameraFromWorld[2]));
-                        if (std::isfinite(forward.x) && std::isfinite(forward.y) && std::isfinite(forward.z)) {
-                            orbit.setPositionKeepingTarget(orbit.target - forward * orbit.distance);
-                            cameraDirty = true;
-                        }
+                    if (ImGuizmo::IsUsingViewManipulate() && orbit.adoptViewRotation(viewGizmoMatrix)) {
+                        cameraDirty = true;
                     }
                     viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsViewManipulateHovered();
                     viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsingViewManipulate();
@@ -7862,23 +7995,21 @@ int main(int argc, char** argv) {
                     }
                     viewportPickArmed = false;
                 }
-                if ((imageHovered || (cameraSource==CameraSource::SceneXml&&cameraCanvasHovered)) && !viewportCameraInputBlocked && !hoveredLightMarker && !pressedLightMarker && !ImGui::GetTopMostPopupModal()) {
+                if ((imageHovered || (calibrated && cameraCanvasHovered)) && !viewportCameraInputBlocked && !hoveredLightMarker && !pressedLightMarker && !ImGui::GetTopMostPopupModal()) {
                     const bool orbitDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
                     const bool panDragging =
                         ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
                         ImGui::IsMouseDragging(ImGuiMouseButton_Right);
                     const bool zooming = io.MouseWheel != 0.0f;
-                    if(cameraSource==CameraSource::SceneXml&&!orbitDragging) {
+                    if(calibrated && !orbitDragging) {
                         if(panDragging)cameraImageView.drag(io.MouseDelta);
                         if(zooming)cameraImageView.zoomAt(io.MousePos,imageCanvasMin,available,io.MouseWheel);
-                    }
-                    if (cameraSource == CameraSource::SceneXml && orbitDragging) {
-                        orbit = makeOrbitCameraFromSceneCamera(displayedCamera, bounds, orbit);
-                        cameraSource = CameraSource::Viewport;
-                        cameraDirty = true;
-                        renderRequested = true;
-                    }
-                    if (cameraSource == CameraSource::Viewport) {
+                    } else if (calibrated || cameraSource == CameraSource::Viewport) {
+                        if (calibrated) {
+                            orbit = makeOrbitCameraFromSceneCamera(displayedCamera, displayedBounds, orbit);
+                            cameraSource = CameraSource::Viewport;
+                            renderRequested = true;
+                        }
                         if(orbitDragging||panDragging||zooming)lastNavigationInput=std::chrono::steady_clock::now();
                         if (orbitDragging) {
                             orbit.orbit(io.MouseDelta);
@@ -7895,7 +8026,7 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) pressedLightMarker.reset();
-                ImGui::PopClipRect();viewer::finishViewportCanvas(viewportCanvas);
+                ImGui::PopClipRect();viewer::finishViewportCanvas(fullCanvas);
             } else {
                 ImGui::TextWrapped("%s", training.openedReconstruction?"Loading saved reconstruction...":modelReadOnly() ? "Waiting for the launched training run to publish a scene. See Run monitor for initialization or errors." : "No preview yet");
             }
@@ -7998,6 +8129,7 @@ int main(int argc, char** argv) {
         Pale::freeGradientsForScene(queue, viewerAdjointGradients);
         Pale::freeDebugImagesForScene(queue, &viewerAdjointDebugImages, 1u);
         freeViewerRegularizerGradients();
+        datasetReferenceTexture.destroy();
         texture.destroy();
 
         ImGui_ImplOpenGL3_Shutdown();

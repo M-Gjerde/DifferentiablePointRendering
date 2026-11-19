@@ -112,8 +112,10 @@ namespace viewer {
             if(last<=first)last=first+std::max(1.,std::abs(first)*1e-6);
             std::array<double,2> low{std::numeric_limits<double>::infinity(),std::numeric_limits<double>::infinity()},high{-low[0],-low[1]};
             const auto scale=[&](double value) {return logarithmic?(value>0?std::log10(value):std::numeric_limits<double>::quiet_NaN()):value;};
+            // In a dual-axis plot, the first series uses the left axis and the rest share the right axis.
+            const auto axisForSeries=[independentRightAxis](std::size_t index) {return independentRightAxis&&index>0?1:0;};
             for(std::size_t c=0;c<series.size();++c)if(const auto it=columns.find(series[c].first);it!=columns.end()) {
-                const int axis=independentRightAxis&&c==1?1:0;
+                const int axis=axisForSeries(c);
                 const auto count=std::min(iterations.size(),it->second.size());
                 double total=0;
                 for(std::size_t i=0;i<count;++i) {
@@ -150,7 +152,7 @@ namespace viewer {
             // memory and brief spikes remain visible without millions of vertices.
             const int buckets=static_cast<int>(std::clamp(static_cast<double>(right-left),1.,16384.));
             for(std::size_t c=0;c<series.size();++c)if(const auto it=columns.find(series[c].first);it!=columns.end()) {
-                const int axis=independentRightAxis&&c==1?1:0;
+                const int axis=axisForSeries(c);
                 std::vector<double> minimum(buckets,std::numeric_limits<double>::infinity()),maximum(buckets,-std::numeric_limits<double>::infinity());
                 const auto count=std::min(iterations.size(),it->second.size());
                 double total=0;
@@ -192,7 +194,7 @@ namespace viewer {
                         const double value=sample(series[c].first,*index,cumulative);
                         if(std::isfinite(value)) {
                             ImGui::TextColored(colors[c%5],integerCounts?"%s: %.0f":"%s: %.9g",series[c].second,value);
-                            const int axis=independentRightAxis&&c==1?1:0;
+                            const int axis=axisForSeries(c);
                             const double y=scale(value);
                             if(std::isfinite(y))draw->AddCircleFilled(ImVec2(x,bottom-static_cast<float>(std::clamp(
                                 (y-low[axis])/(high[axis]-low[axis]),0.,1.))*(bottom-top)),3.5f,ImGui::GetColorU32(colors[c%5]));

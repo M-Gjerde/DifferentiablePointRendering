@@ -2,17 +2,17 @@
 #include "TrainingSession.h"
 #include "OptimizationSnapshots.h"
 #include "DatasetLibrary.h"
+#include "DatasetBrowser.h"
 #include "WorkspaceUi.h"
 #include "TrainingLog.h"
 #include "TrainingMetrics.h"
 #include "ReconstructionBrowser.h"
 #include <imgui.h>
 #include <yaml-cpp/yaml.h>
+#include <charconv>
 #include <cmath>
 #include <cfloat>
 #include <cstdio>
-#include <iomanip>
-#include <sstream>
 #include <iterator>
 
 namespace viewer {
@@ -82,24 +82,256 @@ namespace viewer {
     inline constexpr std::array<const char*, 10> trainingParameterLabels{
         "Position LR", "Rotation LR", "Scale LR", "Albedo LR", "Opacity LR", "Beta LR",
         "Alpha weight", "Depth distortion weight", "Normal consistency weight", "Slab weight"};
-    enum class TrainingView { Live, Saved, History, Snapshot };
-    inline std::string trainingNumber(float value) {
-        std::ostringstream stream; stream << std::setprecision(9) << value; return stream.str();
+    enum class TrainingView { Live, Saved, History, Snapshot, Initializer };
+    enum class TrainingLaunch { Primary, New };
+    inline std::string trainingNumber(double value) {
+        char buffer[32];
+        const auto result = std::to_chars(std::begin(buffer), std::end(buffer), value);
+        return {buffer, result.ptr};
     }
+    inline std::optional<double> trainingParameterValue(const char* text) {
+        char* end = nullptr;
+        const double value = std::strtod(text, &end);
+        if (end == text || *end || !std::isfinite(value) || value < 0.0) return std::nullopt;
+        return value;
+    }
+    inline void trainingParameterRow(const char* label) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
+        ImGui::TableNextColumn();
+        ImGui::SetNextItemWidth(-1);
+    }
+
+    struct DensificationControls {
+        enum class Preset { PythonDefaults, ObjectLevel, SceneLevel };
+        inline static constexpr std::array labels{"Python defaults", "Object level", "Scene level"};
+        inline static constexpr std::array keys{"python", "object", "scene"};
+
+        struct Settings {
+            int interval = 200;
+            int start = 0;
+            double splitFactor = 1.6;
+            double maxNewFraction = 1.0;
+            double gradientThreshold = 0.0004;
+            double cloneScaleFraction = 0.0035;
+            bool useCloning = true;
+
+            bool operator==(const Settings&) const = default;
+        };
+
+        static Settings presetSettings(Preset value) {
+            Settings result;
+            if (value == Preset::SceneLevel) result.interval = 1000;
+            return result;
+        }
+
+        Preset preset = Preset::PythonDefaults;
+        Settings settings;
+        std::array<Settings, 2> profiles{
+            presetSettings(Preset::ObjectLevel), presetSettings(Preset::SceneLevel)};
+
+        bool selectPreset(Preset value) {
+            if (value == preset) return false;
+            preset = value;
+            settings = value == Preset::PythonDefaults ? Settings{} : profiles[profileIndex(value)];
+            return true;
+        }
+
+        static std::size_t profileIndex(Preset value) {
+            return static_cast<std::size_t>(value) - 1;
+        }
+
+        [[nodiscard]] static const char* validationError(const Settings& settings) {
+            if (settings.interval < 0 || settings.start < 0)
+                return "Densification interval and start must be non-negative";
+            if (!std::isfinite(settings.splitFactor) || settings.splitFactor < 1.0)
+                return "Split scale factor must be finite and at least 1";
+            if (!std::isfinite(settings.maxNewFraction) || settings.maxNewFraction < 0.0 ||
+                settings.maxNewFraction > 1.0)
+                return "Max new fraction must be between 0 and 1";
+            if (!std::isfinite(settings.gradientThreshold) || settings.gradientThreshold < 0.0)
+                return "Position threshold must be finite and non-negative";
+            if (!std::isfinite(settings.cloneScaleFraction) || settings.cloneScaleFraction <= 0.0)
+                return "Clone scale fraction must be finite and positive";
+            return nullptr;
+        }
+
+        bool rememberCurrentProfile() {
+            if (preset == Preset::PythonDefaults || validationError(settings)) return false;
+            auto& profile = profiles[profileIndex(preset)];
+            if (profile == settings) return false;
+            profile = settings;
+            return true;
+        }
+
+        void appendArguments(std::vector<std::string>& args) const {
+            if (preset == Preset::PythonDefaults) return;
+            if (const auto* error = validationError(settings)) throw std::runtime_error(error);
+            args.insert(args.end(), {
+                "--densification-interval", std::to_string(settings.interval),
+                "--densify-after", std::to_string(settings.start),
+                "--densification-split-scale-factor", trainingNumber(settings.splitFactor),
+                "--densification-max-new-fraction", trainingNumber(settings.maxNewFraction),
+                "--densification-grad-abs-min", trainingNumber(settings.gradientThreshold),
+                "--densification-grad-abs-min-final", trainingNumber(settings.gradientThreshold),
+                "--densification-clone-scale-fraction", trainingNumber(settings.cloneScaleFraction),
+                settings.useCloning ? "--densification-use-cloning" : "--no-densification-use-cloning"
+            });
+        }
+
+        [[nodiscard]] static YAML::Node saveProfile(const Settings& settings) {
+            YAML::Node saved;
+            saved["interval"] = jsonNumber(settings.interval);
+            saved["start"] = jsonNumber(settings.start);
+            saved["split_factor"] = jsonNumber(settings.splitFactor);
+            saved["max_new_fraction"] = jsonNumber(settings.maxNewFraction);
+            saved["gradient_threshold"] = jsonNumber(settings.gradientThreshold);
+            saved["clone_scale_fraction"] = jsonNumber(settings.cloneScaleFraction);
+            saved["use_cloning"] = settings.useCloning;
+            saved["use_cloning"].SetTag("?");
+            return saved;
+        }
+
+        [[nodiscard]] YAML::Node preferences() const {
+            YAML::Node saved;
+            saved["preset"] = keys[static_cast<std::size_t>(preset)];
+            for (std::size_t i = 1; i < keys.size(); ++i)
+                saved["profiles"][keys[i]] = saveProfile(profiles[i - 1]);
+            return saved;
+        }
+
+        [[nodiscard]] static Settings loadProfile(const YAML::Node& saved, Preset value,
+                                                  bool legacy = false) {
+            const Settings defaults = presetSettings(value);
+            if (!saved || !saved.IsMap()) return defaults;
+            Settings settings = defaults;
+            settings.interval = saved["interval"].as<int>(settings.interval);
+            settings.start = saved["start"].as<int>(settings.start);
+            settings.splitFactor = saved["split_factor"].as<double>(settings.splitFactor);
+            settings.maxNewFraction = saved["max_new_fraction"].as<double>(settings.maxNewFraction);
+            settings.gradientThreshold = saved["gradient_threshold"].as<double>(settings.gradientThreshold);
+            settings.cloneScaleFraction = saved["clone_scale_fraction"].as<double>(settings.cloneScaleFraction);
+            settings.useCloning = saved["use_cloning"].as<bool>(settings.useCloning);
+            // Older builds saved the full active profile, including the old Scene level defaults.
+            if (legacy && value == Preset::SceneLevel) {
+                if (settings.splitFactor == 1.1) settings.splitFactor = defaults.splitFactor;
+                if (settings.maxNewFraction == 0.2) settings.maxNewFraction = defaults.maxNewFraction;
+            }
+            return validationError(settings) ? defaults : settings;
+        }
+
+        void restore(const YAML::Node& saved) {
+            if (!saved || !saved.IsMap()) return;
+            const auto key = saved["preset"].as<std::string>("");
+            const auto storedProfiles = saved["profiles"];
+            const bool hasProfiles = storedProfiles && storedProfiles.IsMap();
+            preset = Preset::PythonDefaults;
+            for (std::size_t i = 1; i < keys.size(); ++i) {
+                const auto value = static_cast<Preset>(i);
+                if (key == keys[i]) preset = value;
+                const auto profile = hasProfiles ? storedProfiles[keys[i]] : (key == keys[i] ? saved : YAML::Node{});
+                profiles[i - 1] = loadProfile(profile, value, !hasProfiles);
+            }
+            settings = preset == Preset::PythonDefaults ? Settings{} : profiles[profileIndex(preset)];
+        }
+
+        static void drawRecordedSettings(const YAML::Node& config, const char* title) {
+            if (!config.IsMap() || !ImGui::TreeNode(title)) return;
+            const std::array fields{
+                std::pair{"Interval", "densification_interval"},
+                std::pair{"Start iteration", "densify_after"},
+                std::pair{"Split scale factor", "densification_split_scale_factor"},
+                std::pair{"Max new fraction", "densification_max_new_fraction"},
+                std::pair{"Position threshold", "densification_grad_abs_min"},
+                std::pair{"Final threshold", "densification_grad_abs_min_final"},
+                std::pair{"Clone small surfels", "densification_use_cloning"},
+                std::pair{"Clone scale fraction", "densification_clone_scale_fraction"},
+            };
+            if (ImGui::BeginTable("RecordedDensification", 2, ImGuiTableFlags_SizingStretchProp)) {
+                for (const auto& [label, key] : fields) {
+                    trainingParameterRow(label);
+                    const auto value = reconstructionSetting(config, key);
+                    ImGui::TextUnformatted(value.IsScalar() ? value.Scalar().c_str() : "Unavailable");
+                }
+                ImGui::EndTable();
+            }
+            ImGui::TreePop();
+        }
+
+        bool draw(const YAML::Node& runConfig = {}, const char* recordedTitle = "Current run values") {
+            if (!ImGui::TreeNodeEx("Densification", ImGuiTreeNodeFlags_Framed)) return false;
+            bool selectionChanged = false;
+            ImGui::TextUnformatted("Profile for new runs");
+            const auto index = static_cast<std::size_t>(preset);
+            std::string label = labels[index];
+            if (settings != presetSettings(preset)) label += " (edited)";
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##DensificationPreset", label.c_str())) {
+                for (std::size_t i = 0; i < labels.size(); ++i) {
+                    if (ImGui::Selectable(labels[i], i == index))
+                        selectionChanged = selectPreset(static_cast<Preset>(i));
+                    if (i == index) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            if (preset == Preset::PythonDefaults)
+                ImGui::TextWrapped("New runs use config.py. Select a profile to edit values.");
+            else ImGui::TextWrapped("Click a value to edit. Valid edits save and apply when you start a new run.");
+            if (preset != Preset::PythonDefaults &&
+                ImGui::BeginTable("DensificationSettings", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("Parameter", ImGuiTableColumnFlags_WidthStretch, .57f);
+                ImGui::TableSetupColumn("Edit value", ImGuiTableColumnFlags_WidthStretch, .43f);
+                ImGui::TableHeadersRow();
+                trainingParameterRow("Interval");
+                ImGui::InputInt("##interval", &settings.interval, 0);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Iterations between updates. Zero disables densification.");
+                trainingParameterRow("Start iteration");
+                ImGui::InputInt("##start", &settings.start, 0);
+                trainingParameterRow("Split scale factor");
+                ImGui::InputDouble("##split", &settings.splitFactor, 0, 0, "%.7g");
+                trainingParameterRow("Max new fraction");
+                ImGui::InputDouble("##max_new", &settings.maxNewFraction, 0, 0, "%.7g");
+                trainingParameterRow("Position threshold");
+                ImGui::InputDouble("##threshold", &settings.gradientThreshold, 0, 0, "%.7g");
+                trainingParameterRow("Clone small surfels");
+                ImGui::Checkbox("##cloning", &settings.useCloning);
+                ImGui::BeginDisabled(!settings.useCloning);
+                trainingParameterRow("Clone scale fraction");
+                ImGui::InputDouble("##clone_fraction", &settings.cloneScaleFraction, 0, 0, "%.7g");
+                ImGui::EndDisabled();
+                ImGui::EndTable();
+            }
+            if (preset != Preset::PythonDefaults) {
+                const auto defaults = presetSettings(preset);
+                ImGui::BeginDisabled(settings == defaults);
+                if (ImGui::Button("Reset profile")) settings = defaults;
+                ImGui::EndDisabled();
+                if (const auto* error = validationError(settings)) ImGui::TextWrapped("%s", error);
+            }
+            drawRecordedSettings(runConfig, recordedTitle);
+            ImGui::TreePop();
+            return rememberCurrentProfile() || selectionChanged;
+        }
+    };
 
     struct TrainingControls {
         TrainingSession process;
         std::array<char, 2048> dataset{}, output{}, groundTruth{}, python{}, workingDirectory{}, moduleDirectory{}, datasetRoot{};
         std::vector<DatasetEntry> datasets;
+        DatasetBrowser datasetBrowser;
         bool evaluateGroundTruth=true;
         bool datasetChanged=false;
         std::optional<std::filesystem::path> initializedPointCloudRequest;
+        bool loadingInitializer=false;
         int iterations = 30000, snapshotInterval = 100, samples = 1;
         float liveInterval = 1.0f;
-        bool overrideParameters = false, useWorkingSnapshot = false;
+        bool useWorkingSnapshot = false;
         bool overrideRunSettings=false,stopRequested=false;
+        DensificationControls densification;
         bool rollingMetrics=false,logMetrics=false;
-        int metricWindow=1000;
+        int metricWindow=10'000;
         int requestedMonitorTab=-1;
         TrainingMetrics metrics,geometryMetrics,statusLossMetrics;
         ReconstructionBrowser reconstructionBrowser;
@@ -111,15 +343,17 @@ namespace viewer {
         // rewinds or pauses the optimizer. -2/+2 are 1000-iteration jumps.
         std::optional<int> checkpointNavigation;
         std::optional<std::size_t> checkpointSelection;
-        std::array<float, 10> parameters{0.00016f, .005f, .005f, .003f, .003f, .0005f, .0005f, .005f, .001f, 0.f};
+        using ParameterValues = std::array<double, trainingParameterNames.size()>;
+        std::array<std::array<char, 48>, trainingParameterNames.size()> launchParameters{};
+        ParameterValues liveParameters{};
+        std::optional<ParameterValues> appliedParameters;
         TrainingView view = TrainingView::Snapshot;
-        YAML::Node status, live;
+        YAML::Node status, live, runConfig;
         std::string message, log, selectableLog;
         ImGuiID logScrollInput=0,logScrollWindow=0;
         TrainingLog logReader;
         std::vector<float> losses;
         uint64_t plottedIteration = 0, viewedIteration = 0, loadedGeneration = 0;
-        bool parametersInitialized = false;
         std::chrono::steady_clock::time_point lastPoll{};
         std::filesystem::path preferences;
         std::string detectedPython, detectedModuleDirectory;
@@ -135,14 +369,23 @@ namespace viewer {
             set(python,"python3");
             if(environment)set(python,(std::filesystem::path(environment)/"bin/python").string());
             else {
-                // Prefer an existing project environment before the system Python.
-                for(const auto& candidate:{repository/".venv/bin/python",
+                // Prefer the project's named Conda environment when it exists;
+                // a leftover .venv may contain only the virtualenv bootstrap.
+                const auto environmentName=repository.filename().string();
+                for(const auto& candidate:{
+                    expandedPath("~/miniconda3/envs/"+environmentName+"/bin/python",repository),
+                    expandedPath("~/anaconda3/envs/"+environmentName+"/bin/python",repository),
+                    repository/".venv/bin/python",
                     expandedPath("~/miniconda3/envs/pale/bin/python",repository),
                     expandedPath("~/anaconda3/envs/pale/bin/python",repository)})
                     if(std::filesystem::is_regular_file(candidate)) {set(python,candidate.string());break;}
             }
+#ifdef PALE_TRAINING_MODULE_DIR
+            set(moduleDirectory,PALE_TRAINING_MODULE_DIR);
+#else
             if(std::filesystem::is_regular_file(repository/"cmake-build-pybind/pale.so"))
                 set(moduleDirectory,(repository/"cmake-build-pybind").string());
+#endif
             detectedPython=python.data(); detectedModuleDirectory=moduleDirectory.data();
             preferences = repository / "output/viewer_training.json";
             const auto saved = readJson(preferences);
@@ -159,6 +402,7 @@ namespace viewer {
                             (std::string(key)=="module_directory" && saved[key].as<std::string>().empty()))) continue;
                         set(*buffer, saved[key].as<std::string>());
                     }
+                densification.restore(saved["densification"]);
             }
             refreshDatasets();
         }
@@ -172,17 +416,29 @@ namespace viewer {
         }
         void refreshDatasets() {
             datasets=scanDatasets(expandedPath(datasetRoot.data(),std::filesystem::current_path()));
+            const auto input=expandedPath(dataset.data(),expandedPath(workingDirectory.data(),std::filesystem::current_path()));
             auto found=std::find_if(datasets.begin(),datasets.end(),[&](const auto& entry){return entry.directory==std::filesystem::path(dataset.data());});
             if(found!=datasets.end()) {
                 const bool evaluation=evaluateGroundTruth;
                 selectDataset(*found); evaluateGroundTruth=evaluation&&found->groundTruth.has_value();
+            }
+            else if(dataset[0]&&isDatasetDirectory(input)) {
+                const bool evaluation=evaluateGroundTruth;
+                selectDataset(datasetEntry(input));
+                evaluateGroundTruth=evaluation&&groundTruth[0];
             }
             else if(!datasets.empty()) {
                 auto teapot=std::find_if(datasets.begin(),datasets.end(),[](const auto& entry){return entry.directory.filename()=="teapot_pbdr";});
                 selectDataset(teapot!=datasets.end()?*teapot:datasets.front());
             }
         }
-        void openDatasetFolder() {
+        void chooseDatasetFolder() {
+            try {
+                const auto cwd=expandedPath(workingDirectory.data(),std::filesystem::current_path());
+                datasetBrowser.open(expandedPath(dataset[0]?dataset.data():datasetRoot.data(),cwd));
+            }catch(const std::exception& error) {message=error.what();}
+        }
+        void openDatasetLibrary() {
             try {
                 if(!datasetRoot[0])throw std::runtime_error("Set the Dataset library folder in Run options first");
                 const auto root=expandedPath(datasetRoot.data(),std::filesystem::current_path());
@@ -202,9 +458,55 @@ namespace viewer {
         }
         [[nodiscard]] bool pending() const { return process.active() && !stopRequested && process.commandSequence > integer("ack"); }
         [[nodiscard]] bool hasRun() const {return openedReconstruction.has_value()||process.launched();}
+        [[nodiscard]] bool initializingDataset() const {return initializedPointCloudRequest.has_value()||loadingInitializer;}
+        [[nodiscard]] bool hasCurrentRun() const {return hasRun()&&view!=TrainingView::Initializer&&!initializingDataset();}
+        [[nodiscard]] bool viewingEditableScene() const {return view==TrainingView::Snapshot||view==TrainingView::Initializer;}
         [[nodiscard]] bool openingSaved() const {return reconstructionLoad.valid()||preparedReconstruction.has_value();}
+        [[nodiscard]] bool continuesSavedRun(TrainingLaunch mode=TrainingLaunch::Primary) const {
+            return mode==TrainingLaunch::Primary&&hasCurrentRun()&&openedReconstruction&&!openedReconstruction->completed();
+        }
+        [[nodiscard]] bool usesWorkingSnapshot(TrainingLaunch mode) const {
+            return useWorkingSnapshot&&!continuesSavedRun(mode);
+        }
+        [[nodiscard]] const char* continuationUnavailable() const {
+            const auto& saved=*openedReconstruction;
+            if(!saved.checkpointIterationKnown)return "The saved point cloud has no recorded iteration.";
+            if(!saved.config.IsMap()||!reconstructionSetting(saved.config,"dataset_path").IsScalar())
+                return "Continuing requires run_config.json with the original dataset path.";
+            return nullptr;
+        }
+        [[nodiscard]] std::string progressState() const {
+            const auto phase=state();
+            if((process.active()&&phase!="completed")||!hasRun())return phase;
+            const bool completed=openedReconstruction?openedReconstruction->completed():
+                std::max(integer("iteration"),reconstructionIteration(metrics.latest("iteration")))>=reconstructionCompletionIteration;
+            return completed?"Completed":phase=="failed"?"Failed":"Unfinished";
+        }
+        void markSavedRunCompleted() {
+            if(!continuesSavedRun()||openingSaved()||process.active())return;
+            const auto path=runDirectory()/reconstructionCompletionMarker;
+            std::ofstream marker(path,std::ios::app);
+            if(!marker) {message="Could not mark reconstruction as completed: "+path.string();return;}
+            openedReconstruction->manuallyCompleted=true;
+            message="Marked "+openedReconstruction->entry.label+" as completed";
+        }
         [[nodiscard]] const std::filesystem::path& runDirectory() const {
             return openedReconstruction?openedReconstruction->entry.directory:process.runDirectory;
+        }
+        void openRunOutputFolder() {
+            if(!hasCurrentRun()) {
+                message="Start a reconstruction to create an output folder for this scene";
+                return;
+            }
+            const auto& folder=runDirectory();
+            std::error_code error;
+            if(!std::filesystem::is_directory(folder,error)) {
+                message="Reconstruction output folder is unavailable: "+folder.string();
+                return;
+            }
+            const auto open=ImGui::GetPlatformIO().Platform_OpenInShellFn;
+            if(!open||!open(ImGui::GetCurrentContext(),folder.c_str()))
+                message="Could not open reconstruction output folder: "+folder.string();
         }
         [[nodiscard]] const std::filesystem::path& runIdentity() const {
             return openedReconstruction?openedReconstruction->entry.directory:process.directory;
@@ -250,7 +552,7 @@ namespace viewer {
             status["ground_truth"]=reconstructionSetting(saved.config,"ground_truth");
             const float time=metrics.latest("iteration_time_sec");
             if(std::isfinite(time))status["iteration_ms"]=jsonNumber(static_cast<double>(time)*1000.);
-            losses.clear();statusLossMetrics.reset();plottedIteration=0;loadedGeneration=0;parametersInitialized=true;stopRequested=false;
+            losses.clear();statusLossMetrics.reset();plottedIteration=0;loadedGeneration=0;stopRequested=false;
             checkpointNavigation.reset();checkpointSelection.reset();historyPath.clear();historyIteration=0;
             logReader.reset();log=std::move(saved.log);selectableLog.clear();logScrollInput=logScrollWindow=0;
             view=TrainingView::Saved;useWorkingSnapshot=false;if(!sameRun)requestedMonitorTab=1;
@@ -278,7 +580,26 @@ namespace viewer {
                 latest = PointCloudSnapshot{final, integer("iteration"), lastWriteTimeOrMin(final)};
             return latest;
         }
+        void updateAppliedParameters(const YAML::Node& values) {
+            if (!values || !values.IsMap()) return;
+            ParameterValues next;
+            for (std::size_t i = 0; i < next.size(); ++i) {
+                const auto value = values[trainingParameterNames[i]];
+                if (!value || !value.IsScalar()) return;
+                const auto parsed = trainingParameterValue(value.Scalar().c_str());
+                if (!parsed) return;
+                next[i] = *parsed;
+            }
+            if (!appliedParameters || liveParameters == *appliedParameters) liveParameters = next;
+            appliedParameters = next;
+        }
         void poll() {
+            try {
+                if(const auto folder=datasetBrowser.poll()) {
+                    selectDataset(datasetEntry(*folder));
+                    message="Dataset selected for the next reconstruction";
+                }
+            }catch(const std::exception& error) {message=error.what();}
             process.poll();
             if(reconstructionLoad.valid()&&reconstructionLoad.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
                 try {preparedReconstruction=reconstructionLoad.get();}
@@ -288,13 +609,12 @@ namespace viewer {
             const auto now = std::chrono::steady_clock::now();
             if (!process.launched() || now - lastPoll < std::chrono::milliseconds(250)) return;
             lastPoll = now;
-            if (auto next = readJson(process.directory / "status.json"); next.IsMap()) status = next;
-            if (auto next = readJson(process.directory / "live.json"); next.IsMap()) live = next;
-            if (!parametersInitialized && status["parameters"].IsMap()) {
-                for (std::size_t i = 0; i < parameters.size(); ++i)
-                    if (status["parameters"][trainingParameterNames[i]]) parameters[i] = status["parameters"][trainingParameterNames[i]].as<float>();
-                parametersInitialized = true;
+            if (const auto next = readJson(process.directory / "status.json"); next.IsMap()) {
+                status = next;
+                updateAppliedParameters(next["parameters"]);
             }
+            if (auto next = readJson(process.directory / "live.json"); next.IsMap()) live = next;
+            if (!runConfig.IsMap()) runConfig = readJson(process.runDirectory / "run_config.json");
             if (integer("iteration") != plottedIteration && status["loss"].IsScalar()) {
                 try {
                     const auto loss=status["loss"].as<float>();
@@ -323,30 +643,26 @@ namespace viewer {
             }
             if(pending())return;
             YAML::Node request;
-            request["sequence"] = jsonNumber(++process.commandSequence); request["command"] = command;
-            if (tune) for (std::size_t i = 0; i < parameters.size(); ++i) {
-                if (!std::isfinite(parameters[i]) || parameters[i] < 0) {
-                    --process.commandSequence; throw std::runtime_error("Parameters must be finite and non-negative");
+            if (tune) {
+                if (!appliedParameters || liveParameters == *appliedParameters) return;
+                for (std::size_t i = 0; i < liveParameters.size(); ++i) {
+                    const double value = liveParameters[i];
+                    if (!std::isfinite(value) || value < 0)
+                        throw std::runtime_error("Parameters must be finite and non-negative");
+                    if (value != (*appliedParameters)[i])
+                        request["parameters"][trainingParameterNames[i]] = jsonNumber(value);
                 }
-                request["parameters"][trainingParameterNames[i]] = jsonNumber(parameters[i]);
             }
+            request["sequence"] = jsonNumber(++process.commandSequence); request["command"] = command;
             try { writeJsonAtomic(process.directory / "command.json", request); }
             catch (...) { --process.commandSequence; throw; }
         }
         void send(const char* command, bool tune = false) {
             try { request(command, tune); } catch (const std::exception& error) { message = error.what(); }
         }
-        void launch(const std::filesystem::path& workspace = {}) {
-            if(process.active())throw std::runtime_error("A reconstruction is already running");
-            if(openingSaved())throw std::runtime_error("Wait for the saved reconstruction to finish loading");
-            const auto cwd = expandedPath(workingDirectory.data(), std::filesystem::current_path());
-            const auto input = expandedPath(dataset.data(), cwd);
-            if (!std::filesystem::is_directory(input / "images")) throw std::runtime_error("Dataset needs an images/ directory");
-            if (workspace.empty() && (!std::filesystem::is_regular_file(input / "scene.xml") ||
-                                      !std::filesystem::is_regular_file(input / "points.ply")))
-                throw std::runtime_error("Dataset needs scene.xml and points.ply");
-            if ((overrideRunSettings&&(iterations < 1 || snapshotInterval < 1 || samples < 1)) || !std::isfinite(liveInterval) || liveInterval < .1f)
-                throw std::runtime_error("Iterations, snapshot interval and samples must be positive; live interval must be >= 0.1 s");
+        [[nodiscard]] std::vector<std::string> trainingCommand(const std::filesystem::path& cwd) const {
+            if (!std::isfinite(liveInterval) || liveInterval < .1f)
+                throw std::runtime_error("Live interval must be >= 0.1 s");
             std::vector<std::string> args;
             if (moduleDirectory[0]) {
                 std::string path = expandedPath(moduleDirectory.data(), cwd).string();
@@ -355,9 +671,32 @@ namespace viewer {
             }
             const std::string executable = python.data();
             args.push_back(executable.find('/') == std::string::npos ? executable : expandedPath(executable, cwd).string());
-            args.insert(args.end(), {"-u", (cwd / "main.py").string(), "-s", input.string(),
+            args.insert(args.end(), {"-u", (cwd / "main.py").string(),
                 "--viewer-live-interval", std::to_string(liveInterval),
                 "--no-metrics", "--no-image-preview"});
+            return args;
+        }
+        void addNewRunArguments(std::vector<std::string>& args,const std::filesystem::path& cwd,
+                                const std::filesystem::path& workspace) const {
+            const auto input = expandedPath(dataset.data(), cwd);
+            if (!std::filesystem::is_directory(input / "images")) throw std::runtime_error("Dataset needs an images/ directory");
+            if (workspace.empty() && (!std::filesystem::is_regular_file(input / "scene.xml") ||
+                                      !std::filesystem::is_regular_file(input / "points.ply")))
+                throw std::runtime_error("Dataset needs scene.xml and points.ply");
+            if (overrideRunSettings&&(iterations < 1 || snapshotInterval < 1 || samples < 1))
+                throw std::runtime_error("Iterations, snapshot interval and samples must be positive");
+            args.insert(args.end(), {"-s", input.string()});
+            densification.appendArguments(args);
+            for (std::size_t i = 0; i < launchParameters.size(); ++i) {
+                const char* text = launchParameters[i].data();
+                if (!*text) continue;
+                if (!trainingParameterValue(text))
+                    throw std::runtime_error(std::string(trainingParameterLabels[i]) + " must be finite and non-negative");
+                std::string flag = i < 6 ? std::string("--lr-") + std::array<const char*,6>{"pos","rot","scale","albedo","opacity","beta"}[i]
+                    : std::string("--") + trainingParameterNames[i];
+                std::replace(flag.begin(), flag.end(), '_', '-');
+                args.insert(args.end(), {flag, text});
+            }
             if(overrideRunSettings)args.insert(args.end(),{"--iterations",std::to_string(iterations),"--save-ply-files-interval",std::to_string(snapshotInterval),"--adjoint-spp",std::to_string(samples)});
             if(!evaluateGroundTruth)args.push_back("--no-dataset-ground-truth");
             if (evaluateGroundTruth && groundTruth[0]) {
@@ -374,16 +713,40 @@ namespace viewer {
                 writeJsonAtomic(seed / "workspace.json", saved);
                 args.insert(args.end(), {"--viewer-workspace", (seed / "workspace.json").string()});
             }
-            if (overrideParameters) for (std::size_t i = 0; i < parameters.size(); ++i) {
-                if (!std::isfinite(parameters[i]) || parameters[i] < 0) throw std::runtime_error("Invalid hyperparameter");
-                std::string flag = i < 6 ? std::string("--lr-") + std::array<const char*,6>{"pos","rot","scale","albedo","opacity","beta"}[i]
-                    : std::string("--") + trainingParameterNames[i];
-                for (char& c : flag) if (c == '_') c = '-';
-                args.insert(args.end(), {flag, trainingNumber(parameters[i])});
+        }
+        void saveDensificationPreferences() {
+            try {
+                auto saved = readJson(preferences);
+                if (!saved.IsMap()) saved = YAML::Node(YAML::NodeType::Map);
+                saved["densification"] = densification.preferences();
+                writeJsonAtomic(preferences, saved);
+            } catch (const std::exception& error) {
+                message = "Could not save densification profiles. " + std::string(error.what());
             }
+        }
+        void launch(const std::filesystem::path& workspace = {},TrainingLaunch mode=TrainingLaunch::Primary) {
+            if(process.active())throw std::runtime_error("A reconstruction is already running");
+            if(openingSaved())throw std::runtime_error("Wait for the saved reconstruction to finish loading");
+            if(initializingDataset())throw std::runtime_error("Wait for the initialized point cloud to finish loading");
+            const auto cwd = expandedPath(workingDirectory.data(), std::filesystem::current_path());
+            auto args=trainingCommand(cwd);
+            const bool continuing=continuesSavedRun(mode);
+            if(continuing) {
+                const auto& saved=*openedReconstruction;
+                if(reconstructionFile(runDirectory()/reconstructionCompletionMarker)) {
+                    openedReconstruction->manuallyCompleted=true;
+                    throw std::runtime_error("This reconstruction has been marked as completed");
+                }
+                if(const char* reason=continuationUnavailable())throw std::runtime_error(reason);
+                const auto& checkpoint=saved.checkpoints.back();
+                args.insert(args.end(),{"--checkpoint",runDirectory().string(),"--scene",saved.scene.string(),
+                    "--ply",checkpoint.path.string(),"--resume-iteration-offset",std::to_string(checkpoint.iteration),
+                    "--iterations",std::to_string(reconstructionCompletionIteration)});
+            } else addNewRunArguments(args,cwd,workspace);
             process.launch(expandedPath(output.data(), cwd), cwd, args);
             openedReconstruction.reset();
-            status = YAML::Node(); live = YAML::Node(); losses.clear(); parametersInitialized = false;
+            status = YAML::Node(); live = YAML::Node(); runConfig = YAML::Node();
+            losses.clear(); appliedParameters.reset();
             metrics.reset();geometryMetrics.reset();statusLossMetrics.reset();stopRequested=false;
             logReader.reset();log.clear();selectableLog.clear();
             checkpointNavigation.reset();checkpointSelection.reset();historyPath.clear();
@@ -394,8 +757,64 @@ namespace viewer {
             saved["working_directory"] = std::string(workingDirectory.data()); saved["module_directory"] = std::string(moduleDirectory.data());
             saved["dataset_root"]=std::string(datasetRoot.data());
             saved["environment_preferences_version"]=jsonNumber(1);
-            try { writeJsonAtomic(preferences, saved); } catch (...) {} // A launched job must not be reported as a failed launch.
-            message = "Training launched; waiting for the first live scene";
+            try {
+                densification.rememberCurrentProfile();
+                saved["densification"] = densification.preferences();
+                writeJsonAtomic(preferences, saved);
+            } catch (...) {} // A launched job must not be reported as a failed launch.
+            message = continuing?"Continuing from the saved checkpoint; waiting for the first live scene":
+                "Training launched; waiting for the first live scene";
+        }
+
+        void drawHyperparameters() {
+            if (!ImGui::TreeNodeEx("Hyperparameters", ImGuiTreeNodeFlags_Framed)) return;
+            const bool running = process.active();
+            if (running && !appliedParameters) {
+                ImGui::TextWrapped("Waiting for the optimizer to report its values.");
+                ImGui::TreePop();
+                return;
+            }
+            ImGui::TextUnformatted(running ? "Current run" : "New reconstruction");
+            ImGui::TextWrapped("%s", running ? "Click a value to edit, then apply the changes." :
+                "Type a value to use it when you start a new run. Blank fields use config.py.");
+            const bool awaiting = running && pending();
+            ImGui::BeginDisabled(running && (awaiting || stopRequested));
+            if (ImGui::BeginTable("HyperparameterValues", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+                ImGui::TableSetupColumn("Parameter", ImGuiTableColumnFlags_WidthStretch, .57f);
+                ImGui::TableSetupColumn("Edit value", ImGuiTableColumnFlags_WidthStretch, .43f);
+                ImGui::TableHeadersRow();
+                for (std::size_t i = 0; i < launchParameters.size(); ++i) {
+                    trainingParameterRow(trainingParameterLabels[i]);
+                    ImGui::PushID(static_cast<int>(i));
+                    if (running) {
+                        ImGui::InputDouble("##live", &liveParameters[i], 0, 0, "%.9g");
+                        if (liveParameters[i] != (*appliedParameters)[i])
+                            ImGui::TextDisabled("In use %s", trainingNumber((*appliedParameters)[i]).c_str());
+                    } else {
+                        auto& text = launchParameters[i];
+                        ImGui::InputTextWithHint("##launch", "config.py", text.data(), text.size(),
+                            ImGuiInputTextFlags_CharsScientific);
+                        if (text[0] && !trainingParameterValue(text.data()))
+                            ImGui::TextWrapped("Enter a non-negative number.");
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+            ImGui::EndDisabled();
+            if (running) {
+                const bool changed = liveParameters != *appliedParameters;
+                ImGui::BeginDisabled(!changed || awaiting || stopRequested);
+                if (ImGui::Button("Apply at next iteration", ImVec2(-1, 0))) send("tune", true);
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("%s", !changed ? "Shown values are in use." :
+                    awaiting ? "Waiting for the optimizer." : "Edits waiting to be applied.");
+                const auto error = status["command_error"];
+                if (changed && !awaiting && error.IsScalar() && !error.Scalar().empty())
+                    ImGui::TextWrapped("%s", error.Scalar().c_str());
+            }
+            ImGui::TextWrapped("Learning rates are bases for scaling and decay.");
+            ImGui::TreePop();
         }
         // Returns true when the user requests a launch; ownership changes live in main.cpp.
         bool drawSetup(bool hasWorkspace, bool previewBusy=false) {
@@ -414,28 +833,31 @@ namespace viewer {
                     if(active)ImGui::SetItemDefaultFocus();
                 }
                 if(datasets.empty())ImGui::TextDisabled("No complete datasets found");
+                ImGui::Separator();
+                if(ImGui::Selectable("Choose dataset folder..."))chooseDatasetFolder();
                 ImGui::EndCombo();
             }
             if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",dataset.data());
             ImGui::SameLine();
-            if(ui::iconButton("Open dataset folder",ui::Icon::Folder,false,ImVec2(datasetButtonWidth,ImGui::GetFrameHeight())))openDatasetFolder();
+            if(ui::iconButton("Choose dataset folder",ui::Icon::Folder,false,ImVec2(datasetButtonWidth,ImGui::GetFrameHeight())))chooseDatasetFolder();
             if(ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)||ImGui::IsItemFocused())
-                ImGui::SetTooltip("Open dataset folder\n%s\n\nPlace each dataset in a subfolder containing\nimages/, scene.xml and points.ply, then refresh the library.",datasetRoot.data());
+                ImGui::SetTooltip("Choose a dataset from any folder, or paste its path.\nThe folder must contain images/, scene.xml and points.ply.");
             ImGui::SameLine();
             if(ui::iconButton("Refresh dataset library",ui::Icon::Refresh,false,ImVec2(datasetButtonWidth,ImGui::GetFrameHeight())))refreshDatasets();
-            if(!dataset[0])ImGui::BeginDisabled();
+            const bool canLoadInitializer=dataset[0]&&!initializingDataset();
+            ImGui::BeginDisabled(!canLoadInitializer);
             if(ImGui::Button("Load initialized point cloud",ImVec2(-1,0))) {
                 const auto cwd=expandedPath(workingDirectory.data(),std::filesystem::current_path());
                 initializedPointCloudRequest=expandedPath(dataset.data(),cwd);
             }
-            if(!dataset[0])ImGui::EndDisabled();
+            ImGui::EndDisabled();
             if(ImGui::IsItemHovered())ImGui::SetTooltip("Inspect the selected dataset's starting point cloud without starting reconstruction.");
             if(groundTruth[0])ImGui::Checkbox("Evaluate with dataset ground truth",&evaluateGroundTruth);
             else ImGui::TextDisabled("Ground truth optional · not included");
             ImGui::Spacing(); ImGui::SeparatorText("Reconstruction");
             ImGui::Checkbox("Override run settings from config.py",&overrideRunSettings);
             if(overrideRunSettings) {ImGui::SetNextItemWidth(-1);ImGui::InputInt("##iterations",&iterations);ImGui::TextDisabled("Target iterations");}
-            else ImGui::TextWrapped("Next run reads config.py defaults for iterations, sampling, checkpoint cadence and optimizer settings.");
+            else ImGui::TextWrapped("Iterations, sampling and checkpoint cadence use config.py.");
             if (hasWorkspace) { ImGui::Checkbox("Initialize from edited snapshot", &useWorkingSnapshot); }
             else useWorkingSnapshot = false;
             if (ImGui::TreeNode("Python environment")) {
@@ -455,42 +877,34 @@ namespace viewer {
                 ui::pathInput("Output root",output);
                 ui::pathInput("Dataset library",datasetRoot);
                 if(ImGui::Button("Rescan library"))refreshDatasets();
-                if(ui::pathInput("Custom dataset folder",dataset)) {datasetChanged=true;useWorkingSnapshot=false;}
-                if(ImGui::Button("Detect local GT"))set(groundTruth,datasetGroundTruth(dataset.data()).value_or(std::filesystem::path{}).string());
+                ImGui::SameLine();if(ImGui::Button("Open library folder"))openDatasetLibrary();
                 ui::pathInput("GT override",groundTruth);
                 ImGui::TreePop();
             }
-            if (ImGui::TreeNode("Hyperparameters")) {
-                ImGui::Checkbox("Override launch defaults", &overrideParameters);
-                if(ImGui::BeginTable("HyperparameterValues",2,ImGuiTableFlags_SizingStretchProp)) {
-                    ImGui::TableSetupColumn("Parameter",ImGuiTableColumnFlags_WidthStretch,.57f);
-                    ImGui::TableSetupColumn("Value",ImGuiTableColumnFlags_WidthStretch,.43f);
-                    for (std::size_t i = 0; i < parameters.size(); ++i) {
-                        ImGui::TableNextRow(); ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
-                        ImGui::TextUnformatted(trainingParameterLabels[i]); ImGui::TableNextColumn();
-                        ImGui::PushID(static_cast<int>(i)); ImGui::SetNextItemWidth(-1);
-                        if (ImGui::DragFloat("##value", &parameters[i], .00001f, 0, 1000, "%.7g")&&!process.active()) overrideParameters = true;
-                        ImGui::PopID();
-                    }
-                    ImGui::EndTable();
-                }
-                if (process.active() && !stopRequested && parametersInitialized) {
-                    const bool disabled = pending();
-                    if (disabled) ImGui::BeginDisabled();
-                    if (ImGui::Button("Apply to training at next iteration")) send("tune", true);
-                    if (disabled) ImGui::EndDisabled();
-                }
-                ImGui::TextWrapped("Live changes are acknowledged at an iteration boundary and recorded in the run's parameter_changes.jsonl.");
-                ImGui::TextDisabled("Base rates precede scene and schedule scaling.");
-                ImGui::TextDisabled("Emitter power optimization is fixed by the current training backend.");
-                ImGui::TreePop();
-            }
+            drawHyperparameters();
+            const auto& recordedConfig = openedReconstruction ? openedReconstruction->config : runConfig;
+            const char* recordedTitle = openedReconstruction ? "Saved run values" :
+                process.active() ? "Current run values" : "Last run values";
+            if (densification.draw(recordedConfig, recordedTitle)) saveDensificationPreferences();
+            if(continuesSavedRun())
+                ImGui::TextWrapped("Continue %s to 30,000 iterations using its saved settings.",openedReconstruction->entry.label.c_str());
             start=drawRunButtons(ImVec2(-1,32),previewBusy&&useWorkingSnapshot);
+            if(continuesSavedRun()) {
+                if(openingSaved())ImGui::BeginDisabled();
+                if(ImGui::Button("Mark as completed",ImVec2(-1,0)))markSavedRunCompleted();
+                if(openingSaved())ImGui::EndDisabled();
+            }
             if(process.active()||openingSaved())ImGui::BeginDisabled();
             if(ImGui::Button("Open previous reconstruction...",ImVec2(-1,0)))openReconstructionBrowser();
             if(process.active()||openingSaved())ImGui::EndDisabled();
             if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",process.active()?
                 "Stop the current reconstruction before opening a saved run.":"Restore a saved scene, loss history and GT metrics from an output folder.");
+            const bool canOpenOutput=hasCurrentRun();
+            ImGui::BeginDisabled(!canOpenOutput);
+            if(ImGui::Button("Open output folder",ImVec2(-1,0)))openRunOutputFolder();
+            ImGui::EndDisabled();
+            if(!canOpenOutput&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s",initializingDataset()?"Loading the initialized point cloud.":"Start a reconstruction to create an output folder for this scene.");
             if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
             return start;
         }
@@ -512,9 +926,10 @@ namespace viewer {
                         const float progress=integer("target_iteration") ? static_cast<float>(integer("iteration"))/integer("target_iteration") : 0;
                         ImGui::ProgressBar(progress,ImVec2(-1,7),"");
                         ImGui::TextDisabled("Viewing %llu  ·  Saved %llu",static_cast<unsigned long long>(viewedIteration),static_cast<unsigned long long>(integer("saved_iteration")));
-                        ImGui::TextDisabled("%s",view==TrainingView::Snapshot?"Editable snapshot · training independent":openedReconstruction?"Read-only saved reconstruction":"Read-only training view");
+                        ImGui::TextDisabled("%s",view==TrainingView::Initializer?"Viewing initialized point cloud":
+                            view==TrainingView::Snapshot?"Editable snapshot · training independent":openedReconstruction?"Read-only saved reconstruction":"Read-only training view");
                         ImGui::TableNextColumn();
-                        ImGui::TextColored(process.active()?ui::green:ui::muted,"%s",state().c_str());
+                        ImGui::TextColored(process.active()?ui::green:ui::muted,"%s",progressState().c_str());
                         if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\n%s",runDirectory().string().c_str(),openedReconstruction?"Saved output opened for inspection.":"Closing this viewer stops its reconstruction.");
                         const bool disabled=!process.active()||pending()||stopRequested||state()=="finalizing";
                         if(disabled)ImGui::BeginDisabled();
@@ -616,9 +1031,11 @@ namespace viewer {
             return pressed&&!disabled;
         }
         bool drawStartButton(ImVec2 size, bool previewBlocked=false) {
-            const bool running=process.active(),disabled=running||previewBlocked||openingSaved();
+            const bool running=process.active(),continuing=continuesSavedRun();
+            const char* unavailable=continuing?continuationUnavailable():nullptr;
+            const bool disabled=running||openingSaved()||initializingDataset()||unavailable||(!continuing&&previewBlocked);
             const auto phase=running?state():std::string{};
-            const char* caption=!running?"Start reconstruction":
+            const char* caption=!running?(continuing?"Continue reconstruction":"Start reconstruction"):
                 phase=="stopping"?"Stopping...":
                 phase=="finalizing"||phase=="completed"||phase=="stopped"?"Finalizing...":
                 phase=="paused"?"Paused":"Reconstructing...";
@@ -639,7 +1056,11 @@ namespace viewer {
                 draw->PathStroke(ImGui::GetColorU32(ui::accent),0,2.f);
             }
             if(disabled&&ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s",running?"A reconstruction is running. Start becomes available after it exits.":openingSaved()?"A saved reconstruction is loading.":"Wait for the current preview before starting from an edited snapshot.");
+                ImGui::SetTooltip("%s",running?"A reconstruction is running. You can launch another after it exits.":openingSaved()?"A saved reconstruction is loading.":
+                    initializingDataset()?"Loading the initialized point cloud.":unavailable?unavailable:"Wait for the current preview before starting from an edited snapshot.");
+            else if(continuing&&ImGui::IsItemHovered())
+                ImGui::SetTooltip("Resume the saved checkpoint at iteration %llu using its recorded settings. Save the continuation in a new output folder.",
+                    static_cast<unsigned long long>(openedReconstruction->checkpoints.back().iteration));
             return pressed&&!disabled;
         }
         void drawCheckpoints() {
@@ -674,7 +1095,12 @@ namespace viewer {
             const int count=ImGui::GetContentRegionAvail().x>900?3:2;
             if(ImGui::BeginTable("MetricPanels",count,ImGuiTableFlags_SizingStretchSame)) {
                 ImGui::TableNextColumn();metrics.plot("Image loss / objective",{{"loss_rgb_mean","RGB"},{"loss_rgb_l2_mean","RGB L2"},{"loss_total_mean","Total"}},rollingMetrics,metricWindow,logMetrics);
-                ImGui::TableNextColumn();metrics.plot("Weighted regularizers",{{"loss_normal_consistency_weighted_mean","Normal (left)"},{"loss_depth_distortion_weighted_mean","Depth (right)"}},rollingMetrics,metricWindow,logMetrics,120,true);
+                ImGui::TableNextColumn();
+                metrics.plot("Weighted regularizers",{
+                    {"loss_normal_consistency_weighted_mean","Normal (left)"},
+                    {"loss_depth_distortion_weighted_mean","Depth (right)"},
+                    {"loss_alpha_weighted_mean","Alpha (right)"}
+                },rollingMetrics,metricWindow,logMetrics,120,true);
                 ImGui::TableNextColumn();
                 if(!geometryMetrics.iterations.empty()) {
                     geometryMetrics.plot("Ground truth distances",{{"cd","Chamfer"},{"accuracy","Accuracy"},{"completion","Completion"}},rollingMetrics,metricWindow,logMetrics);
