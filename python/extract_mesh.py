@@ -732,10 +732,10 @@ if __name__ == "__main__":
         if not reuse_path.is_file():
             raise FileNotFoundError(reuse_path)
         if args.export_gltf:
+            with (run_dir / "run_config.json").open(encoding="utf-8") as file:
+                saved_config = json.load(file)
             export_cameras = []
             if args.export_cameras:
-                with (run_dir / "run_config.json").open() as file:
-                    saved_config = json.load(file)
                 available_cameras = load_scene_xml_cameras(infer_cameras_xml(args, saved_config))
                 selected = ([name.strip() for name in args.camera_names.split(",") if name.strip()]
                             if args.camera_names else list(available_cameras))
@@ -744,6 +744,7 @@ if __name__ == "__main__":
                 o3d.io.read_triangle_mesh(str(reuse_path)),
                 load_surfel_parameters(points_path),
                 mesh_dir / f"reconstruction{mesh_name_suffix}.glb",
+                surfel_bsdf=saved_config.get("renderer_settings", {}).get("surfel_bsdf", "lambertian"),
                 cameras=export_cameras, texture_size=args.texture_size,
                 uv_partitions=args.uv_partitions, uv_threads=args.uv_threads,
                 meters_per_unit=args.meters_per_unit, include_lights=args.export_lights,
@@ -817,6 +818,7 @@ if __name__ == "__main__":
             mesh_post,
             renderer.get_point_parameters(),
             mesh_dir / f"reconstruction{mesh_name_suffix}.glb",
+            surfel_bsdf=run_config["renderer_settings"].get("surfel_bsdf", "lambertian"),
             cameras=[cameras[name] for name in camera_names if name in cameras] if args.export_cameras else (),
             texture_size=args.texture_size,
             uv_partitions=args.uv_partitions, uv_threads=args.uv_threads,

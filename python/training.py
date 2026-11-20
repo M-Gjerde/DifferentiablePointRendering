@@ -155,7 +155,7 @@ def log_geometry_checkpoint(
 
 
 class MeshCheckpointWorker:
-    """Serialize asynchronous mesh checkpoints without accumulating stale work."""
+    """Serialize mesh exports and keep only the latest queued periodic extraction."""
 
     def __init__(
             self,
@@ -191,7 +191,8 @@ class MeshCheckpointWorker:
             export_gltf,
         )
         self._futures.append(future)
-        self._latest_future = future
+        # Honor explicit textured exports even if another checkpoint is queued.
+        self._latest_future = None if export_gltf else future
 
     def submit_final(self, points_path: Path) -> Future[Path | None]:
         """Queue the final export without blocking or replacing pending checkpoints."""
@@ -467,6 +468,8 @@ def make_device_training_step_options(
             "beta",
             float(config.learning_rate_beta),
         ),
+        "learning_rate_roughness": active_learning_rates.get("roughness", config.learning_rate_roughness),
+        "learning_rate_metalness": active_learning_rates.get("metalness", config.learning_rate_metalness),
         "camera_batch_scale": camera_batch_scale,
         "return_gradient_stats": return_gradient_stats,
         "accumulate_densification_stats": accumulate_densification_stats,
@@ -665,6 +668,7 @@ def compute_iteration_gradients(
 
 def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                      renderer_settings: RendererSettingsConfig, viewer_session=None) -> None:
+    config.validate_clone_second_view()
     if config.densification_image_space and (
         not getattr(pale, "IMAGE_SPACE_DENSIFICATION", False)
         or getattr(pale, "IMAGE_SPACE_DENSIFICATION_COORDINATES", None) != "ndc"
@@ -746,7 +750,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
     render.rebuild_bvh(renderer)
 
-    positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(renderer, device)
+    positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+        helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
+    )
     rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -759,7 +765,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         print_status(f"Geometry metrics trail: {geometry_metrics.path}")
     mesh_checkpoint_worker = MeshCheckpointWorker(config, geometry_metrics)
 
-    optimizer = optimizers.create_masked_optimizer(config, positions, rotation_delta, scales, albedos, opacities, betas, powers)
+    optimizer = optimizers.create_masked_optimizer(
+        config, positions, rotation_delta, scales, albedos, opacities, betas, powers,
+        roughness=roughness, metalness=metalness,
+    )
     training_scene_extent = None
     if config.use_position_lr_scene_scale or config.densification_use_cloning:
         from extract_mesh import load_scene_xml_cameras
@@ -839,6 +848,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         use_intra_slab_depth=use_intra_slab_depth,
         save_linear_raw=config.save_snapshot_linear_raw,
         alpha_loss_weighted=initial_alpha_loss,
+        roughness=roughness,
+        metalness=metalness,
     )
 
     del initial_images
@@ -945,6 +956,12 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             "--log-scale/--no-log-scale control only the device optimizer."
         )
 
+    track_clone_cameras = (config.densification_use_cloning and config.densification_clone_second_view_ratio > 0
+                           and densification_interval > 0
+                           and topology_stop_after_iteration >= config.densification_clone_second_view_start_iteration)
+    if track_clone_cameras and use_device_training_step and not hasattr(renderer, "get_densification_camera_sums"):
+        raise RuntimeError("Rebuild the pale module to enable the per-camera clone requirement")
+    camera_sum = None
     densify_position_grad_accum_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     densify_position_grad_denom_np = np.zeros((positions.shape[0], 1), dtype=np.float32)
     snapshot_densification_position_signal_np = np.zeros(
@@ -1047,7 +1064,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     ) -> Path:
         nonlocal final_mesh_future
         # Meshes read a frozen copy from before pruning/densification. Resumable
-        # checkpoints retain the later training state. Manual exports use this too.
+        # checkpoints retain the later training state.
         points_path = (
             config.output_dir / "mesh_inputs"
             / f"iter_{global_iteration:05d}_before_topology_update.ply"
@@ -1061,6 +1078,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
             primitive_ages=primitive_ages_from_birth_iterations(
                 primitive_birth_iteration_np, global_iteration,
             ),
+            roughness=roughness, metalness=metalness,
         )
         if mesh_checkpoint_is_due:
             mesh_checkpoint_worker.submit(global_iteration, points_path)
@@ -1077,9 +1095,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 renderer.sync_point_parameters_from_gpu()
                 current = render.fetch_parameters(renderer)
                 values = tuple(current[key] for key in
-                               ("position", "rotation", "scale", "albedo", "opacity", "beta", "power"))
+                               ("position", "rotation", "scale", "albedo", "opacity", "beta", "power",
+                                "roughness", "metalness"))
             else:
-                values = (positions, rotations, scales, albedos, opacities, betas, powers)
+                values = (positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness)
             metadata={}
             if len(densification_origin_np)==len(values[0]) and len(primitive_birth_iteration_np)==len(values[0]):
                 metadata={"densification_origin":densification_origin_np,
@@ -1137,12 +1156,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     global_iteration, final_global_iteration, int(config.topology_freeze_last_iterations),
                 )
                 pre_topology_mesh_points_path = None
-                mesh_checkpoint_is_due = (
-                    mesh_extraction_interval > 0
-                    and global_iteration % mesh_extraction_interval == 0
-                )
                 final_mesh_is_due = config.save_final_mesh and global_iteration == final_global_iteration
-                needs_pre_topology_mesh = mesh_checkpoint_is_due or final_mesh_is_due
+                save_checkpoint_mesh = False
                 should_save_point_cloud = helpers.should_save_point_cloud_snapshot(
                     iteration=global_iteration,
                     save_interval=save_ply_files_interval,
@@ -1153,8 +1168,20 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 if viewer_session and viewer_session.save_requested:
                     should_save_point_cloud = True
+                    save_checkpoint_mesh = viewer_session.save_mesh_requested
                     viewer_session.save_requested = False
+                    viewer_session.save_mesh_requested = False
+                # A requested export uses the same PLY as the resumable checkpoint.
+                mesh_checkpoint_is_due = (
+                    not save_checkpoint_mesh
+                    and mesh_extraction_interval > 0
+                    and global_iteration % mesh_extraction_interval == 0
+                )
+                needs_pre_topology_mesh = mesh_checkpoint_is_due or final_mesh_is_due
 
+                # Collect the entire window leading to the first gated decision.
+                track_camera_window = (track_clone_cameras and next_densification_iteration is not None
+                                       and next_densification_iteration >= config.densification_clone_second_view_start_iteration)
                 active_training_camera_ids = helpers.select_active_training_camera_ids(
                     training_camera_ids=training_camera_ids,
                     iteration=global_iteration,
@@ -1212,6 +1239,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         accumulate_densification_stats=accumulate_density,
                     )
                     device_step_options.update({
+                        "track_densification_cameras": track_camera_window,
                         "alpha_loss_weight": active_alpha_loss_weight,
                         "depth_distortion_weight": active_depth_distortion_weight,
                         "normal_consistency_weight": active_normal_consistency_weight,
@@ -1293,8 +1321,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             or should_check_inactive_prune
                     ):
                         renderer.sync_point_parameters_from_gpu()
-                        positions, rotations, scales, albedos, opacities, betas, powers = (
-                            helpers.refetch_parameters_as_torch(renderer, device)
+                        positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+                            helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
                         )
                         rotation_delta = torch.nn.Parameter(
                             torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
@@ -1342,6 +1370,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         if transport_prune_indices_np.size > 0:
                             indices_to_remove_list.extend(int(index) for index in transport_prune_indices_np)
 
+                    camera_sum = None
+                    if track_camera_window and (should_check_densification or indices_to_remove_list):
+                        camera_sum = renderer.get_densification_camera_sums()
                     if should_check_densification:
                         densification_result = helpers.maybe_make_densification_result(
                             iteration=global_iteration, config=config, positions=positions, rotations=rotations,
@@ -1355,7 +1386,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             densification_grad_abs_min=active_densification_grad_abs_min,
                             force_densification=True,
                             densification_scene_extent=training_scene_extent,
-                            scheduled_prune_indices=indices_to_remove_list,
+                            scheduled_prune_indices=indices_to_remove_list, camera_sum=camera_sum,
+                            roughness=roughness, metalness=metalness,
                         )
 
                     if should_check_densification and density_diagnostics:
@@ -1494,8 +1526,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 prune_reasons=dict(scale=scale_prune_indices, opacity=opacity_prune_indices,
                                                    inactive_transport=transport_prune_indices_np))
                         render.rebuild_bvh(renderer)
-                        positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(
-                            renderer, device)
+                        positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+                            helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
+                        )
                         rotation_delta = torch.nn.Parameter(
                             torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
@@ -1543,9 +1576,11 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             renderer.upload_device_adam_state(migrated_device_adam_state)
                         # Pruning can occur between split windows. Preserve the
                         # remaining rows and initialize appended children at zero.
+                        if camera_sum is not None:
+                            camera_sum = helpers.remap_densification_camera_sums(camera_sum, keep_mask_np, n_new_for_topology)
                         helpers.upload_densification_statistics(
                             renderer, densify_position_grad_accum_np, densify_position_grad_denom_np,
-                            densify_position_grad_vector_accum_np,
+                            densify_position_grad_vector_accum_np, camera_sum,
                         )
                         # Even a disabled density window needs resized export
                         # metadata after pruning changes the canonical rows.
@@ -1560,6 +1595,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             opacities,
                             betas,
                             powers,
+                            roughness=roughness, metalness=metalness,
                         )
                         active_learning_rates = optimizers.update_optimizer_learning_rates(
                             optimizer,
@@ -1660,8 +1696,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         del save_forward_out, snapshot_adjoint_images
                     if should_save_point_cloud:
                         renderer.sync_point_parameters_from_gpu()
-                        positions, rotations, scales, albedos, opacities, betas, powers = (
-                            helpers.refetch_parameters_as_torch(renderer, device)
+                        positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+                            helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
                         )
                         rotation_delta = torch.nn.Parameter(
                             torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
@@ -1680,7 +1716,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     if should_save_point_cloud:
                         if density_diagnostics:
                             density_diagnostics.snapshot_ids(global_iteration, 'points')
-                        helpers.save_iteration_point_cloud_snapshot(
+                        saved_points_path = helpers.save_iteration_point_cloud_snapshot(
                             config.output_dir,
                             global_iteration,
                             positions,
@@ -1700,7 +1736,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 snapshot_densification_position_sample_count_np,
                             densification_position_threshold=
                                 snapshot_densification_position_threshold,
+                            roughness=roughness, metalness=metalness,
                         )
+                        if save_checkpoint_mesh:
+                            mesh_checkpoint_worker.submit(global_iteration, saved_points_path, export_gltf=True)
 
 
                     num_points = int(positions.shape[0])
@@ -1791,8 +1830,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         hotkey = helpers.poll_hotkey()
                         if hotkey == "s":
                             renderer.sync_point_parameters_from_gpu()
-                            positions, rotations, scales, albedos, opacities, betas, powers = (
-                                helpers.refetch_parameters_as_torch(renderer, device)
+                            positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+                                helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
                             )
                             rotation_delta = torch.nn.Parameter(
                                 torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32)
@@ -1820,12 +1859,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                     snapshot_densification_position_sample_count_np,
                                 densification_position_threshold=
                                     snapshot_densification_position_threshold,
+                                roughness=roughness, metalness=metalness,
                             )
-                            mesh_checkpoint_worker.submit(
-                                global_iteration,
-                                pre_topology_mesh_points_path or manual_points_path,
-                                export_gltf=True,
-                            )
+                            if not save_checkpoint_mesh:
+                                mesh_checkpoint_worker.submit(
+                                    global_iteration,
+                                    pre_topology_mesh_points_path or manual_points_path,
+                                    export_gltf=True,
+                                )
                         elif hotkey == "g":
                             print_status(
                                 "[device-training-step] Gradient snapshot skipped; host gradients were not downloaded.")
@@ -1940,7 +1981,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     "clone_signal_record_count_per_camera",
                     None,
                 )
+                if track_camera_window and camera_sum is None:
+                    camera_sum = np.zeros((len(positions), len(all_camera_ids)), dtype=np.float32)
                 helpers.update_densification_statistics(
+                    camera_sum=camera_sum if track_camera_window else None,
                     iteration=global_iteration,
                     densification_interval=densification_cycle_interval,
                     densification_cycle_start_iteration=densification_cycle_start_iteration,
@@ -1975,7 +2019,17 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     learning_rate_schedules,
                     global_iteration,
                 )
+                active_material_parameters = {}
+                for name, parameter in (("roughness", roughness), ("metalness", metalness)):
+                    if active_learning_rates[name] > 0.0:
+                        parameter.grad = torch.tensor(total_gradients[name], device=device, dtype=torch.float32)
+                        parameter.grad.masked_fill_(~trainable_surfel_mask, 0.0)
+                        active_material_parameters[name] = parameter
                 optimizer.step()
+                with torch.no_grad():
+                    for name, parameter in active_material_parameters.items():
+                        minimum = pale.GGX_MIN_ROUGHNESS if name == "roughness" else 0.0
+                        parameter[trainable_surfel_mask] = parameter[trainable_surfel_mask].clamp(minimum, 1.0)
                 density.apply_local_rotation_update_to_quaternions_inplace(
                     rotations,
                     rotation_delta,
@@ -2002,7 +2056,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
                 helpers.verify_parameters_inplane(positions, rotations, scales, albedos, opacities, betas,
                                           trainable_surfel_mask=trainable_surfel_mask)
-                render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers)
+                render.apply_point_parameters(
+                    renderer, positions, rotations, scales, albedos, opacities, betas, powers,
+                    **active_material_parameters,
+                )
 
                 if global_iteration % rebuild_bvh_interval == 0:
                     render.rebuild_bvh(renderer)
@@ -2052,12 +2109,15 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         densification_grad_abs_min=active_densification_grad_abs_min,
                         force_densification=True,
                         densification_scene_extent=training_scene_extent,
-                        scheduled_prune_indices=indices_to_remove_list,
+                        scheduled_prune_indices=indices_to_remove_list, camera_sum=camera_sum,
+                        roughness=roughness, metalness=metalness,
                     )
 
                 if indices_to_remove_list or densification_result is not None:
-                    old_params_for_optimizer = helpers.make_named_parameter_dict(positions, rotation_delta, scales, albedos,
-                                                                         opacities, betas, powers, )
+                    old_params_for_optimizer = helpers.make_named_parameter_dict(
+                        positions, rotation_delta, scales, albedos, opacities, betas, powers,
+                        roughness=roughness, metalness=metalness,
+                    )
                     old_optimizer_for_migration = optimizer
                     old_point_count_for_migration = int(positions.shape[0])
                     keep_mask_np = np.ones(old_point_count_for_migration, dtype=bool)
@@ -2151,8 +2211,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             )
 
                     render.rebuild_bvh(renderer)
-                    positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(
-                        renderer, device)
+                    positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+                        helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
+                    )
                     rotation_delta = torch.nn.Parameter(
                         torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
 
@@ -2187,8 +2248,13 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     render.apply_point_parameters(renderer, positions, rotations, scales, albedos, opacities, betas, powers, )
                     render.rebuild_bvh(renderer)
 
-                    new_params_for_optimizer = helpers.make_named_parameter_dict(positions, rotation_delta, scales, albedos,
-                                                                         opacities, betas, powers, )
+                    new_params_for_optimizer = helpers.make_named_parameter_dict(
+                        positions, rotation_delta, scales, albedos, opacities, betas, powers,
+                        roughness=roughness, metalness=metalness,
+                    )
+                    if camera_sum is not None:
+                        new_count = len(positions) - int(keep_mask_np.sum())
+                        camera_sum = helpers.remap_densification_camera_sums(camera_sum, keep_mask_np, new_count)
                     optimizer = helpers.rebuild_optimizer_preserving_state(
                         config=config, old_optimizer=old_optimizer_for_migration,
                         old_params=old_params_for_optimizer, new_params=new_params_for_optimizer,
@@ -2225,6 +2291,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     )
 
                 if densification_is_due:
+                    if camera_sum is not None:
+                        camera_sum.fill(0.0)
                     densify_position_grad_accum_np[:] = 0.0
                     densify_position_grad_denom_np[:] = 0.0
                     densify_position_grad_vector_accum_np[:] = 0.0
@@ -2287,7 +2355,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     del save_forward_out, snapshot_adjoint_images
 
                 if should_save_point_cloud:
-                    helpers.save_iteration_point_cloud_snapshot(
+                    saved_points_path = helpers.save_iteration_point_cloud_snapshot(
                         config.output_dir,
                         global_iteration,
                         positions,
@@ -2307,7 +2375,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             snapshot_densification_position_sample_count_np,
                         densification_position_threshold=
                             snapshot_densification_position_threshold,
+                        roughness=roughness, metalness=metalness,
                     )
+                    if save_checkpoint_mesh:
+                        mesh_checkpoint_worker.submit(global_iteration, saved_points_path, export_gltf=True)
 
 
                 num_points = positions.shape[0]
@@ -2421,12 +2492,14 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 snapshot_densification_position_sample_count_np,
                             densification_position_threshold=
                                 snapshot_densification_position_threshold,
+                            roughness=roughness, metalness=metalness,
                         )
-                        mesh_checkpoint_worker.submit(
-                            global_iteration,
-                            pre_topology_mesh_points_path or manual_points_path,
-                            export_gltf=True,
-                        )
+                        if not save_checkpoint_mesh:
+                            mesh_checkpoint_worker.submit(
+                                global_iteration,
+                                pre_topology_mesh_points_path or manual_points_path,
+                                export_gltf=True,
+                            )
                     elif hotkey == "g":
                         helpers.save_gradients_snapshot(config.output_dir, global_iteration, grad_position_np, grad_rotation_np,
                                                 grad_scales_np, grad_albedos_np, grad_opacities_np,
@@ -2456,7 +2529,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         viewer_session.finalizing()
     if use_device_training_step:
         renderer.sync_point_parameters_from_gpu()
-        positions, rotations, scales, albedos, opacities, betas, powers = helpers.refetch_parameters_as_torch(renderer, device)
+        positions, rotations, scales, albedos, opacities, betas, powers, roughness, metalness = (
+            helpers.refetch_parameters_as_torch(renderer, device, include_material=True)
+        )
         rotation_delta = torch.nn.Parameter(torch.zeros((positions.shape[0], 3), device=device, dtype=torch.float32))
         trainable_surfel_mask = helpers.make_trainable_surfel_mask_from_powers(powers)
     else:
@@ -2591,8 +2666,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                               snapshot_densification_position_signal_np,
                           densification_position_sample_counts=
                               snapshot_densification_position_sample_count_np,
-                          densification_position_threshold=
-                              snapshot_densification_position_threshold)
+                          densification_position_threshold=snapshot_densification_position_threshold,
+                          roughness=roughness, metalness=metalness)
 
     if viewer_session:
         completed_step = resume_iteration_offset + int(iteration)

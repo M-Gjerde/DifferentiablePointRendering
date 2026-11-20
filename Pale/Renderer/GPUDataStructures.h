@@ -5,6 +5,7 @@
 #include <type_traits>
 
 #include "entt/entity/entity.hpp"
+#include "Renderer/OptimizationConstraints.h"
 #include "Renderer/GPUDataTypes.h"
 #include "Renderer/LocalLayerMembership.h"
 
@@ -42,6 +43,8 @@ namespace Pale {
         float3 tanU{0.0f};
         float3 tanV{0.0f};
         float2 scale{0.0f};
+        float roughness{kDefaultSurfelRoughness};
+        float metalness{kDefaultSurfelMetalness};
         float3 albedo{0.0f};
         float alpha_t{0.0f};
         float alpha_r{0.0f};
@@ -743,6 +746,8 @@ namespace Pale {
         float gradAlbedoR = FLT_MAX;
         float gradAlbedoG = FLT_MAX;
         float gradAlbedoB = FLT_MAX;
+        float gradRoughness = 0.0f;
+        float gradMetalness = 0.0f;
 
         float gradPositionX = FLT_MAX;
         float gradPositionY = FLT_MAX;
@@ -855,6 +860,11 @@ namespace Pale {
         CameraGatherKernel2 = 1u,
     };
 
+    enum class SurfelBrdfKind : uint32_t {
+        Lambertian,
+        Ggx,
+    };
+
     struct Random {
         uint64_t seed = 42; // should be more than maxBounces
         uint32_t number = 42; // should be more than maxBounces
@@ -890,6 +900,7 @@ namespace Pale {
         uint32_t numShadowRays = 8;
         uint32_t numGatherPasses = 1;
         CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel2;
+        SurfelBrdfKind surfelBrdfKind = SurfelBrdfKind::Lambertian;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1; // or kDebugGradientAllSurfels

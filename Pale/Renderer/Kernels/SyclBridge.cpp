@@ -189,6 +189,8 @@ namespace Pale {
         queue.fill(gradients.gradOpacity, 0.0f, pointCount);
         queue.fill(gradients.gradBeta, 0.0f, pointCount);
         queue.fill(gradients.gradShape, 0.0f, pointCount);
+        queue.fill(gradients.gradRoughness, 0.0f, pointCount);
+        queue.fill(gradients.gradMetalness, 0.0f, pointCount);
         // The optional derived-statistics kernel overwrites every output row,
         // including points with no contributing cameras. No preclear is needed.
         if (cameraSlotCount > 0u) {
@@ -400,6 +402,12 @@ namespace Pale {
         }
         if (gradients.gradShape) {
             queue.fill(gradients.gradShape, 0.0f, pointCount);
+        }
+        if (gradients.gradRoughness) {
+            queue.fill(gradients.gradRoughness, 0.0f, pointCount);
+        }
+        if (gradients.gradMetalness) {
+            queue.fill(gradients.gradMetalness, 0.0f, pointCount);
         }
     }
 

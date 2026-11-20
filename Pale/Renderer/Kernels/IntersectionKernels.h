@@ -2386,8 +2386,12 @@ namespace Pale {
         uint32_t *shadowOccluderHitCount = nullptr,
         size_t shadowActivityPointCount = 0u,
         float *shadowOccluderScore = nullptr,
-        float shadowReceiverWeight = 1.0f) {
+        float shadowReceiverWeight = 1.0f,
+        const Point *surfel = nullptr,
+        const float3 &outgoing = float3{0.0f},
+        SurfelBrdfMaterialDerivatives *material = nullptr) {
         float3 accumulatedRadiance(0.0f);
+        if (material) *material = {};
 
         const float3 diffuseBrdf = diffuseAlbedo * M_1_PIf;
 
@@ -2445,14 +2449,37 @@ namespace Pale {
             const float3 radiantIntensity =
                     light.flux * light.color * (1.0f / (4.0f * M_PIf));
 
+            SurfelBrdfMaterialDerivatives localMaterial;
+            const float3 brdf = surfel
+                ? evaluateSurfelBrdf(settings.surfelBrdfKind, *surfel, surfaceNormalW, lightDirection, outgoing,
+                    material ? &localMaterial : nullptr)
+                : diffuseBrdf;
             accumulatedRadiance +=
-                    diffuseBrdf *
+                    brdf *
                     radiantIntensity *
                     shadowTransmission *
                     (surfaceCosine / distanceSquared);
+            if (material) {
+                const float3 incident = radiantIntensity *
+                    shadowTransmission * (surfaceCosine / distanceSquared);
+                material->baseColor += localMaterial.baseColor * incident;
+                material->roughness += localMaterial.roughness * incident;
+                material->metalness += localMaterial.metalness * incident;
+            }
         }
 
         return accumulatedRadiance;
+    }
+
+    SYCL_EXTERNAL inline float3 estimateDirectSurfelPointLights(
+        const GPUSceneBuffers &scene, const PathTracerSettings &settings,
+        const float3 &position, const float3 &normal, const Point &surfel, const float3 &outgoing,
+        float eps = RayEpsilon, uint32_t *shadowOccluderHitCount = nullptr,
+        size_t shadowActivityPointCount = 0u, float *shadowOccluderScore = nullptr,
+        float shadowReceiverWeight = 1.0f, SurfelBrdfMaterialDerivatives *material = nullptr) {
+        return estimateDirectPointSampledPointLights(
+            scene, settings, position, normal, surfel.alpha_r * surfel.albedo, eps, shadowOccluderHitCount,
+            shadowActivityPointCount, shadowOccluderScore, shadowReceiverWeight, &surfel, outgoing, material);
     }
 
     SYCL_EXTERNAL inline float3 computeIncidentRadianceFromPointLights(

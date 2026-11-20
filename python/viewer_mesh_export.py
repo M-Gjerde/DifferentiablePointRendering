@@ -78,7 +78,8 @@ def ascii_surfel_copy(source: Path, destination: Path) -> Path:
     return destination
 
 
-def prepare_export(workspace: Path, destination: Path, source_config: Path | None = None) -> tuple[Path, Path]:
+def prepare_export(workspace: Path, destination: Path, source_config: Path | None = None,
+                   *, surfel_bsdf: str | None = None) -> tuple[Path, Path]:
     from viewer_session import materialize_workspace
     destination.mkdir(parents=True, exist_ok=True)
     state = json.loads(workspace.read_text())
@@ -107,6 +108,8 @@ def prepare_export(workspace: Path, destination: Path, source_config: Path | Non
     else:
         from config import OptimizationConfig, RendererSettingsConfig
         config = dict(renderer_settings=RendererSettingsConfig().as_dict(OptimizationConfig()))
+    if surfel_bsdf is not None:
+        config["renderer_settings"]["surfel_bsdf"] = surfel_bsdf
     config.update(assets_root=str(assets), scene_xml=str(scene), pointcloud_ply=str(points))
     (destination / "run_config.json").write_text(json.dumps(config, indent=2))
     return destination, points
@@ -116,6 +119,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--run-config", type=Path)
+    parser.add_argument("--surfel-bsdf", choices=("lambertian", "ggx"))
     parser.add_argument("-o", "--output", type=Path, required=True)
     parser.add_argument("--viewer-session", type=Path, required=True)
     args, extractor = parser.parse_known_args(argv)
@@ -125,7 +129,8 @@ def parse_args(argv=None):
 def main(argv=None):
     args, extra = parse_args(argv)
     print(f"Preparing private export input in {args.output}", flush=True)
-    run, points = prepare_export(args.workspace.resolve(), args.output / "input", args.run_config)
+    run, points = prepare_export(args.workspace.resolve(), args.output / "input", args.run_config,
+                                 surfel_bsdf=args.surfel_bsdf)
     command = [sys.executable, "-u", str(Path(__file__).with_name("extract_mesh.py")),
                "--run-dir", str(run), "--ply", str(points),
                "--mesh-output-subdir", str(args.output.resolve() / "mesh"), *extra]

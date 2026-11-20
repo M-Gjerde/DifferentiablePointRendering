@@ -68,7 +68,7 @@ namespace viewer {
             return args;
         }
         void launch(const TrainingControls& environment,const std::filesystem::path& workspace,
-                    const std::filesystem::path& runConfig={}) {
+                    const char* surfelBsdf,const std::filesystem::path& runConfig={}) {
             if(process.active())throw std::runtime_error("A mesh export is already running");
             auto options=extractionOptions();
             const auto cwd=expandedPath(environment.workingDirectory.data(),repository);
@@ -85,7 +85,7 @@ namespace viewer {
             }
             const std::string python=environment.python.data();
             args.push_back(python.find('/')==std::string::npos?python:expandedPath(python,cwd).string());
-            args.insert(args.end(),{"-u",bridge.string(),"--workspace",frozen.string()});
+            args.insert(args.end(),{"-u",bridge.string(),"--workspace",frozen.string(),"--surfel-bsdf",surfelBsdf});
             if(!runConfig.empty()&&std::filesystem::is_regular_file(runConfig)) {
                 std::filesystem::copy_file(runConfig,input/"source_run_config.json");
                 args.insert(args.end(),{"--run-config",(input/"source_run_config.json").string()});

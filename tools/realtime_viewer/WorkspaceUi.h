@@ -148,7 +148,7 @@ namespace viewer::ui {
         const float rightFraction=std::clamp(344.f/viewport->WorkSize.x,.20f,.30f);
         ImGui::DockBuilderSplitNode(id,ImGuiDir_Right,rightFraction,&right,&main);
         ImGui::DockBuilderSplitNode(right,ImGuiDir_Up,.30f,&tree,&inspector);
-        const float monitorFraction=std::clamp(230.f/viewport->WorkSize.y,.18f,.30f);
+        const float monitorFraction=std::clamp(280.f/viewport->WorkSize.y,.20f,.33f);
         ImGui::DockBuilderSplitNode(main,ImGuiDir_Down,monitorFraction,&monitor,&main);
         ImGui::DockBuilderDockWindow(sceneTreeTitle,tree); ImGui::DockBuilderDockWindow("Properties",inspector);
         ImGui::DockBuilderDockWindow("Run monitor",monitor); ImGui::DockBuilderDockWindow("Viewport",main);

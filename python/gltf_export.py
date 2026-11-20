@@ -1,7 +1,7 @@
 """Export reconstructed reflectance and point lights as a self-contained glTF 2.0 GLB.
 
-The texture samples optimized surfel albedos at UV texel positions, never shaded
-mesh colors. Transferring a surfel field to a triangle surface is an approximation;
+The textures sample optimized surfel material parameters at UV texel positions.
+Transferring a surfel field to a triangle surface is an approximation;
 the bake reports texels for which no nearby surfel footprint covers the surface.
 """
 from __future__ import annotations
@@ -25,6 +25,9 @@ from tqdm import tqdm
 # not a spectral watts-to-lumens conversion for arbitrary real-world emitters.
 BLENDER_WATTS_TO_LUMENS = 683.0
 Z_UP_TO_Y_UP = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]], dtype=np.float32)
+# Match the native surfel defaults and roughness floor in OptimizationConstraints.h.
+SURFEL_MATERIAL_DEFAULTS = {"roughness": 0.5, "metalness": 0.0}
+MINIMUM_GGX_ROUGHNESS = 0.01
 
 
 def resolve_uv_parallelism(triangle_count: int, partitions: int = 0, threads: int = 0) -> tuple[int, int]:
@@ -110,6 +113,12 @@ def validate_parameters(parameters: dict) -> dict[str, np.ndarray]:
         raise ValueError("Reconstructed albedos must be linear RGB in [0, 1]")
     if np.any((result["opacity"] < 0) | (result["opacity"] > 1)):
         raise ValueError("Surfel opacity must be in [0, 1]")
+    for name in SURFEL_MATERIAL_DEFAULTS:
+        if name in parameters:
+            value = np.asarray(parameters[name], dtype=np.float64).reshape(-1)
+            if value.shape != (count,) or not np.all((value >= 0) & (value <= 1)):
+                raise ValueError(f"Expected {count} surfel {name} values in [0, 1]")
+            result[name] = value
     return result
 
 
@@ -147,20 +156,21 @@ def load_surfel_parameters(points_path: Path) -> dict[str, np.ndarray]:
     mapping = {"position": ["x", "y", "z"], "rotation": ["rot_w", "rot_x", "rot_y", "rot_z"],
                "scale": ["su", "sv"], "albedo": ["albedo_r", "albedo_g", "albedo_b"],
                "opacity": ["opacity"], "beta": ["beta"], "power": ["power"]}
+    mapping.update({name: [name] for name in SURFEL_MATERIAL_DEFAULTS if name in properties})
     result = {name: values[:, [properties.index(field) for field in fields]]
               for name, fields in mapping.items()}
     return validate_parameters(result)
 
 
-class SurfelAlbedoSampler:
-    """Transfer local reflectance, with plane/normal checks to reduce color bleeding.
+class SurfelMaterialSampler:
+    """Transfer local reflectance, with plane/normal checks to reduce bleeding.
 
     Nearest-center candidates are blended by their beta footprints, opacity and
     distance to their planes. Uncovered texels use the closest compatible surfel
     and are counted explicitly. Neither lighting nor view colors are inputs.
     """
 
-    def __init__(self, parameters: dict, neighbors: int = 32):
+    def __init__(self, parameters: dict, neighbors: int = 32, *, ggx: bool = False):
         p = validate_parameters(parameters)
         keep = (p["power"] == 0) & (p["opacity"] > 0)
         if not keep.any():
@@ -178,11 +188,21 @@ class SurfelAlbedoSampler:
         self.n = np.cross(self.u, self.v)
         self.tree = cKDTree(self.p["position"])
         self.neighbors = min(max(1, neighbors), len(self.p["position"]))
+        self.values = self.p["albedo"]
+        if ggx:
+            count = len(self.values)
+            roughness = self.p.get("roughness")
+            metalness = self.p.get("metalness")
+            if roughness is None:
+                roughness = np.full(count, SURFEL_MATERIAL_DEFAULTS["roughness"])
+            if metalness is None:
+                metalness = np.full(count, SURFEL_MATERIAL_DEFAULTS["metalness"])
+            self.values = np.column_stack((self.values, np.maximum(roughness, MINIMUM_GGX_ROUGHNESS), metalness))
         self.fallback_count = 0
         self.sample_count = 0
 
     def sample(self, positions: np.ndarray, normals: np.ndarray, *, progress: bool = False) -> np.ndarray:
-        output = np.empty((len(positions), 3), dtype=np.float32)
+        output = np.empty((len(positions), self.values.shape[1]), dtype=np.float32)
         started = last_report = time.perf_counter()
         for start in range(0, len(positions), 16384):
             end = min(start + 16384, len(positions))
@@ -203,19 +223,19 @@ class SurfelAlbedoSampler:
             weights[(base <= 0) | (alignment < 0.5)] = 0
             totals = weights.sum(axis=1)
             covered = totals > 1e-12
-            colors = np.sum(weights[..., None] * self.p["albedo"][ids], axis=1)
-            colors[covered] /= totals[covered, None]
+            material = np.sum(weights[..., None] * self.values[ids], axis=1)
+            material[covered] /= totals[covered, None]
             # Penalize incompatible normals without requiring consistently oriented
             # surfels: PALE can shade either side of a surfel.
             score = distance / np.maximum(alignment, 0.05)**2
             nearest = ids[np.arange(len(ids)), np.argmin(score, axis=1)]
-            colors[~covered] = self.p["albedo"][nearest[~covered]]
-            output[start:end] = colors
+            material[~covered] = self.values[nearest[~covered]]
+            output[start:end] = material
             self.fallback_count += int((~covered).sum())
             self.sample_count += end - start
             now = time.perf_counter()
             if progress and (now - last_report >= 5 or end == len(positions)):
-                print(f"Albedo sampling: {end:,}/{len(positions):,} texels "
+                print(f"Material sampling: {end:,}/{len(positions):,} texels "
                       f"({end / len(positions):.0%}), {now - started:.1f}s", flush=True)
                 last_report = now
         return output
@@ -295,9 +315,9 @@ def repair_non_manifold_edges(mesh) -> tuple[int, int]:
     return non_manifold_edge_count, triangle_count_before - len(mesh.triangles)
 
 
-def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
-                      *, uv_partitions: int = 0, uv_threads: int = 0):
-    """Return a UV-mapped tensor mesh, sRGB texture, and transfer diagnostics."""
+def bake_material_atlas(mesh, parameters: dict, texture_size: int = 2048,
+                        *, ggx: bool = False, uv_partitions: int = 0, uv_threads: int = 0):
+    """Return a UV-mapped mesh, albedo, optional metallic-roughness map and diagnostics."""
     import open3d as o3d
 
     if texture_size < 32 or texture_size > 16384:
@@ -328,7 +348,7 @@ def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
     preparation_seconds = time.perf_counter() - preparation_started
     print(f"Mesh preparation finished in {preparation_seconds:.1f}s "
           f"({split_vertices:,} pinched vertices split)", flush=True)
-    print(f"Unwrapping {len(mesh.triangles):,} triangles for a {texture_size}px albedo atlas "
+    print(f"Unwrapping {len(mesh.triangles):,} triangles for a {texture_size}px material atlas "
           f"on CPU: {partitions} requested partitions, {threads} threads. "
           "Showing elapsed time; Open3D does not report completion progress.", flush=True)
     unwrap_started = time.perf_counter()
@@ -355,13 +375,19 @@ def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
         raise ValueError("UV atlas contains no covered texels")
     raster_seconds = time.perf_counter() - raster_started
     print(f"Texel geometry baked in {raster_seconds:.1f}s. "
-          f"Sampling {int(valid.sum()):,} texels from optimized surfel albedos...", flush=True)
+          f"Sampling {int(valid.sum()):,} texels from optimized surfel materials...", flush=True)
     sampled_normals = normals[valid]
     sampled_normals /= np.maximum(np.linalg.norm(sampled_normals, axis=-1, keepdims=True), 1e-12)
-    sampler = SurfelAlbedoSampler(parameters)
-    texture = np.zeros((texture_size, texture_size, 3), dtype=np.uint8)
+    sampler = SurfelMaterialSampler(parameters, ggx=ggx)
     sampling_started = time.perf_counter()
-    texture[valid] = linear_to_srgb8(sampler.sample(positions[valid], sampled_normals, progress=True))
+    samples = sampler.sample(positions[valid], sampled_normals, progress=True)
+    albedo = np.zeros((texture_size, texture_size, 3), dtype=np.uint8)
+    albedo[valid] = linear_to_srgb8(samples[:, :3])
+    metallic_roughness = None
+    if ggx:
+        metallic_roughness = np.zeros_like(albedo)
+        # glTF stores linear roughness in green and linear metalness in blue.
+        metallic_roughness[valid, 1:] = np.rint(np.clip(samples[:, 3:], 0.0, 1.0) * 255).astype(np.uint8)
     diagnostics = {"texture_size": texture_size, "uv_charts": int(charts),
                    "uv_partitions": int(actual_partitions), "uv_threads": threads,
                    "preparation_seconds": preparation_seconds, "unwrap_seconds": unwrap_seconds,
@@ -373,9 +399,9 @@ def bake_albedo_atlas(mesh, parameters: dict, texture_size: int = 2048,
                    "albedo_source": "optimized_surfel_albedo",
                    "transfer": "local_beta_footprint_with_plane_and_normal_weights"}
     if sampler.fallback_count:
-        warnings.warn(f"Albedo transfer used nearest-surface fallback for "
+        warnings.warn(f"Material transfer used nearest-surface fallback for "
                       f"{sampler.fallback_count / sampler.sample_count:.1%} of atlas samples")
-    return tensor_mesh, texture, diagnostics
+    return tensor_mesh, albedo, metallic_roughness, diagnostics
 
 
 class GlbBuilder:
@@ -422,11 +448,11 @@ class GlbBuilder:
 
 
 def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
-                              *, cameras=(), texture_size: int = 2048,
+                              *, surfel_bsdf: str = "lambertian", cameras=(), texture_size: int = 2048,
                               meters_per_unit: float = 1.0,
                               uv_partitions: int = 0, uv_threads: int = 0,
                               include_lights: bool = True) -> Path:
-    """Export a standard base-color UV texture, Lambertian material, and optional scene nodes.
+    """Export a textured Lambertian or metallic-roughness material and optional scene nodes.
 
     Input coordinates use PALE's Z-up convention. Cameras use OpenCV extrinsics.
     Power is total RGB radiant flux; light conversion matches Blender's SPEC mode.
@@ -438,9 +464,12 @@ def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
     output_path = Path(output_path)
     if output_path.suffix.lower() != ".glb":
         raise ValueError("Output must have a .glb extension")
+    if surfel_bsdf not in ("lambertian", "ggx"):
+        raise ValueError("surfel_bsdf must be 'lambertian' or 'ggx'")
     parameters = validate_parameters(parameters)
-    tensor_mesh, texture, diagnostics = bake_albedo_atlas(
-        mesh, parameters, texture_size, uv_partitions=uv_partitions, uv_threads=uv_threads,
+    tensor_mesh, albedo, metallic_roughness, diagnostics = bake_material_atlas(
+        mesh, parameters, texture_size, ggx=surfel_bsdf == "ggx",
+        uv_partitions=uv_partitions, uv_threads=uv_threads,
     )
     print("Packing textured mesh, lights and cameras into GLB...", flush=True)
     positions = tensor_mesh.vertex.positions.numpy()
@@ -460,21 +489,31 @@ def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
                   "NORMAL": builder.accessor(normals, "VEC3"),
                   "TEXCOORD_0": builder.accessor(unique[:, 1:], "VEC2")}
     indices = builder.accessor(inverse, "SCALAR", indices=True)
-    png = io.BytesIO()
-    Image.fromarray(texture).save(png, format="PNG")
     doc = builder.document
-    doc["images"] = [{"name": "Reconstructed albedo", "mimeType": "image/png",
-                       "bufferView": builder.buffer_view(png.getvalue())}]
-    # Base-color PNG is sRGB; factors and light colors remain linear RGB.
+    maps = [("albedo", "Reconstructed albedo", albedo)]
+    if metallic_roughness is not None:
+        maps.append(("metallic_roughness", "Reconstructed metallic-roughness", metallic_roughness))
+    doc["images"] = []
     doc["samplers"] = [{"magFilter": 9729, "minFilter": 9729, "wrapS": 33071, "wrapT": 33071}]
-    doc["textures"] = [{"source": 0, "sampler": 0}]
-    doc["materials"] = [{"name": "Reconstructed Lambertian albedo", "doubleSided": True,
-                         "pbrMetallicRoughness": {"baseColorFactor": [1, 1, 1, 1],
-                             "baseColorTexture": {"index": 0, "texCoord": 0},
-                             "metallicFactor": 0, "roughnessFactor": 1},
-                         "extensions": {"KHR_materials_specular": {"specularFactor": 0}}}]
-    doc["extensionsUsed"] = ["KHR_materials_specular"]
-    doc["extensionsRequired"] = ["KHR_materials_specular"]
+    doc["textures"] = []
+    pngs = {}
+    for suffix, name, image in maps:
+        png = io.BytesIO()
+        Image.fromarray(image).save(png, format="PNG")
+        pngs[suffix] = png.getvalue()
+        doc["textures"].append({"source": len(doc["images"]), "sampler": 0})
+        doc["images"].append({"name": name, "mimeType": "image/png", "bufferView": builder.buffer_view(pngs[suffix])})
+    pbr = {"baseColorFactor": [1, 1, 1, 1], "baseColorTexture": {"index": 0, "texCoord": 0},
+           "metallicFactor": 0, "roughnessFactor": 1}
+    material = {"name": "Reconstructed Lambertian albedo", "doubleSided": True, "pbrMetallicRoughness": pbr}
+    if metallic_roughness is not None:
+        material["name"] = "Reconstructed GGX material"
+        pbr.update(metallicFactor=1, metallicRoughnessTexture={"index": 1, "texCoord": 0})
+    else:
+        material["extensions"] = {"KHR_materials_specular": {"specularFactor": 0}}
+        doc["extensionsUsed"] = ["KHR_materials_specular"]
+        doc["extensionsRequired"] = ["KHR_materials_specular"]
+    doc["materials"] = [material]
     doc["meshes"] = [{"name": "Reconstruction", "primitives": [
         {"attributes": attributes, "indices": indices, "material": 0, "mode": 4}]}]
     builder.node({"name": "Reconstruction", "mesh": 0})
@@ -495,8 +534,8 @@ def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
                           "extensions": {"KHR_lights_punctual": {"light": light_id}}})
     if lights:
         doc["extensions"] = {"KHR_lights_punctual": {"lights": lights}}
-        doc["extensionsUsed"].append("KHR_lights_punctual")
-        doc["extensionsRequired"].append("KHR_lights_punctual")
+        doc.setdefault("extensionsUsed", []).append("KHR_lights_punctual")
+        doc.setdefault("extensionsRequired", []).append("KHR_lights_punctual")
 
     omitted_cameras = []
     for camera in cameras:
@@ -532,8 +571,8 @@ def export_reconstruction_glb(mesh, parameters: dict, output_path: Path,
         temporary.replace(output_path)
     finally:
         temporary.unlink(missing_ok=True)
-    # The image is embedded in the GLB; this copy makes the albedo easy to inspect.
-    output_path.with_name(output_path.stem + "_albedo.png").write_bytes(png.getvalue())
+    for suffix, data in pngs.items():
+        output_path.with_name(f"{output_path.stem}_{suffix}.png").write_bytes(data)
     print(f"Scene saved at {output_path} ({len(lights)} point lights, "
           f"{len(doc.get('cameras', []))} cameras)", flush=True)
     return output_path

@@ -14,9 +14,11 @@ namespace viewer {
         uint64_t iteration = 0u;
         std::filesystem::file_time_type writeTime = std::filesystem::file_time_type::min();
     };
+    inline constexpr int kLatestSavedCheckpoint = 3;
+
     [[nodiscard]] inline std::size_t checkpointNavigationIndex(const std::vector<PointCloudSnapshot>& saved,uint64_t current,int direction) {
         if(saved.empty())return 0;
-        if(direction==3)return saved.size()-1;
+        if(direction==kLatestSavedCheckpoint)return saved.size()-1;
         if(direction==-1) {
             auto it=std::lower_bound(saved.begin(),saved.end(),current,[](const auto& item,uint64_t step){return item.iteration<step;});
             return it==saved.begin()?0:static_cast<std::size_t>(it-saved.begin()-1);

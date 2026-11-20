@@ -184,6 +184,14 @@ The viewport's scene-source dropdown offers these modes:
   while the Run monitor is on Metrics. During a checkpoint change it shows, for
   example, **Iteration 6000 → 7000 (loading)** until the new image is displayed.
   Hover the label for the displayed, requested and current run iterations.
+  During reconstruction, uncheck **Follow live** beside the iteration to hold
+  the displayed surfels while navigating. Check it again to load the latest
+  live preview. Click **Update to latest** to load and hold the latest saved
+  checkpoint. Training and checkpointing continue while the view is held.
+- **Save checkpoint** in **Progress** saves the current training point cloud.
+  Turn on **Include mesh + GLB** to also extract the mesh and bake a textured
+  GLB. The option starts off. GGX exports include base color, roughness, and
+  metalness for Blender's Principled BSDF.
 - **Edit latest saved snapshot** copies the latest checkpoint into a private
   editable workspace. Geometry, material, and emitter edits do not pause or alter
   training. Switching to a training view preserves the edits; **Return to edits**

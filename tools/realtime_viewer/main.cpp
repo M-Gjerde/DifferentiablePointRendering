@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <unordered_set>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -1128,11 +1129,12 @@ namespace {
                << "property float su\nproperty float sv\n"
                << "property float albedo_r\nproperty float albedo_g\nproperty float albedo_b\n"
                << "property float opacity\nproperty float beta\nproperty float shape\nproperty float power\n"
+               << "property float roughness\nproperty float metalness\n"
                << "property float densification_origin\nproperty float primitive_age\n"
                << "property float densification_position_signal\nproperty float densification_position_sample_count\nproperty float densification_position_threshold\n"
                << "end_header\n";
         std::vector<float> block;
-        block.reserve(8192*21);
+        block.reserve(8192*23);
         const auto flush=[&] {
             output.write(reinterpret_cast<const char*>(block.data()),static_cast<std::streamsize>(block.size()*sizeof(float)));
             block.clear();
@@ -1145,12 +1147,14 @@ namespace {
                 const glm::vec3& albedo = geometry.albedos[index];
                 block.insert(block.end(),{position.x,position.y,position.z,rotation.w,rotation.x,rotation.y,rotation.z,
                     scale.x,scale.y,albedo.r,albedo.g,albedo.b,geometry.opacities[index],geometry.betas[index],geometry.shapes[index],geometry.powers[index],
+                    index<geometry.roughnesses.size()?geometry.roughnesses[index]:Pale::kDefaultSurfelRoughness,
+                    index<geometry.metalnesses.size()?geometry.metalnesses[index]:Pale::kDefaultSurfelMetalness,
                     index<geometry.densificationOrigins.size()?static_cast<float>(geometry.densificationOrigins[index]):0.f,
                     index<geometry.primitiveAges.size()?static_cast<float>(geometry.primitiveAges[index]):0.f,
                     index<geometry.densificationPositionSignals.size()?geometry.densificationPositionSignals[index]:0.f,
                     index<geometry.densificationPositionSampleCounts.size()?static_cast<float>(geometry.densificationPositionSampleCounts[index]):0.f,
                     index<geometry.densificationPositionThresholds.size()?geometry.densificationPositionThresholds[index]:0.f});
-                if(block.size()>=8192*21)flush();
+                if(block.size()>=8192*23)flush();
             }
         }
         if(!block.empty())flush();
@@ -2156,6 +2160,7 @@ namespace {
     Pale::PathTracerSettings makeDefaultSettings() {
         Pale::PathTracerSettings settings{};
         settings.integratorKind = Pale::IntegratorKind::photonMapping;
+        settings.surfelBrdfKind = Pale::SurfelBrdfKind::Ggx;
         settings.photonsPerLaunch = 65536u;
         settings.maxBounces = 0;
         settings.maxAdjointBounces = 0;
@@ -2931,7 +2936,12 @@ int main(int argc, char** argv) {
         std::optional<viewer::TrainingView> queuedSceneSource;
         bool editLatestRequested=false,returnToEditsRequested=false;
         std::optional<int> queuedCamera;
-        std::optional<std::pair<std::filesystem::path,uint64_t>> pendingViewedIteration;
+        struct TrainingPreview {
+            std::filesystem::path run;
+            uint64_t iteration;
+            uint64_t generation;
+        };
+        std::optional<TrainingPreview> pendingTrainingPreview, displayedTrainingPreview;
         std::optional<bool> queuedWalkFinish;
         uint32_t busyPointCount=0;
         double busyRenderMs=0;
@@ -3254,6 +3264,9 @@ int main(int argc, char** argv) {
             return loaded;
         };
 
+        std::weak_ptr<Pale::PointAsset> materialControlAsset;
+        float globalSurfelRoughness = Pale::kDefaultSurfelRoughness;
+        float globalSurfelMetalness = Pale::kDefaultSurfelMetalness;
         bool snapshotEditPending=false;
         auto beginSnapshotEdit=[&] {
             const bool emitter=sceneSelectionKind==viewer::SceneItemKind::Emitter||sceneSelectionKind==viewer::SceneItemKind::SurfelEmitter;
@@ -3262,6 +3275,7 @@ int main(int argc, char** argv) {
             followLaunchAfterPreview=false;
             if(!modelReadOnly())return;
             training.view=viewer::TrainingView::Snapshot;
+            displayedTrainingPreview.reset();
             workingDirectory.clear();workingSourceScene=std::filesystem::absolute(currentScenePath);
             workingIteration=training.viewedIteration;hasWorkingSnapshot=false;snapshotEditPending=true;
             training.message="Editing a private copy of iteration "+std::to_string(workingIteration);
@@ -3356,7 +3370,8 @@ int main(int argc, char** argv) {
                     if(!saveWorkingSnapshot())throw std::runtime_error(training.message);
                     workspace=workingDirectory/"workspace.json";
                 }
-                meshExport.launch(training,workspace,runConfig);
+                const char* surfelBsdf = settings.surfelBrdfKind == Pale::SurfelBrdfKind::Ggx ? "ggx" : "lambertian";
+                meshExport.launch(training,workspace,surfelBsdf,runConfig);
             } catch(const std::exception& error) {meshExport.message=error.what();}
         };
         auto invalidateSceneMaterials = [&]() {
@@ -3398,10 +3413,46 @@ int main(int argc, char** argv) {
             rebuildSceneGpu();
             training.view = workingView;
             training.viewedIteration = workingIteration;
+            displayedTrainingPreview.reset();
             return true;
+        };
+        std::chrono::steady_clock::time_point lastTrainingViewPoll{};
+        const auto sceneMatchesDisplayedPreview = [&] {
+            return currentPointCloudPath == displayedOverlayPointCloud && currentScenePath == displayedOverlayScene;
+        };
+        const auto canFreezeTrainingPreview = [&] {
+            return displayedTrainingPreview && displayedTrainingPreview->run == training.runIdentity();
         };
         auto enterTrainingView = [&](viewer::TrainingView view) {
             if (!training.hasRun()) return;
+            if (view == viewer::TrainingView::Frozen) {
+                if (!canFreezeTrainingPreview()) return;
+                if (!sceneMatchesDisplayedPreview()) {
+                    // Restore the displayed cloud if a newer generation is
+                    // already loaded. The next render or edit uses this cloud.
+                    bool restored = false;
+                    try {
+                        viewer::runWithEventPump([&] {
+                            restored = currentScenePath == displayedOverlayScene
+                                ? replacePointCloud(displayedOverlayPointCloud, true)
+                                : replaceSceneAndPointCloud(displayedOverlayScene, displayedOverlayPointCloud, true);
+                        }, [] { glfwPollEvents(); });
+                    } catch (const std::exception& error) {
+                        training.message = error.what();
+                        return;
+                    }
+                    if (!restored) {
+                        training.message = pointCloudStatus;
+                        return;
+                    }
+                    loadedLivePacket = displayedLivePacket;
+                }
+                training.view = view;
+                training.loadedGeneration = displayedTrainingPreview->generation;
+                training.viewedIteration = displayedTrainingPreview->iteration;
+                pendingTrainingPreview.reset();
+                return;
+            }
             const bool stoppedPreview=training.stopRequested&&training.live.IsMap();
             if(view==viewer::TrainingView::Live&&(training.openedReconstruction||(!training.process.active()&&!stoppedPreview)))view=viewer::TrainingView::Saved;
             if (!modelReadOnly()) {
@@ -3413,6 +3464,7 @@ int main(int argc, char** argv) {
             // scene has actually rendered. Loading a checkpoint is not an empty
             // viewport state.
             training.view = view; training.loadedGeneration = 0;
+            lastTrainingViewPoll = {};
             plyBrowserOpen = meshBrowserOpen = false;
         };
         auto editLatestSavedSnapshot = [&]() {
@@ -3452,13 +3504,15 @@ int main(int argc, char** argv) {
             training.historyPath=saved[index].path;training.historyIteration=saved[index].iteration;
         };
         std::filesystem::path previewSettingsRun, framedTrainingRun;
-        std::chrono::steady_clock::time_point lastTrainingViewPoll{};
         auto pollTrainingScene = [&]() {
+            if (training.view == viewer::TrainingView::Frozen) return;
             if (training.hasRun() && previewSettingsRun != training.runIdentity() && training.status["scene"].IsScalar()) {
                 const auto savedRun = viewer::readJson(training.runDirectory() / "run_config.json");
                 const auto saved = savedRun["renderer_settings"];
                 if (saved.IsMap()) {
+                    const auto surfelBrdfKind = settings.surfelBrdfKind;
                     settings = Pale::PathTracerSettings{};
+                    settings.surfelBrdfKind = surfelBrdfKind;
                     settings.integratorKind = Pale::IntegratorKind::photonMapping;
                     settings.cameraGatherKernelKind = Pale::CameraGatherKernelKind::CameraGatherKernel2;
                     settings.pointGeometrySupportRadius = 0.1f;
@@ -3531,8 +3585,10 @@ int main(int argc, char** argv) {
                 },[&,loaded,generation,step,run,packetLease] {
                     if(*loaded)loadedLivePacket=packetLease;
                     if(training.runIdentity()!=run)return;
-                    if(*loaded) {loadedTrainingSceneRun=run;training.loadedGeneration=generation;pendingViewedIteration=std::make_pair(run,step);}
-                    else throw std::runtime_error("Scene update failed: "+pointCloudStatus);
+                    if (!*loaded) throw std::runtime_error("Scene update failed: " + pointCloudStatus);
+                    loadedTrainingSceneRun = run;
+                    training.loadedGeneration = generation;
+                    pendingTrainingPreview = TrainingPreview{run, step, generation};
                 },"Updating training scene");
             } catch (const std::exception& error) { training.message = error.what(); }
         };
@@ -5453,6 +5509,7 @@ int main(int argc, char** argv) {
         // Keep the same controls and geometry while the renderer owns the scene.
         // Scene-source changes wait for handoff; display choices can be queued.
         const auto drawViewportToolbar=[&](bool busy) {
+            const bool trainingActive = training.process.active();
             const auto mode=busy?queuedView.value_or(viewImageMode):viewImageMode;
             ImGui::SetNextItemWidth(175);
             if (ImGui::BeginCombo("##ViewportMode",viewImageModeLabel(mode))) {
@@ -5465,9 +5522,18 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
             if (training.hasRun()) {
                 ImGui::SetNextItemWidth(168);
-                const char* liveSource=training.process.active()?"Live training":"Latest preview";
-                const char* source = training.view==viewer::TrainingView::Live ? liveSource : training.view==viewer::TrainingView::Saved ? (training.openedReconstruction?"Saved reconstruction":"Follow saved") :
-                    training.view==viewer::TrainingView::History ? "Checkpoint history" : training.view==viewer::TrainingView::Initializer ? "Initialized point cloud" : "Editable snapshot";
+                const char* liveSource = trainingActive ? "Live training" : "Latest preview";
+                const char* source = "Editable snapshot";
+                switch (training.view) {
+                    case viewer::TrainingView::Live: source = liveSource; break;
+                    case viewer::TrainingView::Frozen: source = "Frozen preview"; break;
+                    case viewer::TrainingView::Saved:
+                        source = training.openedReconstruction ? "Saved reconstruction" : "Follow saved";
+                        break;
+                    case viewer::TrainingView::History: source = "Checkpoint history"; break;
+                    case viewer::TrainingView::Snapshot: break;
+                    case viewer::TrainingView::Initializer: source = "Initialized point cloud"; break;
+                }
                 if(ImGui::BeginCombo("##SceneSource",source)) {
                     if(!training.openedReconstruction&&(training.process.active()||(training.stopRequested&&training.live.IsMap()))&&ImGui::Selectable(liveSource,training.view==viewer::TrainingView::Live)) {
                         if(busy)queuedSceneSource=viewer::TrainingView::Live;else enterTrainingView(viewer::TrainingView::Live);
@@ -5489,11 +5555,13 @@ int main(int argc, char** argv) {
                 // it visible while a different checkpoint loads/renders.
                 std::optional<uint64_t> requestedIteration;
                 if(training.view==viewer::TrainingView::History)requestedIteration=training.historyIteration;
-                else if(pendingViewedIteration&&pendingViewedIteration->first==training.runIdentity())
-                    requestedIteration=pendingViewedIteration->second;
+                else if(queuedSceneSource!=viewer::TrainingView::Frozen&&pendingTrainingPreview&&pendingTrainingPreview->run==training.runIdentity())
+                    requestedIteration=pendingTrainingPreview->iteration;
+                const bool iterationLoading = requestedIteration && *requestedIteration != training.viewedIteration;
                 std::string iterationLabel="Iteration "+std::to_string(training.viewedIteration);
-                if(requestedIteration&&*requestedIteration!=training.viewedIteration)
-                    iterationLabel+=" → "+std::to_string(*requestedIteration)+" (loading)";
+                const std::string loadingLabel = iterationLoading
+                    ? "→ " + std::to_string(*requestedIteration) + " (loading)" : "";
+                if (!trainingActive && iterationLoading) iterationLabel += " " + loadingLabel;
                 ImGui::SameLine();ImGui::TextColored(kUiAccent,"%s",iterationLabel.c_str());
                 if(ImGui::IsItemHovered()) {
                     ImGui::BeginTooltip();
@@ -5505,10 +5573,47 @@ int main(int argc, char** argv) {
                     ImGui::EndTooltip();
                 }
                 ImGui::SameLine();
+                if (trainingActive) {
+                    bool followLive = queuedSceneSource.value_or(training.view) == viewer::TrainingView::Live;
+                    const bool waitingForPreview = followLive && !canFreezeTrainingPreview();
+                    if (waitingForPreview) ImGui::BeginDisabled();
+                    if (ImGui::Checkbox("Follow live", &followLive)) {
+                        if (training.checkpointNavigation == viewer::kLatestSavedCheckpoint)
+                            training.checkpointNavigation.reset();
+                        const auto next = followLive ? viewer::TrainingView::Live : viewer::TrainingView::Frozen;
+                        if (busy) {
+                            if (next == training.view) queuedSceneSource.reset();
+                            else queuedSceneSource = next;
+                        } else {
+                            enterTrainingView(next);
+                        }
+                    }
+                    if (waitingForPreview) ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        ImGui::SetTooltip("%s", waitingForPreview ? "Waiting for the first live preview"
+                            : "Follow the training preview or hold the displayed surfels");
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Update to latest")) {
+                        queuedSceneSource.reset();
+                        training.checkpointSelection.reset();
+                        training.checkpointNavigation = viewer::kLatestSavedCheckpoint;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load the latest saved checkpoint and hold it in the viewport.");
+                    ImGui::SameLine();
+                    if (iterationLoading) {
+                        ImGui::TextDisabled("%s", loadingLabel.c_str());
+                        ImGui::SameLine();
+                    }
+                }
             }
-            const float overlayWidth = 164;
+            const bool compactOverlays = trainingActive && ImGui::GetContentRegionAvail().x < 164.f;
+            const float overlayWidth = compactOverlays ? ImGui::GetFrameHeight() : 164.f;
             ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),ImGui::GetWindowWidth()-overlayWidth-12));
-            if(ImGui::Button("Gizmos & overlays",ImVec2(overlayWidth,0)))ImGui::OpenPopup("ViewportAids");
+            const bool openOverlays = compactOverlays
+                ? viewer::ui::iconButton("Gizmos & overlays", viewer::ui::Icon::View, false, ImVec2(overlayWidth, overlayWidth))
+                : ImGui::Button("Gizmos & overlays", ImVec2(overlayWidth, 0));
+            if (openOverlays) ImGui::OpenPopup("ViewportAids");
             if(ImGui::BeginPopup("ViewportAids")) {
                 ImGui::SeparatorText("Viewport overlays");
                 if(ImGui::Checkbox("Ground grid",&showViewportGrid)) {
@@ -5745,7 +5850,7 @@ int main(int argc, char** argv) {
                 workingDirectory.clear();workingSourceScene=std::filesystem::absolute(currentScenePath);
                 hasWorkingSnapshot=false;workingIteration=training.viewedIteration=0;
                 training.loadedGeneration=0;loadedTrainingSceneRun.clear();framedTrainingRun.clear();
-                pendingViewedIteration.reset();loadedLivePacket.reset();
+                pendingTrainingPreview.reset();loadedLivePacket.reset();
                 sceneSelectionKind=viewer::SceneItemKind::Geometry;
                 training.message="Initialized point cloud loaded · "+directory.filename().string();
             },"Updating training scene");
@@ -6005,7 +6110,7 @@ int main(int argc, char** argv) {
                     training.openPreparedReconstruction();invalidateSceneMaterials();
                     if(!preserveScene)loadedTrainingSceneRun.clear();
                     if(!sameRun) {previewSettingsRun.clear();framedTrainingRun.clear();}
-                    pendingViewedIteration.reset();loadedLivePacket.reset();lastTrainingViewPoll={};
+                    pendingTrainingPreview.reset();loadedLivePacket.reset();lastTrainingViewPoll={};
                     if(!sameRun) {
                         selectedSurfelEditorIndex=-1;selectedSurfelLightIndex=-1;selectedLightIndex=0;
                         sceneSelectionKind=viewer::SceneItemKind::Geometry;selectedTreeEntity.clear();
@@ -7219,6 +7324,45 @@ int main(int argc, char** argv) {
                 } else {
                     std::size_t surfelCount = countSurfels(*pointCloudAsset);
 
+                    if (materialControlAsset.lock() != pointCloudAsset) {
+                        materialControlAsset = pointCloudAsset;
+                        globalSurfelRoughness = Pale::kDefaultSurfelRoughness;
+                        globalSurfelMetalness = Pale::kDefaultSurfelMetalness;
+                        for (const auto& geometry : pointCloudAsset->points) {
+                            if (geometry.positions.empty()) continue;
+                            if (!geometry.roughnesses.empty()) globalSurfelRoughness = geometry.roughnesses.front();
+                            if (!geometry.metalnesses.empty()) globalSurfelMetalness = geometry.metalnesses.front();
+                            break;
+                        }
+                    }
+                    ImGui::SeparatorText("Global surfel material");
+                    int surfelBrdf = settings.surfelBrdfKind == Pale::SurfelBrdfKind::Ggx ? 1 : 0;
+                    if (ImGui::Combo("Surfel BSDF", &surfelBrdf, "Lambertian\0GGX\0")) {
+                        settings.surfelBrdfKind = surfelBrdf == 1
+                            ? Pale::SurfelBrdfKind::Ggx : Pale::SurfelBrdfKind::Lambertian;
+                        tracerDirty = renderRequested = true;
+                    }
+                    ImGui::SliderFloat("Roughness", &globalSurfelRoughness, 0.0f, 1.0f, "%.3f",
+                                       ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::SliderFloat("Metalness", &globalSurfelMetalness, 0.0f, 1.0f, "%.3f",
+                                       ImGuiSliderFlags_AlwaysClamp);
+                    if (ImGui::Button("Apply to all surfels")) {
+                        beginSnapshotEdit();
+                        std::unordered_set<Pale::AssetHandle> updatedClouds;
+                        for (auto [entity, component] : scene->getAllEntitiesWith<Pale::PointCloudComponent>().each()) {
+                            if (!updatedClouds.insert(component.pointCloudID).second) continue;
+                            if (const auto cloud = assetAccessor.getPointCloud(component.pointCloudID)) {
+                                for (auto& geometry : cloud->points) {
+                                    geometry.roughnesses.assign(geometry.positions.size(), globalSurfelRoughness);
+                                    geometry.metalnesses.assign(geometry.positions.size(), globalSurfelMetalness);
+                                }
+                            }
+                        }
+                        surfelEditorStatus = "Updated roughness and metalness for all surfels";
+                        rebuildSceneGpu();
+                    }
+                    ImGui::Separator();
+
                     if (ImGui::Button("Add surfel")) {
                         beginSnapshotEdit();
                         Pale::PointGeometry& pointGeometry = pointCloudAsset->points.back();
@@ -7231,6 +7375,14 @@ int main(int argc, char** argv) {
                         pointGeometry.quat.push_back(cameraFacingRotation);
                         pointGeometry.scales.emplace_back(defaultScale, defaultScale);
                         pointGeometry.albedos.emplace_back(0.8f, 0.8f, 0.8f);
+                        pointGeometry.roughnesses.resize(previousBlockCount, Pale::kDefaultSurfelRoughness);
+                        pointGeometry.metalnesses.resize(previousBlockCount, Pale::kDefaultSurfelMetalness);
+                        const float roughness = previousBlockCount
+                            ? pointGeometry.roughnesses.front() : Pale::kDefaultSurfelRoughness;
+                        const float metalness = previousBlockCount
+                            ? pointGeometry.metalnesses.front() : Pale::kDefaultSurfelMetalness;
+                        pointGeometry.roughnesses.push_back(roughness);
+                        pointGeometry.metalnesses.push_back(metalness);
                         pointGeometry.opacities.push_back(0.9f);
                         pointGeometry.betas.push_back(-1.0f);
                         pointGeometry.shapes.push_back(0.0f);
@@ -7276,22 +7428,13 @@ int main(int argc, char** argv) {
                     }
                     ImGui::Text("Valid range: -1 (none), 0 - %zu", surfelCount - 1u);
 
-                    std::size_t localSurfelIndex = selectedSurfelEditorIndex >= 0 ? static_cast<std::size_t>(selectedSurfelEditorIndex) : surfelCount;
-                    Pale::PointGeometry* selectedPointGeometry = nullptr;
-                    for (Pale::PointGeometry& pointGeometry : pointCloudAsset->points) {
-                        if (localSurfelIndex < pointGeometry.positions.size()) {
-                            selectedPointGeometry = &pointGeometry;
-                            break;
-                        }
-                        localSurfelIndex -= pointGeometry.positions.size();
-                    }
-
+                    const auto selectedSurfel = resolveEditableSurfel(*pointCloudAsset, selectedSurfelEditorIndex);
                     bool surfelChanged = false;
-                    if (!selectedPointGeometry) {
+                    if (!selectedSurfel) {
                         ImGui::TextWrapped(selectedSurfelEditorIndex < 0 ? "No surfel selected" : "The selected surfel could not be resolved");
                     } else {
-                        Pale::PointGeometry& pointGeometry = *selectedPointGeometry;
-
+                        Pale::PointGeometry& pointGeometry = *selectedSurfel->pointGeometry;
+                        const std::size_t localSurfelIndex = selectedSurfel->localIndex;
 
                         if (localSurfelIndex < pointGeometry.positions.size()) {
                             glm::vec3& position = pointGeometry.positions[localSurfelIndex];
@@ -7338,6 +7481,32 @@ int main(int argc, char** argv) {
                                 albedo = glm::clamp(albedo, glm::vec3(0.0f), glm::vec3(1.0f));
                                 surfelChanged = true;
                             }
+                        }
+
+                        if (ImGui::BeginTable("##SelectedSurfelMaterial", 2,
+                                              ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_NoPadOuterX)) {
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted("Roughness");
+                            ImGui::TableNextColumn();
+                            ImGui::TextUnformatted("Metalness");
+                            ImGui::TableNextRow();
+
+                            const auto drawMaterialSlider = [&](const char* id, std::vector<float>& values,
+                                                                float defaultValue) {
+                                ImGui::TableNextColumn();
+                                ImGui::SetNextItemWidth(-1.0f);
+                                float value = localSurfelIndex < values.size() ? values[localSurfelIndex] : defaultValue;
+                                if (ImGui::SliderFloat(id, &value, 0.0f, 1.0f, "%.6f", ImGuiSliderFlags_AlwaysClamp)) {
+                                    if (localSurfelIndex >= values.size()) {
+                                        values.resize(pointGeometry.positions.size(), defaultValue);
+                                    }
+                                    values[localSurfelIndex] = value;
+                                    surfelChanged = true;
+                                }
+                            };
+                            drawMaterialSlider("##Roughness", pointGeometry.roughnesses, Pale::kDefaultSurfelRoughness);
+                            drawMaterialSlider("##Metalness", pointGeometry.metalnesses, Pale::kDefaultSurfelMetalness);
+                            ImGui::EndTable();
                         }
 
                         auto drawAdditionalSurfelProperties = [&]<typename PointGeometryType>(
@@ -8101,12 +8270,20 @@ int main(int argc, char** argv) {
                 if(!previewWork.busy()&&viewer::canPollTrainingScene(sceneUploadPending,training.loadedGeneration)&&!holdPreviewForInspector&&previewRecovery.dispatchAllowed(now))pollTrainingScene();
                 if(!holdPreviewForInspector&&!previewWork.busy() && previewRecovery.dispatchAllowed(now) && (!modelReadOnly() || training.loadedGeneration!=0 || training.stopRequested) && ((autoRender&&cameraDirty)||renderRequested))
                     startPreviewJob(renderNow,[&] {
+                        if (queuedSceneSource == viewer::TrainingView::Frozen && !sceneMatchesDisplayedPreview()) {
+                            previewPublication.finish(false, restorePublishedPreview);
+                            renderRequested = true;
+                            return;
+                        }
                         updateDisplayTexture();publishDisplayedOverlays();lastPreviewInteractive=interactivePreview;
                         previewRecovery.succeeded();
-                        if(pendingViewedIteration) {
-                            if(pendingViewedIteration->first==training.runIdentity()&&modelReadOnly())training.viewedIteration=pendingViewedIteration->second;
-                            pendingViewedIteration.reset();
+                        if (pendingTrainingPreview && pendingTrainingPreview->run == training.runIdentity() && modelReadOnly()) {
+                            training.viewedIteration = pendingTrainingPreview->iteration;
+                            displayedTrainingPreview = std::move(*pendingTrainingPreview);
+                        } else if (!modelReadOnly()) {
+                            displayedTrainingPreview.reset();
                         }
+                        pendingTrainingPreview.reset();
                     },"Rendering / compiling preview kernels");
             }
         }

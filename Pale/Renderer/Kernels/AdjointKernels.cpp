@@ -315,15 +315,16 @@ namespace Pale {
         const EventType &eventRecord,
         uint32_t pointCount,
         float *alphaEffOut,
-        float3 *incidentIrradianceOut,
+        SurfelBrdfMaterialDerivatives *materialOut,
         float3 *directRadianceOut,
         AdjointPrimarySlabCacheEntry *primaryCache = nullptr) {
         const uint32_t slabCount = eventRecord.surfelSlabCount;
+        const bool ggx = settings.surfelBrdfKind == SurfelBrdfKind::Ggx;
         float3 orientedNormals[kMaxLocalSurfelHits];
 
         for (uint32_t i = 0u; i < kMaxLocalSurfelHits; ++i) {
             alphaEffOut[i] = 0.0f;
-            incidentIrradianceOut[i] = float3{0.0f};
+            materialOut[i] = {};
             directRadianceOut[i] = float3{0.0f};
             orientedNormals[i] = float3{0.0f};
         }
@@ -344,9 +345,9 @@ namespace Pale {
             alphaEffOut[i] = sycl::clamp(surfel.opacity * surface.alphaGeom, 0.0f, 1.0f);
         }
 
-        if (primaryCache != nullptr && primaryCache->lightingValid != 0u) {
+        if (!ggx && primaryCache != nullptr && primaryCache->lightingValid != 0u) {
             for (uint32_t i = 0u; i < slabCount; ++i) {
-                incidentIrradianceOut[i] = primaryCache->incidentIrradiance[i];
+                materialOut[i].baseColor = primaryCache->incidentIrradiance[i];
             }
         } else if (settings.rendererDebugShareLocalLayerDirectLighting) {
             const SharedSlabDirectLightVertex sharedVertex =
@@ -385,7 +386,22 @@ namespace Pale {
                     for (uint32_t i = 0u; i < slabCount; ++i) {
                         const float surfaceCosine =
                                 sycl::fmax(0.0f, dot(orientedNormals[i], lightDirection));
-                        incidentIrradianceOut[i] += sharedIncident * surfaceCosine;
+                        const uint32_t primitiveIndex = eventRecord.xSurface[i].primitiveIndex;
+                        if (surfaceCosine <= 0.0f || primitiveIndex >= pointCount) continue;
+                        const float3 incident = sharedIncident * surfaceCosine;
+                        if (ggx) {
+                            SurfelBrdfMaterialDerivatives material;
+                            const auto &surface = eventRecord.xSurface[i];
+                            const float3 brdf = evaluateSurfelBrdf(
+                                settings.surfelBrdfKind, scene.points[primitiveIndex], orientedNormals[i],
+                                lightDirection, -surface.incomingDirection, &material);
+                            directRadianceOut[i] += incident * brdf;
+                            materialOut[i].baseColor += incident * material.baseColor;
+                            materialOut[i].roughness += incident * material.roughness;
+                            materialOut[i].metalness += incident * material.metalness;
+                        } else {
+                            materialOut[i].baseColor += incident;
+                        }
                     }
                 }
             }
@@ -398,18 +414,22 @@ namespace Pale {
                 }
                 const ReconstructedSurfelState state =
                         reconstructSurfelState(scene.points[primitiveIndex], surface);
-                incidentIrradianceOut[i] = computeIncidentRadianceFromPointLights(
-                    scene,
-                    settings,
-                    state.position,
-                    state.orientedNormal,
-                    eventRecord.directLightEps[i]);
+                if (ggx) {
+                    directRadianceOut[i] = estimateDirectSurfelPointLights(
+                        scene, settings, state.position, state.orientedNormal, scene.points[primitiveIndex],
+                        -surface.incomingDirection, eventRecord.directLightEps[i],
+                        nullptr, 0u, nullptr, 1.0f, &materialOut[i]);
+                } else {
+                    materialOut[i].baseColor = computeIncidentRadianceFromPointLights(
+                        scene, settings, state.position, state.orientedNormal, eventRecord.directLightEps[i]);
+                }
             }
         }
 
+        if (ggx) return;
         if (primaryCache != nullptr && primaryCache->lightingValid == 0u) {
             for (uint32_t i = 0u; i < slabCount; ++i) {
-                primaryCache->incidentIrradiance[i] = incidentIrradianceOut[i];
+                primaryCache->incidentIrradiance[i] = materialOut[i].baseColor;
             }
             primaryCache->lightingValid = 1u;
         }
@@ -420,15 +440,21 @@ namespace Pale {
             }
             const Point &surfel = scene.points[primitiveIndex];
             directRadianceOut[i] =
-                    incidentIrradianceOut[i] * (surfel.alpha_r * surfel.albedo * M_1_PIf);
+                    materialOut[i].baseColor * (surfel.alpha_r * surfel.albedo * M_1_PIf);
+            materialOut[i].baseColor *= surfel.alpha_r * M_1_PIf;
         }
+    }
+
+    static inline bool adjointPointLightEventsEnabled(const PathTracerSettings &settings) {
+        return settings.enableAdjointDirectLight &&
+               (!settings.rendererDebugShareLocalLayerDirectLighting || settings.numAdjointPathShadowRays > 0u);
     }
 
     template<typename SettingsType, typename SceneType, typename IntermediatesType>
     static inline void appendAdjointMeasurementDirectPointLightSlabEvents(
         const SettingsType &settings, const SceneType &scene, const IntermediatesType &intermediates,
         const MeasurementGradientEvent &slabEvent, const RayState &currentRayState, float qReflect) {
-        if (!settings.enableAdjointDirectLight || slabEvent.surfelSlabCount == 0u) { return; }
+        if (!adjointPointLightEventsEnabled(settings) || slabEvent.surfelSlabCount == 0u) { return; }
         SharedSlabDirectLightVertex sharedVertex{};
         if (settings.rendererDebugShareLocalLayerDirectLighting) {
             sharedVertex = reconstructSharedSlabDirectLightVertex(
@@ -735,7 +761,9 @@ namespace Pale {
                 isValidGradientComponent(gradientRecord.gradBeta) &&
                 isValidGradientComponent(gradientRecord.gradAlbedoR) &&
                 isValidGradientComponent(gradientRecord.gradAlbedoG) &&
-                isValidGradientComponent(gradientRecord.gradAlbedoB);
+                isValidGradientComponent(gradientRecord.gradAlbedoB) &&
+                isValidGradientComponent(gradientRecord.gradRoughness) &&
+                isValidGradientComponent(gradientRecord.gradMetalness);
         const bool validCloneSignal =
                 gradientRecord.hasCloneSignal == 0u ||
                 (sycl::isfinite(gradientRecord.cloneSignalX) &&
@@ -801,6 +829,12 @@ namespace Pale {
                 atomicAddFloat(gradients.gradAlbedo[primitiveIndex].x(), gradientRecord.gradAlbedoR);
                 atomicAddFloat(gradients.gradAlbedo[primitiveIndex].y(), gradientRecord.gradAlbedoG);
                 atomicAddFloat(gradients.gradAlbedo[primitiveIndex].z(), gradientRecord.gradAlbedoB);
+                if (gradientRecord.gradRoughness != 0.0f) {
+                    atomicAddFloat(gradients.gradRoughness[primitiveIndex], gradientRecord.gradRoughness);
+                }
+                if (gradientRecord.gradMetalness != 0.0f) {
+                    atomicAddFloat(gradients.gradMetalness[primitiveIndex], gradientRecord.gradMetalness);
+                }
             }
         }
         return true;
@@ -816,7 +850,7 @@ namespace Pale {
         uint32_t parameterIndex,
         float invSpp,
         const float *alphaEff,
-        const float3 *slabIncidentIrradiance,
+        const SurfelBrdfMaterialDerivatives *slabMaterial,
         const float3 *slabDirectRadiance,
         const SlabWeightNormalization &slabWeightNormalization) {
         const uint32_t slabCount = eventRecord.surfelSlabCount;
@@ -862,9 +896,8 @@ namespace Pale {
             gradBeta = dLossDAlphaK * surfelX.opacity * dAlphaGeomDBeta;
         }
 
-        const float3 incidentIrradiance = slabIncidentIrradiance[parameterIndex];
-        const float albedoScale =
-                surfelX.alpha_r * M_1_PIf * eventRecord.layerWeights[parameterIndex] * invSpp;
+        const auto &material = slabMaterial[parameterIndex];
+        const float albedoScale = eventRecord.layerWeights[parameterIndex] * invSpp;
         SurfelGradientRecord gradientRecord = makeZeroSurfelGradientRecord(primitiveIndex);
         gradientRecord.sampleMultiplicity = eventRecord.sampleMultiplicity;
         gradientRecord.gradPositionX = gradPosition.x();
@@ -886,9 +919,11 @@ namespace Pale {
         gradientRecord.gradRotationZ = gradRotation.z();
         gradientRecord.gradEta = gradEta;
         gradientRecord.gradBeta = gradBeta;
-        gradientRecord.gradAlbedoR = pathWeightAtTarget.x() * incidentIrradiance.x() * albedoScale;
-        gradientRecord.gradAlbedoG = pathWeightAtTarget.y() * incidentIrradiance.y() * albedoScale;
-        gradientRecord.gradAlbedoB = pathWeightAtTarget.z() * incidentIrradiance.z() * albedoScale;
+        gradientRecord.gradAlbedoR = pathWeightAtTarget.x() * material.baseColor.x() * albedoScale;
+        gradientRecord.gradAlbedoG = pathWeightAtTarget.y() * material.baseColor.y() * albedoScale;
+        gradientRecord.gradAlbedoB = pathWeightAtTarget.z() * material.baseColor.z() * albedoScale;
+        gradientRecord.gradRoughness = dot(pathWeightAtTarget, material.roughness) * albedoScale;
+        gradientRecord.gradMetalness = dot(pathWeightAtTarget, material.metalness) * albedoScale;
         setRelativeDensificationSignal(gradientRecord, sensor, xSurface.pathId);
         return gradientRecord;
     }
@@ -913,14 +948,13 @@ namespace Pale {
         // In shared direct-light mode the per-light XY event owns every
         // point-light derivative and reuses its single shadow traversal.
         if (settings.rendererDebugShareLocalLayerDirectLighting &&
-            settings.enableAdjointDirectLight &&
-            settings.numAdjointPathShadowRays > 0u) {
+            adjointPointLightEventsEnabled(settings)) {
             return;
         }
 
         const float invSpp = 1.0f / static_cast<float>(settings.adjointSamplesPerPixel);
         float alphaEff[kMaxLocalSurfelHits];
-        float3 slabIncidentIrradiance[kMaxLocalSurfelHits];
+        SurfelBrdfMaterialDerivatives slabMaterial[kMaxLocalSurfelHits];
         float3 slabDirectRadiance[kMaxLocalSurfelHits];
 
         computeMeasurementSlabDirectLighting(
@@ -929,7 +963,7 @@ namespace Pale {
             eventRecord,
             pointCount,
             alphaEff,
-            slabIncidentIrradiance,
+            slabMaterial,
             slabDirectRadiance,
             primaryCache);
 
@@ -944,7 +978,7 @@ namespace Pale {
 
             const SurfelGradientRecord gradientRecord = makeMeasurementTargetGradientRecord(
                 scene, sensor, eventRecord, parameterIndex, invSpp,
-                alphaEff, slabIncidentIrradiance, slabDirectRadiance, slabWeightNormalization);
+                alphaEff, slabMaterial, slabDirectRadiance, slabWeightNormalization);
             appendGradientRecordBounded(
                 gradientRecordCounter,
                 gradientRecords,
@@ -1174,14 +1208,18 @@ namespace Pale {
                         uint32_t slabRecordCount = 0;
                         if (scene.profileCounters) ++profileLayers;
                         if (takeNull) {
+                            if (scene.profileCounters) ++profileNulls;
+                            currentRayState.transmission *= localLayer.transmission;
+                            if (currentRayState.bounceIndex == 0u &&
+                                currentRayState.transmission <= kCameraTransmittanceCutoff) {
+                                clearAdjointLocalPendingState(pendingCameraSegment, pendingAdjointStage);
+                                break;
+                            }
                             if (scene.profileCounters) {
-                                ++profileNulls;
                                 if (inlineTraversalIndex + 1u == maxSplatEvents) ++profileLimits;
                             }
-                            const float attenuation = localLayer.transmission;
                             advanceRayPast(currentRayState.ray, localLayer.furthestT);
                             currentRayState.pathThroughput *= 1.0f / qNull;
-                            currentRayState.transmission *= attenuation;
                             currentRayState.traversalIndex++;
                             continue;
                         }
@@ -1435,7 +1473,7 @@ namespace Pale {
             if (slabCount == 0u || slabCount > kMaxLocalSurfelHits) return;
             const float3 pathWeight = eventRecord.xPathThroughput;
             float alphaEff[kMaxLocalSurfelHits];
-            float3 slabIncidentIrradiance[kMaxLocalSurfelHits];
+            SurfelBrdfMaterialDerivatives slabMaterial[kMaxLocalSurfelHits];
             float3 slabDirectRadiance[kMaxLocalSurfelHits];
             computeMeasurementSlabDirectLighting(
                 scene,
@@ -1443,12 +1481,11 @@ namespace Pale {
                 eventRecord,
                 pointCount,
                 alphaEff,
-                slabIncidentIrradiance,
+                slabMaterial,
                 slabDirectRadiance);
             // Shared XY events already own the target's point-light terms.
             if (!(settings.rendererDebugShareLocalLayerDirectLighting &&
-                  settings.enableAdjointDirectLight &&
-                  settings.numAdjointPathShadowRays > 0u)) {
+                  adjointPointLightEventsEnabled(settings))) {
                 const SlabWeightNormalization slabWeightNormalization =
                     computeSlabWeightNormalization(alphaEff, slabCount);
                 for (uint32_t parameterIndex = 0u; parameterIndex < slabCount; ++parameterIndex) {
@@ -1456,7 +1493,7 @@ namespace Pale {
                     if (surface.primitiveIndex == kInvalidIndex || surface.primitiveIndex >= pointCount) continue;
                     const SurfelGradientRecord gradientRecord = makeMeasurementTargetGradientRecord(
                         scene, sensor, eventRecord, parameterIndex, invSpp,
-                        alphaEff, slabIncidentIrradiance, slabDirectRadiance, slabWeightNormalization);
+                        alphaEff, slabMaterial, slabDirectRadiance, slabWeightNormalization);
                     if (accumulateSurfelGradientRecordDirect(gradients, gradientRecord, cameraSlot, cameraSlotCount)) {
                         accumulateDebugGradientIfSelected(debugImage, settings.renderDebugGradientImages,
                                                           settings.surfelIndexForDebugImages, surface.pathId,
@@ -1753,6 +1790,7 @@ namespace Pale {
 
                 float alphaEff[kMaxLocalSurfelHits]{};
                 float memberSurfaceCosine[kMaxLocalSurfelHits]{};
+                float3 memberBrdf[kMaxLocalSurfelHits]{};
                 float memberScalarWithoutTauAndGeometric[kMaxLocalSurfelHits]{};
                 float visibilityScalarWithoutTau = 0.0f;
                 bool hasActiveMember = false;
@@ -1771,9 +1809,12 @@ namespace Pale {
                     if (surfaceCosine <= 0.0f) continue;
                     memberSurfaceCosine[localIndex] = surfaceCosine;
                     hasActiveMember = true;
+                    const float3 brdf = evaluateSurfelBrdf(
+                        settings.surfelBrdfKind, surfel, state.orientedNormal,
+                        rayDirection, -surface.incomingDirection);
+                    memberBrdf[localIndex] = brdf;
                     const float layerWeight = eventRecord.layerWeights[localIndex];
                     if (layerWeight <= 0.0f) continue;
-                    const float3 brdf = surfel.alpha_r * surfel.albedo * M_1_PIf;
                     const float3 transportWithoutTauAndGeometric =
                             pointLightIntensity * layerWeight * brdf;
                     const float memberScalar = dot(pathWeight, transportWithoutTauAndGeometric);
@@ -2049,18 +2090,9 @@ namespace Pale {
                     for (uint32_t contributionIndex = 0u;
                          contributionIndex < slabCount;
                          ++contributionIndex) {
-                        const uint32_t contributionPrimitiveIndex =
-                                eventRecord.xSurface[contributionIndex].primitiveIndex;
-                        if (contributionPrimitiveIndex == kInvalidIndex ||
-                            contributionPrimitiveIndex >= pointCount) {
-                            continue;
-                        }
-                        const Point &contributionSurfel = scene.points[contributionPrimitiveIndex];
-                        const float3 contributionBrdf =
-                                contributionSurfel.alpha_r * contributionSurfel.albedo * M_1_PIf;
                         const float3 contributionDirectRadiance =
                                 pointLightIntensity * segmentTransmittance * inverseDistanceSquared *
-                                memberSurfaceCosine[contributionIndex] * contributionBrdf;
+                                memberSurfaceCosine[contributionIndex] * memberBrdf[contributionIndex];
                         const float dWeightDAlphaK = normalizedWeightDerivatives[contributionIndex];
                         dSlabRadianceDAlphaK += contributionDirectRadiance * dWeightDAlphaK;
                     }
@@ -2088,6 +2120,14 @@ namespace Pale {
                                 memberScalarWithoutTauAndGeometric[parameterIndex] *
                                 segmentTransmittance *
                                 cross(state.orientedNormal, normalGradient) * invSpp;
+                        if (settings.surfelBrdfKind == SurfelBrdfKind::Ggx) {
+                            const float3 brdfAdjoint = pathWeight * pointLightIntensity *
+                                (eventRecord.layerWeights[parameterIndex] * segmentTransmittance *
+                                 inverseDistanceSquared * memberSurfaceCosine[parameterIndex] * invSpp);
+                            const auto gradient = differentiateSurfelGgxDirections(
+                                surfel, state.orientedNormal, rayDirection, -surface.incomingDirection, brdfAdjoint);
+                            gradWorldRotation += cross(state.orientedNormal, gradient.normal);
+                        }
                     }
                     const float3 gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
                         surfel.tanU,
@@ -2108,9 +2148,13 @@ namespace Pale {
                     const float3 incidentIrradiance =
                             pointLightIntensity * segmentTransmittance * inverseDistanceSquared *
                             memberSurfaceCosine[parameterIndex];
-                    const float albedoScale =
-                            surfel.alpha_r * M_1_PIf *
-                            eventRecord.layerWeights[parameterIndex] * invSpp;
+                    SurfelBrdfMaterialDerivatives material{.baseColor = float3{surfel.alpha_r * M_1_PIf}};
+                    if (settings.surfelBrdfKind == SurfelBrdfKind::Ggx) {
+                        evaluateSurfelBrdf(
+                            settings.surfelBrdfKind, surfel, state.orientedNormal,
+                            rayDirection, -surface.incomingDirection, &material);
+                    }
+                    const float albedoScale = eventRecord.layerWeights[parameterIndex] * invSpp;
                     SurfelGradientRecord targetRecord = makeZeroSurfelGradientRecord(primitiveIndex);
                     targetRecord.gradPositionX = gradPosition.x();
                     targetRecord.gradPositionY = gradPosition.y();
@@ -2132,11 +2176,13 @@ namespace Pale {
                     targetRecord.gradEta = gradEta;
                     targetRecord.gradBeta = gradBeta;
                     targetRecord.gradAlbedoR =
-                            pathWeight.x() * incidentIrradiance.x() * albedoScale;
+                            pathWeight.x() * incidentIrradiance.x() * material.baseColor.x() * albedoScale;
                     targetRecord.gradAlbedoG =
-                            pathWeight.y() * incidentIrradiance.y() * albedoScale;
+                            pathWeight.y() * incidentIrradiance.y() * material.baseColor.y() * albedoScale;
                     targetRecord.gradAlbedoB =
-                            pathWeight.z() * incidentIrradiance.z() * albedoScale;
+                            pathWeight.z() * incidentIrradiance.z() * material.baseColor.z() * albedoScale;
+                    targetRecord.gradRoughness = dot(pathWeight * incidentIrradiance, material.roughness) * albedoScale;
+                    targetRecord.gradMetalness = dot(pathWeight * incidentIrradiance, material.metalness) * albedoScale;
                     setRelativeDensificationSignal(targetRecord, sensor, surface.pathId);
                     if (accumulateSurfelGradientRecordDirect(
                             gradients,
@@ -2204,15 +2250,18 @@ namespace Pale {
                 PointLightGeometry lightGeometry{};
                 if (!computePointLightGeometry(xState.position, xState.orientedNormal, lightPositionW, lightGeometry))
                     continue;
-                const float3 brdfX = surfelX.alpha_r * surfelX.albedo * M_1_PIf;
-                const float3 transportWithoutTauAndGeometric = pointLightIntensity * layerWeight * brdfX;
-                const float scalarWeightWithoutTauAndGeometric = dot(pathWeight, transportWithoutTauAndGeometric);
-                if (scalarWeightWithoutTauAndGeometric == 0.0f) continue;
                 const float3 segmentVector = lightPositionW - xState.position;
                 const float targetDistanceSquared = dot(segmentVector, segmentVector);
                 if (targetDistanceSquared <= 1.0e-12f) continue;
                 const float targetDistance = sycl::sqrt(targetDistanceSquared);
                 const float3 rayDirection = segmentVector / targetDistance;
+                const float3 outgoing = -xSurface.incomingDirection;
+                const float3 brdfX = evaluateSurfelBrdf(
+                    settings.surfelBrdfKind, surfelX, xState.orientedNormal, rayDirection, outgoing);
+                const float3 transportWithoutTauAndGeometric = pointLightIntensity * layerWeight * brdfX;
+                const float scalarWeightWithoutTauAndGeometric = dot(pathWeight, transportWithoutTauAndGeometric);
+                const bool ggx = settings.surfelBrdfKind == SurfelBrdfKind::Ggx;
+                if (!ggx && scalarWeightWithoutTauAndGeometric == 0.0f) continue;
                 const float eps = eventRecord.directLightEps[localIndex];
                 Ray ray{};
                 ray.direction = rayDirection;
@@ -2465,10 +2514,21 @@ namespace Pale {
                     }
                     suffixTransmittance *= occluder.oneMinusAlpha;
                 }
-                const float3 gradEdgeWrtHitPosition =
+                float3 gradEdgeWrtHitPosition =
                         scalarWeightWithoutTauAndGeometric * (
                             segmentTransmittance * lightGeometry.gradientWrtSurfacePosition + lightGeometry.
                             geometricTerm * gradTauWrtSegmentStart) * invSpp;
+                float3 gradBrdfWrtNormal{0.0f};
+                if (ggx) {
+                    const float3 brdfAdjoint = pathWeight * pointLightIntensity *
+                        (layerWeight * segmentTransmittance * lightGeometry.geometricTerm * invSpp);
+                    const auto gradient = differentiateSurfelGgxDirections(
+                        surfelX, xState.orientedNormal, rayDirection, outgoing, brdfAdjoint);
+                    gradBrdfWrtNormal = gradient.normal;
+                    // The light direction is normalize(light position - hit position).
+                    gradEdgeWrtHitPosition -=
+                        (gradient.incoming - rayDirection * dot(rayDirection, gradient.incoming)) / targetDistance;
+                }
                 const float3x3 hitPositionJacobian = planeHitPointIntersectionJacobian(
                     xSurface.incomingDirection, xState.orientedNormal);
                 const float3 gradPosition = transpose(hitPositionJacobian) * gradEdgeWrtHitPosition;
@@ -2480,7 +2540,8 @@ namespace Pale {
                             segmentTransmittance * lightGeometry.gradientWrtSurfaceNormal +
                             lightGeometry.geometricTerm * gradTauWrtLaunchNormal) * invSpp;
                 const float3 gradWorldRotation =
-                        transpose(hitRotationJacobian) * gradEdgeWrtHitPosition + normalRotationContribution;
+                        transpose(hitRotationJacobian) * gradEdgeWrtHitPosition + normalRotationContribution +
+                        cross(xState.orientedNormal, gradBrdfWrtNormal);
                 const float3 gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
                     surfelX.tanU, surfelX.tanV, gradWorldRotation);
                 SurfelGradientRecord targetRecord = makeZeroSurfelGradientRecord(xPrimitiveIndex);

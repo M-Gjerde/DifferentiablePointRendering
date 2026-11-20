@@ -47,11 +47,15 @@ def validate_patch(patch: Any) -> dict[str, float]:
 def write_preview(path: Path, arrays, metadata=None) -> int:
     """Binary PLY, using the same property names/order as the persistent writer."""
     import numpy as np
-    positions, rotations, scales, colors, opacity, beta, power = arrays
+    positions, rotations, scales, colors, opacity, beta, power, *materials = arrays
+    if len(materials) not in (0, 2):
+        raise ValueError("Expected both roughness and metalness in a material preview")
     count = len(positions)
     metadata=metadata or {}
     has_age="primitive_age" in metadata
-    data = np.empty((count, 18 if has_age else 17), dtype="<f4")
+    material_names = ("roughness", "metalness") if materials else ()
+    origin_column = 16 + len(material_names)
+    data = np.empty((count, origin_column + 1 + has_age), dtype="<f4")
     data[:, :3] = positions
     # Training quaternions use w,x,y,z; the loader reads these names explicitly.
     data[:, 3:7] = rotations
@@ -60,12 +64,14 @@ def write_preview(path: Path, arrays, metadata=None) -> int:
     for column, values in [(12, opacity), (13, beta), (15, power)]:
         data[:, column] = np.asarray(values).reshape(-1)
     data[:, 14] = 0.0  # shape
-    data[:, 16] = metadata.get("densification_origin",0)
+    for column, values in enumerate(materials, start=16):
+        data[:, column] = np.asarray(values).reshape(-1)
+    data[:, origin_column] = metadata.get("densification_origin", 0)
     if has_age:
-        data[:,17]=metadata["primitive_age"]
+        data[:, origin_column + 1] = metadata["primitive_age"]
     names = ("x", "y", "z", "rot_w", "rot_x", "rot_y", "rot_z", "su", "sv",
              "albedo_r", "albedo_g", "albedo_b", "opacity", "beta", "shape", "power",
-             "densification_origin")
+             *material_names, "densification_origin")
     if has_age:
         names+=("primitive_age",)
     # Match the canonical PLY names (scale/albedo names are intentionally explicit).
@@ -92,6 +98,7 @@ class ViewerSession:
         self._paused = False
         self.stop_requested = False
         self.save_requested = False
+        self.save_mesh_requested = False
         self._write_status(force=True)
 
     def _write_status(self, *, force=False):
@@ -138,7 +145,11 @@ class ViewerSession:
                         self.stop_requested = True
                         self._paused = False
                     elif command == "save":
+                        include_mesh = request.get("include_mesh", False)
+                        if not isinstance(include_mesh, bool):
+                            raise ValueError("include_mesh must be a boolean")
                         self.save_requested = True
+                        self.save_mesh_requested |= include_mesh
                     else:
                         raise ValueError("Unknown viewer command")
                     self.state.update(ack=sequence, command_error="", applied_at_iteration=iteration + 1)

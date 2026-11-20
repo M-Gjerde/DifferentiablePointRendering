@@ -62,6 +62,8 @@ namespace Pale {
         float *gradOpacity = nullptr;
         float *gradBeta = nullptr;
         float *gradShape = nullptr;
+        float *gradRoughness = nullptr;
+        float *gradMetalness = nullptr;
 
         // Per-primitive/per-camera translation accumulation.
         float3 *gradPositionPerPrimitivePerCamera = nullptr;

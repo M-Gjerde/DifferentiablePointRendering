@@ -315,6 +315,8 @@ export namespace Pale {
             out.gradOpacity = sycl::malloc_device<float>(numPoints, queue);
             out.gradBeta = sycl::malloc_device<float>(numPoints, queue);
             out.gradShape = sycl::malloc_device<float>(numPoints, queue);
+            out.gradRoughness = sycl::malloc_device<float>(numPoints, queue);
+            out.gradMetalness = sycl::malloc_device<float>(numPoints, queue);
 
             // Surface regularizers only accumulate parameter derivatives. Their
             // public clone-signal arrays are zero, so they need no device-side
@@ -357,7 +359,7 @@ export namespace Pale {
                                          !out.cloneSignalRecordCountPerPrimitivePerCamera)));
             if (!out.gradPosition || !out.gradRotation || !out.gradScale ||
                 !out.gradAlbedo || !out.gradOpacity || !out.gradBeta || !out.gradShape ||
-                missingStatistics) {
+                !out.gradRoughness || !out.gradMetalness || missingStatistics) {
                 throw std::runtime_error("makeGradientsForScene: failed to allocate one or more gradient buffers");
             }
 
@@ -368,6 +370,8 @@ export namespace Pale {
             queue.fill(out.gradOpacity, 0.0f, numPoints);
             queue.fill(out.gradBeta, 0.0f, numPoints);
             queue.fill(out.gradShape, 0.0f, numPoints);
+            queue.fill(out.gradRoughness, 0.0f, numPoints);
+            queue.fill(out.gradMetalness, 0.0f, numPoints);
 
             if (includeStatistics) {
                 queue.fill(out.cloneSignal, float3{0.0f, 0.0f, 0.0f}, numPoints);
@@ -710,6 +714,8 @@ export namespace Pale {
         freeDevicePtr(gradients.gradOpacity);
         freeDevicePtr(gradients.gradBeta);
         freeDevicePtr(gradients.gradShape);
+        freeDevicePtr(gradients.gradRoughness);
+        freeDevicePtr(gradients.gradMetalness);
 
         freeDevicePtr(gradients.gradPositionPerPrimitivePerCamera);
         freeDevicePtr(gradients.gradPositionRecordCountPerPrimitivePerCamera);

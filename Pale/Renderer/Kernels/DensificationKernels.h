@@ -9,6 +9,8 @@ namespace Pale {
 // sums are retained for diagnostics; beta-footprint splitting only uses scores.
 struct DensificationAccumulator {
     size_t pointCount = 0;
+    size_t cameraCount = 0;
+    float *cameraSum = nullptr;
     float *positionSum = nullptr;
     float *positionCount = nullptr;
     float3 *directionSum = nullptr;
@@ -17,6 +19,7 @@ struct DensificationAccumulator {
 inline void freeDensificationAccumulator(sycl::queue &queue, DensificationAccumulator &acc) {
     if (acc.positionSum || acc.positionCount || acc.directionSum) {
         queue.wait_and_throw();
+        sycl::free(acc.cameraSum, queue);
         sycl::free(acc.positionSum, queue);
         sycl::free(acc.positionCount, queue);
         sycl::free(acc.directionSum, queue);
@@ -26,6 +29,7 @@ inline void freeDensificationAccumulator(sycl::queue &queue, DensificationAccumu
 
 inline void resetDensificationAccumulator(sycl::queue &queue, const DensificationAccumulator &acc) {
     if (!acc.pointCount) return;
+    if (acc.cameraSum) queue.fill(acc.cameraSum, 0.0f, acc.pointCount * acc.cameraCount);
     queue.fill(acc.positionSum, 0.0f, acc.pointCount);
     queue.fill(acc.positionCount, 0.0f, acc.pointCount);
     queue.fill(acc.directionSum, float3{0.0f}, acc.pointCount);
@@ -48,10 +52,26 @@ inline void ensureDensificationAccumulator(sycl::queue &queue, DensificationAccu
     resetDensificationAccumulator(queue, acc);
 }
 
+// The gradient slots are indexed by scene camera, including in one-camera steps.
+inline void ensureDensificationCameraSums(sycl::queue &queue, DensificationAccumulator &acc,
+                                          size_t cameraCount) {
+    if (!acc.pointCount || !cameraCount) return;
+    if (acc.cameraSum) {
+        if (acc.cameraCount != cameraCount)
+            throw std::runtime_error("Camera slots changed within a densification window");
+        return;
+    }
+    const size_t size = acc.pointCount * cameraCount;
+    acc.cameraSum = sycl::malloc_device<float>(size, queue);
+    if (!acc.cameraSum) throw std::runtime_error("Could not allocate per-camera densification scores");
+    acc.cameraCount = cameraCount;
+    queue.fill(acc.cameraSum, 0.0f, size);
+}
+
 inline sycl::event launchAccumulateDensificationStatistics(
     sycl::queue &queue, const DensificationAccumulator &acc, const Point *points,
     const PointGradients &gradients, const uint8_t *trainableMask,
-    bool downweightNormal, bool imageSpace = false) {
+    bool downweightNormal, bool imageSpace = false, bool trackCameraScores = false) {
     if (!points || acc.pointCount != gradients.numPoints || !acc.positionSum ||
         !gradients.cloneSignalPerPrimitivePerCamera ||
         (imageSpace && !gradients.cloneImageSignalPerPrimitivePerCamera) ||
@@ -76,11 +96,14 @@ inline sycl::event launchAccumulateDensificationStatistics(
             float score = 0.0f;
             float3 direction{0.0f};
             uint32_t visibleCameras = 0u;
+            for (size_t c = 0; c < gradients.cameraSlotCount; ++c)
+                visibleCameras += gradients.cloneSignalRecordCountPerPrimitivePerCamera[i * gradients.cameraSlotCount + c] > 0u;
+            if (!visibleCameras) return;
+            const float inverseCount = 1.0f / static_cast<float>(visibleCameras);
             for (size_t c = 0; c < gradients.cameraSlotCount; ++c) {
                 const size_t slot = i * gradients.cameraSlotCount + c;
                 const uint32_t count = gradients.cloneSignalRecordCountPerPrimitivePerCamera[slot];
                 if (!count) continue;
-                ++visibleCameras;
                 const float3 g = gradients.cloneSignalPerPrimitivePerCamera[slot];
                 const float gu = dot3(g,tu), gv = dot3(g,tv), gn = dot3(g,normal);
                 const float tangentNorm = finite(sycl::sqrt(gu*gu + gv*gv));
@@ -91,11 +114,11 @@ inline sycl::event launchAccumulateDensificationStatistics(
                 const float scoreNorm = imageSpace
                     ? finite(sycl::sqrt(imageGradient.x()*imageGradient.x() + imageGradient.y()*imageGradient.y()))
                     : tangentNorm;
-                score += scoreNorm * weight;
+                const float contribution = scoreNorm * weight;
+                score += contribution;
+                if (trackCameraScores) acc.cameraSum[slot] += contribution * inverseCount;
                 direction += g * weight;
             }
-            if (!visibleCameras) return;
-            const float inverseCount = 1.0f / static_cast<float>(visibleCameras);
             score = finite(score * inverseCount);
             direction = float3{finite(direction.x()*inverseCount), finite(direction.y()*inverseCount),
                                finite(direction.z()*inverseCount)};

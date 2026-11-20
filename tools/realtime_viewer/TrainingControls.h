@@ -14,6 +14,7 @@
 #include <cfloat>
 #include <cstdio>
 #include <iterator>
+#include <string_view>
 
 namespace viewer {
     template<class Number> YAML::Node jsonNumber(Number value) {
@@ -34,8 +35,11 @@ namespace viewer {
         if (!node || node.IsNull()) { stream << "null"; return; }
         if (node.IsScalar()) {
             const auto& value = node.Scalar();
-            // YAML nodes erase the C++ scalar type. Mark generated numbers
-            // explicitly; parsed JSON numbers carry the implicit '?' tag.
+            // YAML nodes erase the C++ scalar type. Mark generated values
+            // explicitly; parsed JSON scalars carry the implicit '?' tag.
+            if (node.Tag() == "tag:yaml.org,2002:bool") {
+                stream << (node.as<bool>() ? "true" : "false"); return;
+            }
             if (node.Tag() == "tag:yaml.org,2002:float" || node.Tag() == "?") {
                 if (value == "true" || value == "false") { stream << value; return; }
                 char* end = nullptr;
@@ -82,7 +86,7 @@ namespace viewer {
     inline constexpr std::array<const char*, 10> trainingParameterLabels{
         "Position LR", "Rotation LR", "Scale LR", "Albedo LR", "Opacity LR", "Beta LR",
         "Alpha weight", "Depth distortion weight", "Normal consistency weight", "Slab weight"};
-    enum class TrainingView { Live, Saved, History, Snapshot, Initializer };
+    enum class TrainingView { Live, Frozen, Saved, History, Snapshot, Initializer };
     enum class TrainingLaunch { Primary, New };
     inline std::string trainingNumber(double value) {
         char buffer[32];
@@ -116,6 +120,8 @@ namespace viewer {
             double maxNewFraction = 1.0;
             double gradientThreshold = 0.0004;
             double cloneScaleFraction = 0.0035;
+            double cloneSecondViewRatio = 0.30;
+            int cloneSecondViewStart = 4000;
             bool useCloning = true;
 
             bool operator==(const Settings&) const = default;
@@ -155,6 +161,11 @@ namespace viewer {
                 return "Position threshold must be finite and non-negative";
             if (!std::isfinite(settings.cloneScaleFraction) || settings.cloneScaleFraction <= 0.0)
                 return "Clone scale fraction must be finite and positive";
+            if (!std::isfinite(settings.cloneSecondViewRatio) || settings.cloneSecondViewRatio < 0.0 ||
+                settings.cloneSecondViewRatio > 1.0)
+                return "Clone second-view ratio must be between 0 and 1";
+            if (settings.cloneSecondViewStart < 0)
+                return "Clone second-view start must be non-negative";
             return nullptr;
         }
 
@@ -177,6 +188,8 @@ namespace viewer {
                 "--densification-grad-abs-min", trainingNumber(settings.gradientThreshold),
                 "--densification-grad-abs-min-final", trainingNumber(settings.gradientThreshold),
                 "--densification-clone-scale-fraction", trainingNumber(settings.cloneScaleFraction),
+                "--densification-clone-second-view-ratio", trainingNumber(settings.cloneSecondViewRatio),
+                "--densification-clone-second-view-start-iteration", std::to_string(settings.cloneSecondViewStart),
                 settings.useCloning ? "--densification-use-cloning" : "--no-densification-use-cloning"
             });
         }
@@ -189,6 +202,8 @@ namespace viewer {
             saved["max_new_fraction"] = jsonNumber(settings.maxNewFraction);
             saved["gradient_threshold"] = jsonNumber(settings.gradientThreshold);
             saved["clone_scale_fraction"] = jsonNumber(settings.cloneScaleFraction);
+            saved["clone_second_view_ratio"] = jsonNumber(settings.cloneSecondViewRatio);
+            saved["clone_second_view_start"] = jsonNumber(settings.cloneSecondViewStart);
             saved["use_cloning"] = settings.useCloning;
             saved["use_cloning"].SetTag("?");
             return saved;
@@ -213,6 +228,8 @@ namespace viewer {
             settings.maxNewFraction = saved["max_new_fraction"].as<double>(settings.maxNewFraction);
             settings.gradientThreshold = saved["gradient_threshold"].as<double>(settings.gradientThreshold);
             settings.cloneScaleFraction = saved["clone_scale_fraction"].as<double>(settings.cloneScaleFraction);
+            settings.cloneSecondViewRatio = saved["clone_second_view_ratio"].as<double>(settings.cloneSecondViewRatio);
+            settings.cloneSecondViewStart = saved["clone_second_view_start"].as<int>(settings.cloneSecondViewStart);
             settings.useCloning = saved["use_cloning"].as<bool>(settings.useCloning);
             // Older builds saved the full active profile, including the old Scene level defaults.
             if (legacy && value == Preset::SceneLevel) {
@@ -248,6 +265,8 @@ namespace viewer {
                 std::pair{"Final threshold", "densification_grad_abs_min_final"},
                 std::pair{"Clone small surfels", "densification_use_cloning"},
                 std::pair{"Clone scale fraction", "densification_clone_scale_fraction"},
+                std::pair{"Clone second-view ratio", "densification_clone_second_view_ratio"},
+                std::pair{"Clone second-view start", "densification_clone_second_view_start_iteration"},
             };
             if (ImGui::BeginTable("RecordedDensification", 2, ImGuiTableFlags_SizingStretchProp)) {
                 for (const auto& [label, key] : fields) {
@@ -300,6 +319,11 @@ namespace viewer {
                 ImGui::BeginDisabled(!settings.useCloning);
                 trainingParameterRow("Clone scale fraction");
                 ImGui::InputDouble("##clone_fraction", &settings.cloneScaleFraction, 0, 0, "%.7g");
+                trainingParameterRow("Clone second-view ratio");
+                ImGui::InputDouble("##clone_second_view_ratio", &settings.cloneSecondViewRatio, 0, 0, "%.3g");
+                ImGui::SetItemTooltip("Minimum second-strongest camera score as a fraction of the strongest. Zero disables the requirement.");
+                trainingParameterRow("Clone second-view start");
+                ImGui::InputInt("##clone_second_view_start", &settings.cloneSecondViewStart, 0);
                 ImGui::EndDisabled();
                 ImGui::EndTable();
             }
@@ -329,6 +353,7 @@ namespace viewer {
         float liveInterval = 1.0f;
         bool useWorkingSnapshot = false;
         bool overrideRunSettings=false,stopRequested=false;
+        bool includeCheckpointMesh=false;
         DensificationControls densification;
         bool rollingMetrics=false,logMetrics=false;
         int metricWindow=10'000;
@@ -653,6 +678,10 @@ namespace viewer {
                         request["parameters"][trainingParameterNames[i]] = jsonNumber(value);
                 }
             }
+            if (std::string_view(command) == "save") {
+                request["include_mesh"] = includeCheckpointMesh;
+                request["include_mesh"].SetTag("tag:yaml.org,2002:bool");
+            }
             request["sequence"] = jsonNumber(++process.commandSequence); request["command"] = command;
             try { writeJsonAtomic(process.directory / "command.json", request); }
             catch (...) { --process.commandSequence; throw; }
@@ -914,6 +943,7 @@ namespace viewer {
             const int requested=requestedMonitorTab;requestedMonitorTab=-1;
             if(ImGui::BeginTabBar("MonitorTabs")) {
                 if(ImGui::BeginTabItem("Progress",nullptr,requested==0?ImGuiTabItemFlags_SetSelected:0)) {
+                    const bool disabled=!process.active()||pending()||stopRequested||state()=="finalizing";
                     if(ImGui::BeginTable("RunOverview",3,ImGuiTableFlags_SizingStretchSame|ImGuiTableFlags_BordersInnerV)) {
                         ImGui::TableNextColumn();
                         ImGui::TextDisabled("Reconstruction objective");
@@ -931,15 +961,10 @@ namespace viewer {
                         ImGui::TableNextColumn();
                         ImGui::TextColored(process.active()?ui::green:ui::muted,"%s",progressState().c_str());
                         if(ImGui::IsItemHovered())ImGui::SetTooltip("%s\n%s",runDirectory().string().c_str(),openedReconstruction?"Saved output opened for inspection.":"Closing this viewer stops its reconstruction.");
-                        const bool disabled=!process.active()||pending()||stopRequested||state()=="finalizing";
                         if(disabled)ImGui::BeginDisabled();
                         if(ImGui::Button(state()=="paused"?"Continue":"Pause"))send(state()=="paused"?"resume":"pause");
                         if(disabled)ImGui::EndDisabled();
                         if(process.active()) {ImGui::SameLine();drawStopButton(ImVec2(0,0));}
-                        ImGui::SameLine();
-                        if(disabled||stopRequested)ImGui::BeginDisabled();
-                        if(ImGui::Button("Save checkpoint"))send("save");
-                        if(disabled||stopRequested)ImGui::EndDisabled();
                         if(pending())ImGui::TextDisabled("Waiting for iteration boundary");
                         else if(!openedReconstruction&&process.exitCode) {
                             if(stopRequested)ImGui::TextDisabled("Stopped by user");
@@ -954,6 +979,12 @@ namespace viewer {
                         }
                         ImGui::EndTable();
                     }
+                    if(disabled||stopRequested)ImGui::BeginDisabled();
+                    if(ImGui::Button("Save checkpoint"))send("save");
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Include mesh + GLB",&includeCheckpointMesh);
+                    if(ImGui::IsItemHovered())ImGui::SetTooltip("Also extract the mesh and bake a textured GLB for this checkpoint.");
+                    if(disabled||stopRequested)ImGui::EndDisabled();
                     for(const char* key:{"command_error","preview_error"})if(status[key].IsScalar()&&!status[key].as<std::string>().empty())ImGui::TextWrapped("%s",status[key].as<std::string>().c_str());
                     ImGui::Checkbox("Rolling window",&rollingMetrics);ImGui::SameLine();
                     if(ImGui::SmallButton("Metrics..."))requestedMonitorTab=1;
@@ -1072,7 +1103,7 @@ namespace viewer {
             ImGui::SameLine();if(ImGui::Button("Previous"))checkpointNavigation=-1;
             ImGui::SameLine();if(ImGui::Button("Next"))checkpointNavigation=1;
             ImGui::SameLine();if(ImGui::Button("+1000 (M)"))checkpointNavigation=2;
-            ImGui::SameLine();if(ImGui::Button("Latest saved"))checkpointNavigation=3;
+            ImGui::SameLine();if(ImGui::Button("Latest saved"))checkpointNavigation=kLatestSavedCheckpoint;
             if(saved.empty())ImGui::TextDisabled("Waiting for the first persistent checkpoint");
             else {
                 int index=static_cast<int>(checkpointNavigationIndex(saved,view==TrainingView::History?historyIteration:viewedIteration,-1));

@@ -87,6 +87,7 @@ def print_run_configuration(
         ("pointcloud", config.pointcloud_ply),
         ("dataset_path", config.dataset_path),
         ("target_color_space", f"{config.target_color_space} -> linear sRGB training"),
+        ("surfel_bsdf", config.surfel_bsdf),
         ("shared_slab_lighting", config.share_local_layer_direct_lighting),
         ("iterations", config.iterations),
         ("resume_iteration_offset", config.resume_iteration_offset),
@@ -98,6 +99,8 @@ def print_run_configuration(
         ("lr_color", config.learning_rate_albedo),
         ("lr_opacity", config.learning_rate_opacity),
         ("lr_beta", config.learning_rate_beta),
+        ("lr_roughness", config.learning_rate_roughness),
+        ("lr_metalness", config.learning_rate_metalness),
         (
             "global_lr_decay",
             f"{config.use_global_lr_decay} "
@@ -124,6 +127,8 @@ def print_run_configuration(
         ("densification_scale_min", config.densification_scale_min),
         ("densification_use_cloning", config.densification_use_cloning),
         ("densification_clone_scale_fraction", config.densification_clone_scale_fraction),
+        ("densification_clone_second_view_ratio", config.densification_clone_second_view_ratio),
+        ("densification_clone_second_view_start_iteration", config.densification_clone_second_view_start_iteration),
         (
             "densify_grad_abs_min_decay",
             f"{config.densification_grad_abs_min_decay_start_iteration} -> "

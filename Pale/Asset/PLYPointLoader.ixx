@@ -18,6 +18,7 @@ module;
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/norm.hpp>
 #include "tinyply.h"
+#include "Renderer/OptimizationConstraints.h"
 
 export module Pale.Assets:PLYPointLoader;
 
@@ -144,6 +145,10 @@ export namespace Pale {
             std::shared_ptr<tinyply::PlyData> betaData = plyFile.request_properties_from_element("vertex", {"beta"});
             std::shared_ptr<tinyply::PlyData> shapeData = plyFile.request_properties_from_element("vertex", {"shape"});
             std::shared_ptr<tinyply::PlyData> powerData = plyFile.request_properties_from_element("vertex", {"power"});
+            const auto roughnessData = vertexProps.contains("roughness")
+                ? plyFile.request_properties_from_element("vertex", {"roughness"}) : nullptr;
+            const auto metalnessData = vertexProps.contains("metalness")
+                ? plyFile.request_properties_from_element("vertex", {"metalness"}) : nullptr;
             std::shared_ptr<tinyply::PlyData> densificationOriginData;
             std::shared_ptr<tinyply::PlyData> primitiveAgeData;
             std::shared_ptr<tinyply::PlyData> positionDensificationSignalData;
@@ -196,6 +201,15 @@ export namespace Pale {
                 primitiveAgeFloats, positionDensificationSignalFloats,
                 positionDensificationSampleCountFloats, positionDensificationThresholdFloats;
             bool ok = true;
+            std::vector<float> roughnessFloats, metalnessFloats;
+            if (roughnessData) {
+                ok &= sameCount("roughness", roughnessData) &&
+                    ply_detail::copyScalarsToFloatVector(*roughnessData, roughnessFloats, 1);
+            }
+            if (metalnessData) {
+                ok &= sameCount("metalness", metalnessData) &&
+                    ply_detail::copyScalarsToFloatVector(*metalnessData, metalnessFloats, 1);
+            }
             ok &= ply_detail::copyScalarsToFloatVector(*posData, posFloats, 3);
             ok &= ply_detail::copyScalarsToFloatVector(*rotData, rotFloats, 4);
             ok &= ply_detail::copyScalarsToFloatVector(*scaleData, scaleFloats, 2);
@@ -236,6 +250,10 @@ export namespace Pale {
             geometry.quat.resize(vertexCount);
             geometry.scales.resize(vertexCount);
             geometry.albedos.resize(vertexCount);
+            geometry.roughnesses = std::move(roughnessFloats);
+            geometry.roughnesses.resize(vertexCount, kDefaultSurfelRoughness);
+            geometry.metalnesses = std::move(metalnessFloats);
+            geometry.metalnesses.resize(vertexCount, kDefaultSurfelMetalness);
             geometry.opacities.resize(vertexCount);
             geometry.betas.resize(vertexCount);
             geometry.shapes.resize(vertexCount);
@@ -256,6 +274,12 @@ export namespace Pale {
                 geometry.quat[i] = ply_detail::normalizeQuaternionOrIdentity(glm::quat(rotFloats[i4 + 0], rotFloats[i4 + 1], rotFloats[i4 + 2], rotFloats[i4 + 3]));
                 geometry.scales[i] = glm::vec2(scaleFloats[i2 + 0], scaleFloats[i2 + 1]);
                 geometry.albedos[i] = glm::clamp(glm::vec3(colorFloats[i3 + 0], colorFloats[i3 + 1], colorFloats[i3 + 2]), 0.0f, 1.0f);
+                float& roughness = geometry.roughnesses[i];
+                roughness = std::isfinite(roughness)
+                    ? std::clamp(roughness, 0.0f, 1.0f) : kDefaultSurfelRoughness;
+                float& metalness = geometry.metalnesses[i];
+                metalness = std::isfinite(metalness)
+                    ? std::clamp(metalness, 0.0f, 1.0f) : kDefaultSurfelMetalness;
                 geometry.opacities[i] = opacityFloats[i];
                 geometry.betas[i] = betaFloats[i];
                 geometry.shapes[i] = shapeFloats[i];

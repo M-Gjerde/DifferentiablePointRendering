@@ -230,6 +230,9 @@ def create_masked_optimizer(
     opacities: torch.nn.Parameter,
     betas: torch.nn.Parameter,
     powers: torch.nn.Parameter,
+    *,
+    roughness: torch.nn.Parameter | None = None,
+    metalness: torch.nn.Parameter | None = None,
 ) -> torch.optim.Optimizer:
     """Build an optimizer whose scale learning rate acts on log radii.
 
@@ -246,6 +249,11 @@ def create_masked_optimizer(
         {"params": [betas], "lr": config.learning_rate_beta, "name": "beta"},
         {"params": [powers], "lr": 0.0, "name": "power"},
     ]
+    for name, parameter in (("roughness", roughness), ("metalness", metalness)):
+        if parameter is not None:
+            param_groups.append({
+                "params": [parameter], "lr": get_required_learning_rate(config, f"learning_rate_{name}"), "name": name,
+            })
 
     if opt_type == "sgd":
         return LogScaleSGD(param_groups, momentum=0.8)
@@ -344,6 +352,8 @@ def create_learning_rate_schedules(config: OptimizationConfig, position_scene_sc
         "opacity": get_required_learning_rate(config, "learning_rate_opacity"),
         "beta": get_required_learning_rate(config, "learning_rate_beta"),
         "power": 0.0,
+        "roughness": get_required_learning_rate(config, "learning_rate_roughness"),
+        "metalness": get_required_learning_rate(config, "learning_rate_metalness"),
     }
 
     decay_start_iteration = int(getattr(config, "lr_decay_start_iteration", 0))

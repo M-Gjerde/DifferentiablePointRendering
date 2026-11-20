@@ -21,6 +21,8 @@ export namespace Pale {
         std::vector<glm::quat> quat{};
         std::vector<glm::vec2> scales{};
         std::vector<glm::vec3> albedos{};
+        std::vector<float>     roughnesses{};
+        std::vector<float>     metalnesses{};
         std::vector<float>     opacities{};
         std::vector<float>     betas{};
         std::vector<float>     shapes{};

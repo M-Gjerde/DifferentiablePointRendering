@@ -78,6 +78,8 @@ CONFIG_CLI_FLAGS: dict[str, str | tuple[str, str]] = {
     "densification_scale_min": "--densification-scale-min",
     "densification_use_cloning": ("--densification-use-cloning", "--no-densification-use-cloning"),
     "densification_clone_scale_fraction": "--densification-clone-scale-fraction",
+    "densification_clone_second_view_ratio": "--densification-clone-second-view-ratio",
+    "densification_clone_second_view_start_iteration": "--densification-clone-second-view-start-iteration",
     "densification_split_scale_factor": "--densification-split-scale-factor",
     "densification_max_new_fraction": "--densification-max-new-fraction",
     "densification_stats_skip_interval_start": (

@@ -33,8 +33,10 @@ class RendererSettingsConfig:
     def as_dict(self, config: "OptimizationConfig") -> dict[str, float | int | bool | str]:
         if not math.isfinite(self.adjoint_opacity_uniform_mix) or not 0.0 <= self.adjoint_opacity_uniform_mix <= 1.0:
             raise ValueError("adjoint_opacity_uniform_mix must be finite and in [0, 1]")
+        config.validate_surfel_bsdf()
         settings = asdict(self)
         settings.update({
+            "surfel_bsdf": config.surfel_bsdf,
             "depth_distort_weight": config.depth_distort_weight,
             "depth_distort_world_space": config.depth_distort_world_space,
             "depth_distort_squared": config.depth_distort_squared,
@@ -77,10 +79,13 @@ class OptimizationConfig:
     learning_rate_position: float = 0.00016
     use_position_lr_scene_scale: bool = True  # Multiply position LR by 1.1 * training-camera radius.
     learning_rate_rotation: float = 0.005
-    learning_rate_scale: float = 0.005
-    learning_rate_albedo: float = 0.003
+    learning_rate_scale: float = 0.004
+    learning_rate_albedo: float = 0.001
     learning_rate_opacity: float = 0.003
     learning_rate_beta: float = 0.0005
+    # Positive material rates require surfel_bsdf="ggx".
+    learning_rate_roughness: float = 0.001
+    learning_rate_metalness: float = 0.001
 
     # Optimizer: learning-rate schedules
     # All parameter groups receive the optional exponential global scale;
@@ -96,23 +101,24 @@ class OptimizationConfig:
     # Decay duration independent of training length; hold final scales afterward.
     lr_decay_max_steps: int = 30_000
 
-    depth_distort_weight: float = 0.005
+    depth_distort_weight: float = 0.05
     depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = True  # World-space only: True uses squared depth differences, False absolute; NDC always uses squared differences.
-    depth_distort_start_iteration: int = 2_000
+    depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 0
     normal_from_depth_use_mean_depth: bool = False
     median_depth_retain_last_hit: bool = False  # Training median depth and depth-derived normals: retain sub-threshold last hits.
     # Differentiates opacity and footprint geometry; zero disables this term.
-    alpha_loss_weight: float = 0.000010
-    alpha_loss_start_iteration: int = 5_000  # Global iteration at which alpha loss becomes active.
+    alpha_loss_weight: float = 0.000025
+    alpha_loss_start_iteration: int = 0  # Global iteration at which alpha loss becomes active.
     alpha_loss_absolute: bool = True  # True: absolute alpha error; False: half squared alpha error.
     alpha_loss_opacity_only: bool = True  # True : Detach position, rotation, scales, and beta for alpha loss.
 
     intra_slab_depth_weight: float = 0.0e-5
 
     # Rendering model
+    surfel_bsdf: str = "ggx" # ggx or lambertian
     adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
     local_layer_depth_epsilon: float | None = None  # None preserves the native h default.
     share_local_layer_direct_lighting: bool = False
@@ -152,14 +158,17 @@ class OptimizationConfig:
     densification_diagnostics: bool = True
 
     # Threshold units follow densification_image_space (normalized image or world).
-    densification_grad_abs_min: float = 0.0004
-    densification_grad_abs_min_final: float = 0.0004
+    densification_grad_abs_min: float = 0.0008
+    densification_grad_abs_min_final: float = 0.0008
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_use_cloning: bool = True  # Small eligible surfels clone within their beta footprint; larger ones split.
     densification_clone_scale_fraction: float = 0.0035 # Clone when max(su,sv) <= this * training-camera extent.
+
+    densification_clone_second_view_ratio: float = 0.30  # Zero disables the second-view requirement.
+    densification_clone_second_view_start_iteration: int = 4000
 
     rebuild_bvh_interval: int = densification_interval
     # Mesh extraction and evaluation
@@ -208,6 +217,21 @@ class OptimizationConfig:
     viewer_session: Path | None = None
     viewer_live_interval: float = 1.0
 
+    def validate_clone_second_view(self) -> None:
+        if not 0.0 <= self.densification_clone_second_view_ratio <= 1.0:
+            raise ValueError("densification_clone_second_view_ratio must be in [0, 1]")
+        if self.densification_clone_second_view_start_iteration < 0:
+            raise ValueError("densification_clone_second_view_start_iteration must be non-negative")
+
+    def validate_surfel_bsdf(self) -> None:
+        if self.surfel_bsdf not in ("lambertian", "ggx"):
+            raise ValueError("surfel_bsdf must be 'lambertian' or 'ggx'")
+        if self.surfel_bsdf != "ggx" and (
+            self.learning_rate_roughness > 0.0 or self.learning_rate_metalness > 0.0
+        ):
+            raise ValueError("Positive roughness or metalness learning rates require --surfel-bsdf ggx")
+
+
 def resolve_learning_rates(config: OptimizationConfig) -> None:
     learning_rate_fields = (
         "learning_rate_position",
@@ -216,6 +240,8 @@ def resolve_learning_rates(config: OptimizationConfig) -> None:
         "learning_rate_albedo",
         "learning_rate_opacity",
         "learning_rate_beta",
+        "learning_rate_roughness",
+        "learning_rate_metalness",
     )
     multiplier = float(config.learning_rate)
     if not math.isfinite(multiplier) or multiplier < 0.0:
@@ -502,6 +528,8 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
         ("albedo", "albedo"),
         ("opacity", "opacity"),
         ("beta", "beta"),
+        ("roughness", "roughness"),
+        ("metalness", "metalness"),
     ):
         optimizer.add_argument(f"--lr-{suffix}", dest=f"learning_rate_{field_name}", type=float)
     _add_boolean_argument(
@@ -592,6 +620,8 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     rendering = parser.add_argument_group("rendering")
+    rendering.add_argument("--surfel-bsdf", choices=["lambertian", "ggx"],
+                           help="Direct-light surfel BSDF (default: lambertian).")
     rendering.add_argument("--adjoint-spp", type=int, help="Override adjoint samples per pixel.")
     rendering.add_argument("--local-layer-depth-epsilon", type=float,
                            help="Override slab depth h in scene units; must exceed 1e-6.")
@@ -681,6 +711,14 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     _add_boolean_argument(
         densification_split, "--densification-use-cloning",
         help="Sample clones of small eligible surfels within their beta footprint, using a scene-relative clone/split size boundary.",
+    )
+    densification_split.add_argument(
+        "--densification-clone-second-view-ratio", type=float,
+        help="Minimum second-largest / largest camera score for clones. Zero disables the requirement.",
+    )
+    densification_split.add_argument(
+        "--densification-clone-second-view-start-iteration", type=int,
+        help="First global densification decision subject to the second-view requirement.",
     )
     _add_boolean_argument(densification_split, "--densification-verbose")
     _add_boolean_argument(
@@ -823,5 +861,10 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
         parser.error("--densification-clone-scale-fraction must be finite and positive")
 
     resolve_learning_rates(config)
+    try:
+        config.validate_clone_second_view()
+        config.validate_surfel_bsdf()
+    except ValueError as error:
+        parser.error(str(error))
 
     return config

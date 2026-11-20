@@ -188,6 +188,7 @@ class PythonRenderer
         bool densificationFullPosition = true;
         bool densificationImageSpace = false;
         bool accumulateDensification = false;
+        bool trackDensificationCameras = false;
         bool downweightNormal = false;
         float densificationRadianceFloor = 0.01f;
     };
@@ -211,6 +212,8 @@ class PythonRenderer
         float learningRateAlbedo = 0.0f;
         float learningRateOpacity = 0.0f;
         float learningRateBeta = 0.0f;
+        float learningRateRoughness = 0.0f;
+        float learningRateMetalness = 0.0f;
         float cameraBatchScale = 1.0f;
         float beta1 = 0.9f;
         float beta2 = 0.999f;
@@ -235,6 +238,10 @@ class PythonRenderer
         float* opacityV = nullptr;
         float* betaM = nullptr;
         float* betaV = nullptr;
+        float* roughnessM = nullptr;
+        float* roughnessV = nullptr;
+        float* metalnessM = nullptr;
+        float* metalnessV = nullptr;
     };
 
     struct SelectedTrainingBatch
@@ -368,6 +375,12 @@ public:
                 get_b(settingsDict,
                       "share_local_layer_direct_lighting",
                       m_settings.rendererDebugShareLocalLayerDirectLighting);
+            const std::string surfelBsdf = get_s(settingsDict, "surfel_bsdf", "lambertian");
+            if (surfelBsdf == "ggx") {
+                m_settings.surfelBrdfKind = Pale::SurfelBrdfKind::Ggx;
+            } else if (surfelBsdf != "lambertian") {
+                throw std::invalid_argument("surfel_bsdf must be 'lambertian' or 'ggx'");
+            }
             parallelBvhRefit = get_b(settingsDict, "parallel_bvh_refit", true);
 
             primalActivityTrackingEnabled =
@@ -728,7 +741,8 @@ public:
                     size_t(g.cloneSignal != nullptr)) +
                 sizeof(Pale::float2) * size_t(g.gradScale != nullptr) +
                 sizeof(float) * (size_t(g.gradOpacity != nullptr) + size_t(g.gradBeta != nullptr) +
-                    size_t(g.gradShape != nullptr) + size_t(g.cloneSignalMeanNorm != nullptr) +
+                    size_t(g.gradShape != nullptr) + size_t(g.gradRoughness != nullptr) +
+                    size_t(g.gradMetalness != nullptr) + size_t(g.cloneSignalMeanNorm != nullptr) +
                     size_t(g.cloneSignalStd != nullptr) + size_t(g.cloneSignalCoherence != nullptr) +
                     size_t(g.cloneSignalDisagreement != nullptr)) +
                 sizeof(uint32_t) * size_t(g.cloneSignalActiveCameraCount != nullptr);
@@ -1713,6 +1727,8 @@ public:
         std::vector<float> gradOpacityHost(pointCount);
         std::vector<float> gradBetaHost(pointCount);
         std::vector<float> gradShapeHost(pointCount);
+        std::vector<float> gradRoughnessHost(pointCount);
+        std::vector<float> gradMetalnessHost(pointCount);
         std::vector<float> gradPowerHost(pointCount);
 
         std::vector<float> cloneSignalMeanNormHost(pointCount);
@@ -1793,6 +1809,13 @@ public:
                     gradients.gradShape,
                     pointCount * sizeof(float)
                 );
+            }
+
+            if (gradients.gradRoughness) {
+                syclQueue.memcpy(gradRoughnessHost.data(), gradients.gradRoughness, pointCount * sizeof(float));
+            }
+            if (gradients.gradMetalness) {
+                syclQueue.memcpy(gradMetalnessHost.data(), gradients.gradMetalness, pointCount * sizeof(float));
             }
 
             if (gradients.cloneSignalMeanNorm)
@@ -2117,6 +2140,8 @@ public:
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
         gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
         gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["roughness"] = makeFloat1Array(gradRoughnessHost, pointCount);
+        gradientDictionary["metalness"] = makeFloat1Array(gradMetalnessHost, pointCount);
         gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
 
         // Top-level container for all images
@@ -2466,6 +2491,8 @@ public:
         std::vector<float> gradOpacityHost(pointCount);
         std::vector<float> gradBetaHost(pointCount);
         std::vector<float> gradShapeHost(pointCount); // should remain zero
+        std::vector<float> gradRoughnessHost(pointCount);
+        std::vector<float> gradMetalnessHost(pointCount);
         std::vector<float> gradPowerHost(pointCount); // should remain zero
 
         if (pointCount > 0)
@@ -2621,6 +2648,8 @@ public:
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
         gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
         gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["roughness"] = makeFloat1Array(gradRoughnessHost, pointCount);
+        gradientDictionary["metalness"] = makeFloat1Array(gradMetalnessHost, pointCount);
         gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
 
         return gradientDictionary;
@@ -2813,6 +2842,8 @@ public:
         std::vector<float> gradOpacityHost(pointCount);
         std::vector<float> gradBetaHost(pointCount);
         std::vector<float> gradShapeHost(pointCount);
+        std::vector<float> gradRoughnessHost(pointCount);
+        std::vector<float> gradMetalnessHost(pointCount);
         std::vector<float> gradPowerHost(pointCount);
 
         if (pointCount > 0)
@@ -2959,6 +2990,8 @@ public:
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
         gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
         gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["roughness"] = makeFloat1Array(gradRoughnessHost, pointCount);
+        gradientDictionary["metalness"] = makeFloat1Array(gradMetalnessHost, pointCount);
         gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
 
         return gradientDictionary;
@@ -2977,6 +3010,8 @@ public:
         std::vector<float> gradOpacityHost(pointCount, 0.0f);
         std::vector<float> gradBetaHost(pointCount, 0.0f);
         std::vector<float> gradShapeHost(pointCount, 0.0f);
+        std::vector<float> gradRoughnessHost(pointCount);
+        std::vector<float> gradMetalnessHost(pointCount);
         std::vector<float> gradPowerHost(pointCount, 0.0f);
 
         if (pointCount > 0)
@@ -3015,6 +3050,13 @@ public:
             if (sourceGradients.gradShape)
             {
                 syclQueue.memcpy(gradShapeHost.data(), sourceGradients.gradShape, pointCount * sizeof(float));
+            }
+
+            if (sourceGradients.gradRoughness) {
+                syclQueue.memcpy(gradRoughnessHost.data(), sourceGradients.gradRoughness, pointCount * sizeof(float));
+            }
+            if (sourceGradients.gradMetalness) {
+                syclQueue.memcpy(gradMetalnessHost.data(), sourceGradients.gradMetalness, pointCount * sizeof(float));
             }
 
             syclQueue.wait_and_throw();
@@ -3095,6 +3137,8 @@ public:
         gradientDictionary["opacity"] = makeFloat1Array(gradOpacityHost, pointCount);
         gradientDictionary["beta"] = makeFloat1Array(gradBetaHost, pointCount);
         gradientDictionary["shape"] = makeFloat1Array(gradShapeHost, pointCount);
+        gradientDictionary["roughness"] = makeFloat1Array(gradRoughnessHost, pointCount);
+        gradientDictionary["metalness"] = makeFloat1Array(gradMetalnessHost, pointCount);
         gradientDictionary["power"] = makeFloat1Array(gradPowerHost, pointCount);
         return gradientDictionary;
     }
@@ -3636,6 +3680,10 @@ public:
         std::vector<float> opacityV(pointCount);
         std::vector<float> betaM(pointCount);
         std::vector<float> betaV(pointCount);
+        std::vector<float> roughnessM(pointCount);
+        std::vector<float> roughnessV(pointCount);
+        std::vector<float> metalnessM(pointCount);
+        std::vector<float> metalnessV(pointCount);
 
         {
             py::gil_scoped_release release;
@@ -3651,6 +3699,10 @@ public:
             syclQueue.memcpy(opacityV.data(), deviceTrainingState.opacityV, pointCount * sizeof(float));
             syclQueue.memcpy(betaM.data(), deviceTrainingState.betaM, pointCount * sizeof(float));
             syclQueue.memcpy(betaV.data(), deviceTrainingState.betaV, pointCount * sizeof(float));
+            syclQueue.memcpy(roughnessM.data(), deviceTrainingState.roughnessM, pointCount * sizeof(float));
+            syclQueue.memcpy(roughnessV.data(), deviceTrainingState.roughnessV, pointCount * sizeof(float));
+            syclQueue.memcpy(metalnessM.data(), deviceTrainingState.metalnessM, pointCount * sizeof(float));
+            syclQueue.memcpy(metalnessV.data(), deviceTrainingState.metalnessV, pointCount * sizeof(float));
             syclQueue.wait_and_throw();
         }
 
@@ -3668,6 +3720,10 @@ public:
         state["opacity_v"] = makeDeviceAdamFloat1Array(std::move(opacityV), pointCount);
         state["beta_m"] = makeDeviceAdamFloat1Array(std::move(betaM), pointCount);
         state["beta_v"] = makeDeviceAdamFloat1Array(std::move(betaV), pointCount);
+        state["roughness_m"] = makeDeviceAdamFloat1Array(std::move(roughnessM), pointCount);
+        state["roughness_v"] = makeDeviceAdamFloat1Array(std::move(roughnessV), pointCount);
+        state["metalness_m"] = makeDeviceAdamFloat1Array(std::move(metalnessM), pointCount);
+        state["metalness_v"] = makeDeviceAdamFloat1Array(std::move(metalnessV), pointCount);
         return state;
     }
 
@@ -3717,6 +3773,10 @@ public:
             readDeviceAdamFloat1Array(state, "beta_m", pointCount);
         std::vector<float> betaV =
             readDeviceAdamFloat1Array(state, "beta_v", pointCount);
+        const auto roughnessM = readDeviceAdamFloat1Array(state, "roughness_m", pointCount, true);
+        const auto roughnessV = readDeviceAdamFloat1Array(state, "roughness_v", pointCount, true);
+        const auto metalnessM = readDeviceAdamFloat1Array(state, "metalness_m", pointCount, true);
+        const auto metalnessV = readDeviceAdamFloat1Array(state, "metalness_v", pointCount, true);
 
         {
             py::gil_scoped_release release;
@@ -3734,6 +3794,10 @@ public:
             syclQueue.memcpy(deviceTrainingState.opacityV, opacityV.data(), pointCount * sizeof(float));
             syclQueue.memcpy(deviceTrainingState.betaM, betaM.data(), pointCount * sizeof(float));
             syclQueue.memcpy(deviceTrainingState.betaV, betaV.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.roughnessM, roughnessM.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.roughnessV, roughnessV.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.metalnessM, metalnessM.data(), pointCount * sizeof(float));
+            syclQueue.memcpy(deviceTrainingState.metalnessV, metalnessV.data(), pointCount * sizeof(float));
             syclQueue.wait_and_throw();
         }
         deviceTrainingState.step = step;
@@ -3816,6 +3880,8 @@ public:
         std::vector<float> opacityHost(pointCount);
         std::vector<float> betaHost(pointCount);
         std::vector<float> shapeHost(pointCount);
+        std::vector<float> roughnessHost(pointCount, Pale::kDefaultSurfelRoughness);
+        std::vector<float> metalnessHost(pointCount, Pale::kDefaultSurfelMetalness);
         std::vector<float> powerHost(pointCount);
         std::vector<float> densificationOriginHost(pointCount, 0.0f);
         const bool hasPrimitiveAgeMetadata =
@@ -3839,6 +3905,10 @@ public:
             opacityHost[pointIndex] = pointGeometry.opacities[pointIndex];
             betaHost[pointIndex] = pointGeometry.betas[pointIndex];
             shapeHost[pointIndex] = pointGeometry.shapes.size() == pointCount ? pointGeometry.shapes[pointIndex] : 0.0f;
+            if (pointIndex < pointGeometry.roughnesses.size())
+                roughnessHost[pointIndex] = pointGeometry.roughnesses[pointIndex];
+            if (pointIndex < pointGeometry.metalnesses.size())
+                metalnessHost[pointIndex] = pointGeometry.metalnesses[pointIndex];
             powerHost[pointIndex] = pointGeometry.powers[pointIndex];
             if (pointGeometry.densificationOrigins.size() == pointCount)
             {
@@ -3911,6 +3981,8 @@ public:
         parameterDictionary["opacity"] = makeFloat1Array(opacityHost, pointCount);
         parameterDictionary["beta"] = makeFloat1Array(betaHost, pointCount);
         parameterDictionary["shape"] = makeFloat1Array(shapeHost, pointCount);
+        parameterDictionary["roughness"] = makeFloat1Array(roughnessHost, pointCount);
+        parameterDictionary["metalness"] = makeFloat1Array(metalnessHost, pointCount);
         parameterDictionary["power"] = makeFloat1Array(powerHost, pointCount);
         parameterDictionary["densification_origin"] =
             makeFloat1Array(densificationOriginHost, pointCount);
@@ -3949,6 +4021,26 @@ public:
         return result;
     }
 
+    py::array_t<float> get_densification_camera_sums()
+    {
+        const auto n = sceneGpu.pointCount;
+        const auto cameras = buildProducts.cameras().size();
+        py::array_t<float> result({static_cast<ssize_t>(n), static_cast<ssize_t>(cameras)});
+        auto* data = result.mutable_data();
+        const size_t size = result.size();
+        py::gil_scoped_release release;
+        auto queue = deviceSelector->getQueue();
+        Pale::ensureDensificationAccumulator(queue, densificationAccumulator, n);
+        if (size && densificationAccumulator.cameraSum) {
+            if (densificationAccumulator.cameraCount != cameras)
+                throw std::runtime_error("Camera slots changed within a densification window");
+            queue.memcpy(data, densificationAccumulator.cameraSum, size * sizeof(float)).wait_and_throw();
+        } else if (size) {
+            std::fill_n(data, size, 0.0f);
+        }
+        return result;
+    }
+
     void reset_densification_stats()
     {
         auto queue = deviceSelector->getQueue();
@@ -3973,6 +4065,18 @@ public:
                     throw std::invalid_argument(std::string("Invalid densification statistic value: ") + key);
             return result;
         };
+        py::array_t<float, py::array::c_style | py::array::forcecast> cameraScores;
+        const auto cameras = buildProducts.cameras().size();
+        const bool hasCameraScores = state.contains("camera_sum");
+        if (hasCameraScores) {
+            cameraScores = decltype(cameraScores)::ensure(state["camera_sum"]);
+            if (!cameraScores || cameraScores.ndim() != 2 || cameraScores.shape(0) != n ||
+                cameraScores.shape(1) != static_cast<ssize_t>(cameras))
+                throw std::invalid_argument("Invalid densification camera_sum shape");
+            for (ssize_t i = 0; i < cameraScores.size(); ++i)
+                if (!std::isfinite(cameraScores.data()[i]) || cameraScores.data()[i] < 0.0f)
+                    throw std::invalid_argument("Invalid densification camera_sum value");
+        }
         auto position = readScalar("position_sum");
         auto count = readScalar("position_count");
         auto direction = readDeviceAdamFloat3Array(state, "direction_sum", n);
@@ -3986,6 +4090,13 @@ public:
             Pale::ensureDensificationAccumulator(queue, densificationAccumulator, n);
             if (n)
             {
+                if (hasCameraScores && cameras) {
+                    Pale::ensureDensificationCameraSums(queue, densificationAccumulator, cameras);
+                    queue.memcpy(densificationAccumulator.cameraSum, cameraScores.data(),
+                                 n * cameras * sizeof(float));
+                } else if (densificationAccumulator.cameraSum) {
+                    queue.fill(densificationAccumulator.cameraSum, 0.0f, n * cameras);
+                }
                 queue.memcpy(densificationAccumulator.positionSum, position.data(), n * sizeof(float));
                 queue.memcpy(densificationAccumulator.positionCount, count.data(), n * sizeof(float));
                 queue.memcpy(densificationAccumulator.directionSum, direction.data(), n * sizeof(Pale::float3));
@@ -3999,8 +4110,11 @@ public:
     {
         if (!options.accumulateDensification || sceneGpu.pointCount == 0u) return;
         Pale::ensureDensificationAccumulator(queue, densificationAccumulator, sceneGpu.pointCount);
+        if (options.trackDensificationCameras)
+            Pale::ensureDensificationCameraSums(queue, densificationAccumulator, gradients.cameraSlotCount);
         Pale::launchAccumulateDensificationStatistics(queue, densificationAccumulator,
-            sceneGpu.points, gradients, nullptr, options.downweightNormal, options.densificationImageSpace);
+            sceneGpu.points, gradients, nullptr, options.downweightNormal, options.densificationImageSpace,
+            options.trackDensificationCameras);
     }
 
     py::dict get_primal_activity_stats()
@@ -4052,6 +4166,27 @@ public:
         return result;
     }
 
+
+    static std::vector<float> readOptionalSurfelMaterial(
+        const py::dict& parameters, const char* key, std::size_t pointCount)
+    {
+        if (!parameters.contains(key)) return {};
+        const auto array = parameters[key].cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+        const auto info = array.request();
+        if ((info.ndim != 1 && (info.ndim != 2 || info.shape[1] != 1)) ||
+            info.shape[0] != static_cast<ssize_t>(pointCount))
+        {
+            throw std::invalid_argument(std::string(key) + " must have shape (N,) or (N,1)");
+        }
+        const float* values = array.data();
+        if (!std::all_of(values, values + pointCount, [](float value) {
+                return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
+            }))
+        {
+            throw std::invalid_argument(std::string(key) + " must be finite and in [0,1]");
+        }
+        return {values, values + pointCount};
+    }
 
     void apply_point_optimization(const py::dict& parameterDictionary)
     {
@@ -4118,6 +4253,8 @@ public:
         checkVector(opacityInfo, "opacity");
         checkVector(betaInfo, "beta");
         checkVector(powerInfo, "power");
+        auto roughnesses = readOptionalSurfelMaterial(parameterDictionary, "roughness", pointCount);
+        auto metalnesses = readOptionalSurfelMaterial(parameterDictionary, "metalness", pointCount);
         const float* positionData = static_cast<const float*>(positionInfo.ptr);
         const float* rotationData = static_cast<const float*>(rotationInfo.ptr);
         const float* scaleData = static_cast<const float*>(scaleInfo.ptr);
@@ -4141,6 +4278,8 @@ public:
             point.opacity = opacityData[i];
             point.beta = betaData[i];
             point.flux = powerData[i];
+            if (!roughnesses.empty()) point.roughness = roughnesses[i];
+            if (!metalnesses.empty()) point.metalness = metalnesses[i];
         }
         if (!assetManager)
         {
@@ -4164,6 +4303,8 @@ public:
                 {
                     throw std::runtime_error("apply_point_optimization: PointGeometry size mismatch");
                 }
+                if (!roughnesses.empty()) pointGeometry.roughnesses = std::move(roughnesses);
+                if (!metalnesses.empty()) pointGeometry.metalnesses = std::move(metalnesses);
                 for (std::size_t i = 0; i < pointCount; ++i)
                 {
                     const std::size_t i3 = i * 3u;
@@ -4382,6 +4523,10 @@ public:
         filterVectorInPlace(pointGeometry.quat);
         filterVectorInPlace(pointGeometry.scales);
         filterVectorInPlace(pointGeometry.albedos);
+        pointGeometry.roughnesses.resize(currentPointCount, Pale::kDefaultSurfelRoughness);
+        pointGeometry.metalnesses.resize(currentPointCount, Pale::kDefaultSurfelMetalness);
+        filterVectorInPlace(pointGeometry.roughnesses);
+        filterVectorInPlace(pointGeometry.metalnesses);
         filterVectorInPlace(pointGeometry.opacities);
         filterVectorInPlace(pointGeometry.shapes);
         filterVectorInPlace(pointGeometry.betas);
@@ -4484,6 +4629,10 @@ public:
         checkMatrixShape(albedoInfo, newPointCount, 3, "albedo");
         checkVectorShape(opacityInfo, newPointCount, "opacity");
         checkVectorShape(betaInfo, newPointCount, "beta");
+        auto roughnesses = readOptionalSurfelMaterial(newDict, "roughness", newPointCount);
+        auto metalnesses = readOptionalSurfelMaterial(newDict, "metalness", newPointCount);
+        roughnesses.resize(newPointCount, Pale::kDefaultSurfelRoughness);
+        metalnesses.resize(newPointCount, Pale::kDefaultSurfelMetalness);
         py::buffer_info powerInfo{};
         bool hasPower = false;
         if (powerArrayOpt.has_value())
@@ -4509,10 +4658,14 @@ public:
         reserveAttribute(pointGeometry.quat);
         reserveAttribute(pointGeometry.scales);
         reserveAttribute(pointGeometry.albedos);
+        reserveAttribute(pointGeometry.roughnesses);
+        reserveAttribute(pointGeometry.metalnesses);
         reserveAttribute(pointGeometry.opacities);
         reserveAttribute(pointGeometry.shapes);
         reserveAttribute(pointGeometry.betas);
         reserveAttribute(pointGeometry.powers);
+        pointGeometry.roughnesses.resize(currentPointCount, Pale::kDefaultSurfelRoughness);
+        pointGeometry.metalnesses.resize(currentPointCount, Pale::kDefaultSurfelMetalness);
         if (!pointGeometry.densificationOrigins.empty())
         {
             reserveAttribute(pointGeometry.densificationOrigins);
@@ -4532,6 +4685,8 @@ public:
                 glm::quat(rotationData[i4 + 0u], rotationData[i4 + 1u], rotationData[i4 + 2u], rotationData[i4 + 3u])));
             pointGeometry.scales.push_back(glm::vec2(scaleData[i2 + 0u], scaleData[i2 + 1u]));
             pointGeometry.albedos.push_back(glm::vec3(albedoData[i3 + 0u], albedoData[i3 + 1u], albedoData[i3 + 2u]));
+            pointGeometry.roughnesses.push_back(roughnesses[pointIndex]);
+            pointGeometry.metalnesses.push_back(metalnesses[pointIndex]);
             pointGeometry.opacities.push_back(opacityData[pointIndex]);
             pointGeometry.betas.push_back(betaData[pointIndex]);
             pointGeometry.powers.push_back(hasPower ? powerData[pointIndex] : 0.0f);
@@ -4965,7 +5120,7 @@ private:
         return selectedBatch;
     }
 
-    static DeviceTrainingStepOptions parseDeviceTrainingStepOptions(const py::dict& optionsDictionary)
+    DeviceTrainingStepOptions parseDeviceTrainingStepOptions(const py::dict& optionsDictionary) const
     {
         DeviceTrainingStepOptions options;
         options.optimizer = get_s(optionsDictionary, "optimizer", options.optimizer);
@@ -4994,6 +5149,18 @@ private:
             get_f(optionsDictionary, "learning_rate_opacity", options.learningRateOpacity);
         options.learningRateBeta =
             get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
+        options.learningRateRoughness = get_f(optionsDictionary, "learning_rate_roughness", 0.0f);
+        options.learningRateMetalness = get_f(optionsDictionary, "learning_rate_metalness", 0.0f);
+        if (!std::isfinite(options.learningRateRoughness) || options.learningRateRoughness < 0.0f ||
+            !std::isfinite(options.learningRateMetalness) || options.learningRateMetalness < 0.0f)
+        {
+            throw std::invalid_argument("Roughness and metalness learning rates must be finite and nonnegative");
+        }
+        if ((options.learningRateRoughness > 0.0f || options.learningRateMetalness > 0.0f) &&
+            m_settings.surfelBrdfKind != Pale::SurfelBrdfKind::Ggx)
+        {
+            throw std::invalid_argument("Roughness and metalness optimization requires surfel_bsdf='ggx'");
+        }
         options.cameraBatchScale =
             get_f(optionsDictionary, "camera_batch_scale", options.cameraBatchScale);
         options.beta1 = get_f(optionsDictionary, "adam_beta1", options.beta1);
@@ -5012,6 +5179,7 @@ private:
             throw std::invalid_argument("alpha_loss_weight must be finite and nonnegative");
         options.relativeDensification = get_b(optionsDictionary, "densification_relative_error", false);
         options.accumulateDensification = get_b(optionsDictionary, "accumulate_densification_stats", false);
+        options.trackDensificationCameras = get_b(optionsDictionary, "track_densification_cameras", false);
         options.downweightNormal = get_b(optionsDictionary, "densification_downweight_normal_gradients", false);
         options.densificationImageSpace = get_b(optionsDictionary, "densification_image_space", false);
         options.densificationFullPosition = get_b(optionsDictionary, "densification_full_position", !options.densificationImageSpace);
@@ -5043,7 +5211,11 @@ private:
             deviceTrainingState.opacityM != nullptr &&
             deviceTrainingState.opacityV != nullptr &&
             deviceTrainingState.betaM != nullptr &&
-            deviceTrainingState.betaV != nullptr;
+            deviceTrainingState.betaV != nullptr &&
+            deviceTrainingState.roughnessM != nullptr &&
+            deviceTrainingState.roughnessV != nullptr &&
+            deviceTrainingState.metalnessM != nullptr &&
+            deviceTrainingState.metalnessV != nullptr;
     }
 
     static py::array makeDeviceAdamFloat3Array(
@@ -5193,10 +5365,12 @@ private:
     static std::vector<float> readDeviceAdamFloat1Array(
         const py::dict& state,
         const char* key,
-        std::size_t pointCount)
+        std::size_t pointCount,
+        bool allowMissing = false)
     {
         if (!state.contains(key))
         {
+            if (allowMissing) return std::vector<float>(pointCount, 0.0f);
             throw std::runtime_error(
                 std::string("upload_device_adam_state: missing key '") + key + "'");
         }
@@ -5246,6 +5420,10 @@ private:
         releasePointer(deviceTrainingState.opacityV);
         releasePointer(deviceTrainingState.betaM);
         releasePointer(deviceTrainingState.betaV);
+        releasePointer(deviceTrainingState.roughnessM);
+        releasePointer(deviceTrainingState.roughnessV);
+        releasePointer(deviceTrainingState.metalnessM);
+        releasePointer(deviceTrainingState.metalnessV);
         deviceTrainingState.pointCount = 0;
         deviceTrainingState.step = 0;
         deviceTrainingState.useLogScale = true;
@@ -5271,7 +5449,11 @@ private:
             deviceTrainingState.opacityM != nullptr &&
             deviceTrainingState.opacityV != nullptr &&
             deviceTrainingState.betaM != nullptr &&
-            deviceTrainingState.betaV != nullptr;
+            deviceTrainingState.betaV != nullptr &&
+            deviceTrainingState.roughnessM != nullptr &&
+            deviceTrainingState.roughnessV != nullptr &&
+            deviceTrainingState.metalnessM != nullptr &&
+            deviceTrainingState.metalnessV != nullptr;
 
         if (alreadyAllocated)
         {
@@ -5293,13 +5475,19 @@ private:
         deviceTrainingState.opacityV = sycl::malloc_device<float>(pointCount, queue);
         deviceTrainingState.betaM = sycl::malloc_device<float>(pointCount, queue);
         deviceTrainingState.betaV = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.roughnessM = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.roughnessV = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.metalnessM = sycl::malloc_device<float>(pointCount, queue);
+        deviceTrainingState.metalnessV = sycl::malloc_device<float>(pointCount, queue);
 
         if (!deviceTrainingState.positionM || !deviceTrainingState.positionV ||
             !deviceTrainingState.rotationM || !deviceTrainingState.rotationV ||
             !deviceTrainingState.scaleM || !deviceTrainingState.scaleV ||
             !deviceTrainingState.albedoM || !deviceTrainingState.albedoV ||
             !deviceTrainingState.opacityM || !deviceTrainingState.opacityV ||
-            !deviceTrainingState.betaM || !deviceTrainingState.betaV)
+            !deviceTrainingState.betaM || !deviceTrainingState.betaV ||
+            !deviceTrainingState.roughnessM || !deviceTrainingState.roughnessV ||
+            !deviceTrainingState.metalnessM || !deviceTrainingState.metalnessV)
         {
             freeDeviceTrainingState(queue);
             throw std::runtime_error("ensureDeviceTrainingState: failed to allocate Adam state on device");
@@ -5317,6 +5505,10 @@ private:
         queue.memset(deviceTrainingState.opacityV, 0, pointCount * sizeof(float));
         queue.memset(deviceTrainingState.betaM, 0, pointCount * sizeof(float));
         queue.memset(deviceTrainingState.betaV, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.roughnessM, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.roughnessV, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.metalnessM, 0, pointCount * sizeof(float));
+        queue.memset(deviceTrainingState.metalnessV, 0, pointCount * sizeof(float));
         queue.wait_and_throw();
     }
 
@@ -5380,6 +5572,8 @@ private:
                 gradAlbedo = pointGradients.gradAlbedo,
                 gradOpacity = pointGradients.gradOpacity,
                 gradBeta = pointGradients.gradBeta,
+                gradRoughness = pointGradients.gradRoughness,
+                gradMetalness = pointGradients.gradMetalness,
                 depthGradPosition = depthGradients ? depthGradients->gradPosition : nullptr,
                 depthGradRotation = depthGradients ? depthGradients->gradRotation : nullptr,
                 depthGradScale = depthGradients ? depthGradients->gradScale : nullptr,
@@ -5410,6 +5604,10 @@ private:
                 opacityV = deviceTrainingState.opacityV,
                 betaM = deviceTrainingState.betaM,
                 betaV = deviceTrainingState.betaV,
+                roughnessM = deviceTrainingState.roughnessM,
+                roughnessV = deviceTrainingState.roughnessV,
+                metalnessM = deviceTrainingState.metalnessM,
+                metalnessV = deviceTrainingState.metalnessV,
                 useAdam,
                 skipZeroGradientSurfels = options.skipZeroGradientSurfels,
                 useLogScale = options.useLogScale,
@@ -5424,6 +5622,8 @@ private:
                 lrAlbedo = options.learningRateAlbedo,
                 lrOpacity = options.learningRateOpacity,
                 lrBeta = options.learningRateBeta,
+                lrRoughness = options.learningRateRoughness,
+                lrMetalness = options.learningRateMetalness,
                 cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
             {
                 const std::uint32_t primitiveIndex = static_cast<std::uint32_t>(itemId[0]);
@@ -5590,6 +5790,15 @@ private:
                     normalGradBeta,
                     intraSlabGradBeta,
                     gradBeta[primitiveIndex]);
+                const float roughnessGradient = lrRoughness > 0.0f
+                    ? cleanGradient(gradRoughness[primitiveIndex] * cameraBatchScale) : 0.0f;
+                const float metalnessGradient = lrMetalness > 0.0f
+                    ? cleanGradient(gradMetalness[primitiveIndex] * cameraBatchScale) : 0.0f;
+                // Project legacy values below the lobe floor even if the current gradient is zero.
+                if (lrRoughness > 0.0f && point.roughness < Pale::kMinimumGgxRoughness)
+                {
+                    point.roughness = Pale::kMinimumGgxRoughness;
+                }
 
                 // Scene storage remains in physical radii in every optimization mode.
                 constexpr float minSurfelScale = 1.0e-6f;
@@ -5630,9 +5839,10 @@ private:
                     const bool hasBetaGradient = lrBeta != 0.0f &&
                         hasGradientComponent(betaGradient * cameraBatchScale);
                     if (!(hasPositionGradient || hasRotationGradient || hasScaleGradient || hasAlbedoGradient ||
-                        hasOpacityGradient || hasBetaGradient))
+                        hasOpacityGradient || hasBetaGradient || roughnessGradient != 0.0f ||
+                        metalnessGradient != 0.0f))
                     {
-                        // No moment decay, momentum displacement, clamping, or log/exp round trip.
+                        // Skip moment decay, momentum displacement, and further projection.
                         return;
                     }
                 }
@@ -5786,6 +5996,19 @@ private:
                     betaV[primitiveIndex],
                     lrBeta);
                 point.beta = clampValue(cleanParameter(point.beta, 1.0f) - betaUpdate, Pale::kBetaMin, Pale::kBetaMax);
+
+                if (lrRoughness > 0.0f)
+                {
+                    const float update = adamUpdate(
+                        roughnessGradient, roughnessM[primitiveIndex], roughnessV[primitiveIndex], lrRoughness);
+                    point.roughness = clampValue(point.roughness - update, Pale::kMinimumGgxRoughness, 1.0f);
+                }
+                if (lrMetalness > 0.0f)
+                {
+                    const float update = adamUpdate(
+                        metalnessGradient, metalnessM[primitiveIndex], metalnessV[primitiveIndex], lrMetalness);
+                    point.metalness = clampValue(point.metalness - update, 0.0f, 1.0f);
+                }
             });
         if (timeKernel)
         {
@@ -6332,6 +6555,8 @@ private:
         pointGeometry.quat.resize(pointCount);
         pointGeometry.scales.resize(pointCount);
         pointGeometry.albedos.resize(pointCount);
+        pointGeometry.roughnesses.resize(pointCount);
+        pointGeometry.metalnesses.resize(pointCount);
         pointGeometry.opacities.resize(pointCount);
         pointGeometry.shapes.resize(pointCount);
         pointGeometry.betas.resize(pointCount);
@@ -6347,6 +6572,8 @@ private:
             pointGeometry.albedos[pointIndex] =
                 glm::vec3(point.albedo.x(), point.albedo.y(), point.albedo.z());
             pointGeometry.opacities[pointIndex] = point.opacity;
+            pointGeometry.roughnesses[pointIndex] = point.roughness;
+            pointGeometry.metalnesses[pointIndex] = point.metalness;
             pointGeometry.shapes[pointIndex] = point.shape;
             pointGeometry.betas[pointIndex] = point.beta;
             pointGeometry.powers[pointIndex] = point.flux;
@@ -6612,6 +6839,7 @@ PYBIND11_MODULE(pale, m)
     m.attr("IMAGE_SPACE_DENSIFICATION_COORDINATES") = "ndc";
     m.attr("BETA_MIN") = Pale::kBetaMin;
     m.attr("BETA_MAX") = Pale::kBetaMax;
+    m.attr("GGX_MIN_ROUGHNESS") = Pale::kMinimumGgxRoughness;
     py::class_<PythonRenderer>(m, "Renderer")
         .def(py::init<
                  const std::string&,
@@ -6687,6 +6915,7 @@ PYBIND11_MODULE(pale, m)
         .def("get_surface_overlap_stats", &PythonRenderer::get_surface_overlap_stats,
              py::arg("camera_names") = std::vector<std::string>{},
              "Current full-footprint slab membership in canonical point order; empty camera list uses all scene cameras.")
+        .def("get_densification_camera_sums", &PythonRenderer::get_densification_camera_sums)
         .def("get_densification_stats", &PythonRenderer::get_densification_stats)
         .def("reset_densification_stats", &PythonRenderer::reset_densification_stats)
         .def("upload_densification_stats", &PythonRenderer::upload_densification_stats, py::arg("state"))

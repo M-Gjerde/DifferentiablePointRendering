@@ -118,6 +118,7 @@ def make_under_reconstruction_clones(
         selection_score_np=None,
         clone_max_scale=None,
         grad_position_np=None,
+    clone_view_supported=None,
 ):
     """Optionally clone small surfels within their footprint and split larger ones.
 
@@ -195,6 +196,12 @@ def make_under_reconstruction_clones(
                 & torch.isfinite(betas.detach().reshape(-1))
                 & size_eligible
         )
+
+        if clone_view_supported is not None:
+            supported = torch.as_tensor(clone_view_supported, dtype=torch.bool, device=device)
+            if supported.shape != clone_mask.shape:
+                raise ValueError("Clone camera support must have one entry per surfel")
+            selected &= ~clone_mask | supported
 
         selected_idx = torch.nonzero(selected, as_tuple=False).flatten()
         if selected_idx.numel() == 0:

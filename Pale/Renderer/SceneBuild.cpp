@@ -431,6 +431,8 @@ namespace Pale {
                 gpuPoint.tanV = tangentV;
                 gpuPoint.scale = {pointGeometry.scales[i].x, pointGeometry.scales[i].y};
                 gpuPoint.albedo = glm::clamp(pointGeometry.albedos[i], 0.0f, 1.0f);
+                if (i < pointGeometry.roughnesses.size()) gpuPoint.roughness = pointGeometry.roughnesses[i];
+                if (i < pointGeometry.metalnesses.size()) gpuPoint.metalness = pointGeometry.metalnesses[i];
                 gpuPoint.opacity = glm::clamp(pointGeometry.opacities[i], 0.0f, 1.0f);
                 gpuPoint.alpha_r = 1.0f;
                 gpuPoint.alpha_t = 0.0f;

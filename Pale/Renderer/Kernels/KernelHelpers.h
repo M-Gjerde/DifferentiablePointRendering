@@ -6,6 +6,7 @@
 #include "Renderer/RenderPackage.h"
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/GPUDataTypes.h"
+#include "Renderer/OptimizationConstraints.h"
 
 namespace Pale::rng {
     // ---------- SplitMix64 for robust seeding ----------
@@ -122,6 +123,144 @@ namespace Pale::rng {
 } // namespace pale::rng
 
 namespace Pale {
+
+    inline constexpr float kCameraTransmittanceCutoff = 1.0e-8f;
+
+    struct SurfelBrdfMaterialDerivatives {
+        float3 baseColor{0.0f};
+        float3 roughness{0.0f};
+        float3 metalness{0.0f};
+    };
+
+    struct SurfelGgxTerms {
+        float3 fresnel{0.0f};
+        float3 fresnelZero{0.0f};
+        float3 diffuse{0.0f};
+        float3 halfVector{0.0f};
+        float inverseHalfLength = 0.0f;
+        float oneMinusViewHalf = 0.0f;
+        float schlickWeight = 0.0f;
+        float nDotH = 0.0f;
+        float smithRootI = 0.0f;
+        float smithRootO = 0.0f;
+        float smithDenomI = 0.0f;
+        float smithDenomO = 0.0f;
+        float distributionDenom = 0.0f;
+        float oneMinusAlphaSquared = 0.0f;
+        float specularWithoutFresnel = 0.0f;
+    };
+
+    inline bool computeSurfelGgxTerms(
+        const Point& surfel, const float3& normal,
+        const float3& incoming, const float3& outgoing, SurfelGgxTerms& terms) {
+        const float nDotI = dot(normal, incoming);
+        const float nDotO = dot(normal, outgoing);
+        const float3 halfSum = incoming + outgoing;
+        const float halfLengthSquared = dot(halfSum, halfSum);
+        if (nDotI <= 0.0f || nDotO <= 0.0f || halfLengthSquared <= 1.0e-16f) {
+            return false;
+        }
+        terms.inverseHalfLength = 1.0f / sycl::sqrt(halfLengthSquared);
+        terms.halfVector = halfSum * terms.inverseHalfLength;
+        terms.nDotH = sycl::clamp(dot(normal, terms.halfVector), 0.0f, 1.0f);
+        terms.oneMinusViewHalf = 1.0f - sycl::clamp(dot(outgoing, terms.halfVector), 0.0f, 1.0f);
+        const float schlickSquared = terms.oneMinusViewHalf * terms.oneMinusViewHalf;
+        terms.schlickWeight = schlickSquared * schlickSquared * terms.oneMinusViewHalf;
+        terms.fresnelZero = (1.0f - surfel.metalness) * float3{0.04f} + surfel.metalness * surfel.albedo;
+        terms.fresnel = terms.fresnelZero + (float3{1.0f} - terms.fresnelZero) * terms.schlickWeight;
+        terms.diffuse = surfel.albedo * ((1.0f - surfel.metalness) * M_1_PIf);
+
+        // A finite lobe also covers the zero-roughness slider endpoint.
+        const float roughness = sycl::fmax(surfel.roughness, kMinimumGgxRoughness);
+        const float alpha = roughness * roughness;
+        const float alphaSquared = alpha * alpha;
+        terms.oneMinusAlphaSquared = 1.0f - alphaSquared;
+        const float nDotHSquared = terms.nDotH * terms.nDotH;
+        terms.distributionDenom = (1.0f - nDotHSquared) + alphaSquared * nDotHSquared;
+        const float distribution = (alphaSquared * M_1_PIf) /
+            (terms.distributionDenom * terms.distributionDenom);
+        terms.smithRootI = sycl::sqrt(alphaSquared + terms.oneMinusAlphaSquared * nDotI * nDotI);
+        terms.smithRootO = sycl::sqrt(alphaSquared + terms.oneMinusAlphaSquared * nDotO * nDotO);
+        terms.smithDenomI = nDotI + terms.smithRootI;
+        terms.smithDenomO = nDotO + terms.smithRootO;
+        // G1(i)*G1(o)/(4*(n.i)*(n.o)), with the cosine factors cancelled.
+        terms.specularWithoutFresnel = distribution / (terms.smithDenomI * terms.smithDenomO);
+        return true;
+    }
+
+    inline float3 evaluateSurfelBrdf(
+        SurfelBrdfKind kind, const Point& surfel, const float3& normal,
+        const float3& incoming, const float3& outgoing,
+        SurfelBrdfMaterialDerivatives* material = nullptr) {
+        if (material) *material = {};
+        if (kind == SurfelBrdfKind::Lambertian) {
+            if (material) material->baseColor = float3{surfel.alpha_r * M_1_PIf};
+            return surfel.alpha_r * surfel.albedo * M_1_PIf;
+        }
+
+        SurfelGgxTerms terms{};
+        if (!computeSurfelGgxTerms(surfel, normal, incoming, outgoing, terms)) {
+            return float3{0.0f};
+        }
+        const float3 oneMinusFresnel = float3{1.0f} - terms.fresnel;
+        const float3 dBrdfDFresnel = float3{terms.specularWithoutFresnel} - terms.diffuse;
+        if (material) {
+            const float3 fresnelZeroDerivative = dBrdfDFresnel * (1.0f - terms.schlickWeight);
+            material->baseColor = surfel.alpha_r * (
+                oneMinusFresnel * ((1.0f - surfel.metalness) * M_1_PIf) +
+                fresnelZeroDerivative * surfel.metalness);
+            material->metalness = surfel.alpha_r * (
+                fresnelZeroDerivative * (surfel.albedo - float3{0.04f}) -
+                oneMinusFresnel * surfel.albedo * M_1_PIf);
+            const float roughness = surfel.roughness;
+            // Use the right derivative at the lower bound so projected updates can leave it.
+            if (roughness >= kMinimumGgxRoughness) {
+                const float nDotI = dot(normal, incoming);
+                const float nDotO = dot(normal, outgoing);
+                const float alpha = roughness * roughness;
+                // Differentiate log(D*V) with respect to alpha squared.
+                const float logDerivative = 1.0f / (alpha * alpha) -
+                    2.0f * terms.nDotH * terms.nDotH / terms.distributionDenom -
+                    (1.0f - nDotI * nDotI) / (2.0f * terms.smithRootI * terms.smithDenomI) -
+                    (1.0f - nDotO * nDotO) / (2.0f * terms.smithRootO * terms.smithDenomO);
+                material->roughness = terms.fresnel * (surfel.alpha_r * terms.specularWithoutFresnel *
+                    logDerivative * 4.0f * alpha * roughness);
+            }
+        }
+        return surfel.alpha_r * (oneMinusFresnel * terms.diffuse + terms.fresnel * terms.specularWithoutFresnel);
+    }
+
+    struct SurfelBrdfDirectionGradient {
+        float3 normal{0.0f};
+        float3 incoming{0.0f};
+    };
+
+    inline SurfelBrdfDirectionGradient differentiateSurfelGgxDirections(
+        const Point& surfel, const float3& normal, const float3& incoming,
+        const float3& outgoing, const float3& adjoint) {
+        SurfelGgxTerms terms{};
+        if (!computeSurfelGgxTerms(surfel, normal, incoming, outgoing, terms)) return {};
+
+        const float specularWeight =
+            dot(adjoint, terms.fresnel) * surfel.alpha_r * terms.specularWithoutFresnel;
+        const float dIncomingCosine = -specularWeight *
+            (1.0f + terms.oneMinusAlphaSquared * dot(normal, incoming) / terms.smithRootI) / terms.smithDenomI;
+        const float dOutgoingCosine = -specularWeight *
+            (1.0f + terms.oneMinusAlphaSquared * dot(normal, outgoing) / terms.smithRootO) / terms.smithDenomO;
+        const float dHalfCosine = specularWeight *
+            (4.0f * terms.oneMinusAlphaSquared * terms.nDotH / terms.distributionDenom);
+        const float dViewHalf = -5.0f * surfel.alpha_r *
+            terms.oneMinusViewHalf * terms.oneMinusViewHalf *
+            terms.oneMinusViewHalf * terms.oneMinusViewHalf *
+            dot(adjoint, (float3{1.0f} - terms.fresnelZero) *
+                (float3{terms.specularWithoutFresnel} - terms.diffuse));
+        const float3 halfGradient = dHalfCosine * normal + dViewHalf * outgoing;
+        return {
+            dIncomingCosine * incoming + dOutgoingCosine * outgoing + dHalfCosine * terms.halfVector,
+            dIncomingCosine * normal +
+                (halfGradient - terms.halfVector * dot(terms.halfVector, halfGradient)) * terms.inverseHalfLength,
+        };
+    }
 
     static constexpr uint32_t kMaxCameraOccluderRecords =
         kMaxSplatEventsPerRay * kMaxLocalSurfelHits;

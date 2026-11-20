@@ -45,6 +45,8 @@ RUN_CONFIG_PARAMETERS = [
     "densification_scale_min",
     "densification_use_cloning",
     "densification_clone_scale_fraction",
+    "densification_clone_second_view_ratio",
+    "densification_clone_second_view_start_iteration",
     "densification_split_scale_factor",
     "densification_max_new_fraction",
     "normal_consistency_weight",

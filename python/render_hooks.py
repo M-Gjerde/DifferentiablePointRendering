@@ -147,6 +147,8 @@ def fetch_parameters(renderer: pale.Renderer) -> dict[str, np.ndarray]:
         "beta"     : (N,)
         "shape"    : (N,)
         "power"    : (N,)
+        "roughness": (N,)
+        "metalness": (N,)
         "densification_origin" : (N,), optional diagnostic provenance
         "primitive_age" : (N,), optional iterations since creation/last split
     """
@@ -316,6 +318,9 @@ def apply_point_parameters(
         opacities: torch.Tensor,
         betas: torch.Tensor,
         powers: torch.Tensor,
+        *,
+        roughness: torch.Tensor | None = None,
+        metalness: torch.Tensor | None = None,
 ) -> None:
     positions_np = np.asarray(positions.detach().cpu().numpy(), dtype=np.float32, order="C")
     rotations_np = np.asarray(rotations.detach().cpu().numpy(), dtype=np.float32, order="C")
@@ -341,21 +346,14 @@ def apply_point_parameters(
         "beta": betas_np,
         "power": powers_np,
     }
+    for name, parameter in (("roughness", roughness), ("metalness", metalness)):
+        if parameter is not None:
+            arrays_to_check[name] = _as_flat_float32(parameter.detach().cpu().numpy(), name)
     for name, array in arrays_to_check.items():
         _assert_finite_np(name, array)
     _assert_positive_np("scale", scales_np, MIN_SURFEL_SCALE)
 
-    renderer.apply_point_optimization(
-        {
-            "position": positions_np,
-            "rotation": rotations_np,
-            "scale": scales_np,
-            "albedo": albedos_np,
-            "opacity": opacities_np,
-            "beta": betas_np,
-            "power": powers_np,
-        }
-    )
+    renderer.apply_point_optimization(arrays_to_check)
 
 
 def _as_float32_contiguous(x: np.ndarray, name: str) -> np.ndarray:
@@ -465,6 +463,7 @@ def add_new_points(renderer, densification_result: dict | None) -> None:
                 "opacity": opacity,
                 "beta": beta,
                 "power": power,
+                **{name: new_block[name] for name in ("roughness", "metalness") if name in new_block},
             }
         }
     )

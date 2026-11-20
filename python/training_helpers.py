@@ -142,8 +142,11 @@ def make_named_parameter_dict(
         opacities: torch.nn.Parameter,
         betas: torch.nn.Parameter,
         powers: torch.nn.Parameter,
+        *,
+        roughness: torch.nn.Parameter | None = None,
+        metalness: torch.nn.Parameter | None = None,
 ) -> dict[str, torch.nn.Parameter]:
-    return {
+    parameters = {
         "position": positions,
         "rotation": rotation_delta,
         "scale": scales,
@@ -152,6 +155,11 @@ def make_named_parameter_dict(
         "beta": betas,
         "power": powers,
     }
+    if roughness is not None:
+        parameters["roughness"] = roughness
+    if metalness is not None:
+        parameters["metalness"] = metalness
+    return parameters
 
 
 def repair_nonfinite_gradient_array_inplace(
@@ -254,6 +262,8 @@ def rebuild_optimizer_preserving_state(
         new_params["opacity"],
         new_params["beta"],
         new_params["power"],
+        roughness=new_params.get("roughness"),
+        metalness=new_params.get("metalness"),
     )
 
     keep_mask_np = np.asarray(keep_mask_np, dtype=bool).reshape(-1)
@@ -271,7 +281,9 @@ def rebuild_optimizer_preserving_state(
         if source_index_for_new_np.shape[0] != n_new:
             source_index_for_new_np = None
 
-    for name in PARAMETER_NAMES:
+    for name in new_params:
+        if name not in old_params:
+            continue
         old_p = old_params[name]
         new_p = new_params[name]
         old_state = old_optimizer.state.get(old_p, None)
@@ -322,6 +334,8 @@ DEVICE_ADAM_STATE_ARRAY_KEYS = (
     "beta_v",
 )
 
+DEVICE_ADAM_MATERIAL_STATE_KEYS = ("roughness_m", "roughness_v", "metalness_m", "metalness_v")
+
 
 def migrate_device_adam_state_snapshot(
         snapshot: dict[str, Any] | None,
@@ -362,7 +376,9 @@ def migrate_device_adam_state_snapshot(
         # Legacy device snapshots predate these fields and use pure log-space moments.
         "use_log_scale": bool(snapshot.get("use_log_scale", True)),
     }
-    for key in DEVICE_ADAM_STATE_ARRAY_KEYS:
+    state_keys = (*DEVICE_ADAM_STATE_ARRAY_KEYS,
+                  *(key for key in DEVICE_ADAM_MATERIAL_STATE_KEYS if key in snapshot))
+    for key in state_keys:
         if key not in snapshot:
             raise RuntimeError(f"Device Adam snapshot is missing '{key}'")
 
@@ -682,18 +698,16 @@ def compute_normal_consistency_loss_and_adjoints(
 def refetch_parameters_as_torch(
         renderer: pale.Renderer,
         device: torch.device,
+        *,
+        include_material: bool = False,
 ) -> tuple[torch.nn.Parameter, ...]:
     updated = render.fetch_parameters(renderer)
-    positions = torch.nn.Parameter(torch.tensor(updated["position"], device=device, dtype=torch.float32))
-    rotations = torch.nn.Parameter(torch.tensor(updated["rotation"], device=device, dtype=torch.float32),
-                                   requires_grad=False)
-    scales = torch.nn.Parameter(torch.tensor(updated["scale"], device=device, dtype=torch.float32))
-    albedos = torch.nn.Parameter(torch.tensor(updated["albedo"], device=device, dtype=torch.float32))
-    opacities = torch.nn.Parameter(torch.tensor(updated["opacity"], device=device, dtype=torch.float32))
-    betas = torch.nn.Parameter(torch.tensor(updated["beta"], device=device, dtype=torch.float32))
-    powers = torch.nn.Parameter(torch.tensor(updated["power"], device=device, dtype=torch.float32))
-    verify_rotations_inplace(rotations)
-    return positions, rotations, scales, albedos, opacities, betas, powers
+    parameters = create_torch_parameters_from_initial(updated, device)
+    if not include_material:
+        return parameters
+    roughness = torch.nn.Parameter(torch.tensor(updated["roughness"], device=device, dtype=torch.float32))
+    metalness = torch.nn.Parameter(torch.tensor(updated["metalness"], device=device, dtype=torch.float32))
+    return (*parameters, roughness, metalness)
 
 
 def verify_rotations_inplace(rotations: torch.Tensor) -> dict[str, float]:
@@ -816,6 +830,9 @@ def save_manual_snapshot(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
+        *,
+        roughness: torch.Tensor | None = None,
+        metalness: torch.Tensor | None = None,
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     renders_dir = renders_output_dir(output_dir)
@@ -870,6 +887,8 @@ def save_manual_snapshot(
         betas,
         powers,
         shape_default=0.0,
+        roughness=roughness,
+        metalness=metalness,
         densification_origins=densification_origins,
         primitive_ages=primitive_ages,
         densification_position_signals=densification_position_signals,
@@ -937,6 +956,9 @@ def save_iteration_point_cloud_snapshot(
         densification_position_signals: np.ndarray | None = None,
         densification_position_sample_counts: np.ndarray | None = None,
         densification_position_threshold: float | np.ndarray | None = None,
+        *,
+        roughness: torch.Tensor | None = None,
+        metalness: torch.Tensor | None = None,
 ) -> Path:
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
@@ -951,6 +973,8 @@ def save_iteration_point_cloud_snapshot(
         betas,
         powers,
         shape_default=0.0,
+        roughness=roughness,
+        metalness=metalness,
         densification_origins=densification_origins,
         primitive_ages=primitive_ages,
         densification_position_signals=densification_position_signals,
@@ -1076,6 +1100,9 @@ def compute_initial_losses_and_save_outputs(
         use_intra_slab_depth: bool,
         save_linear_raw: bool = False,
         alpha_loss_weighted: float = 0.0,
+        *,
+        roughness: torch.Tensor | None = None,
+        metalness: torch.Tensor | None = None,
 ) -> tuple[float, ...]:
     initial_points_path = output_dir / "initial_points.ply"
     io_utils.save_gaussians_to_ply(
@@ -1088,6 +1115,8 @@ def compute_initial_losses_and_save_outputs(
         betas,
         powers,
         shape_default=0.0,
+        roughness=roughness,
+        metalness=metalness,
     )
     print_status(f"Initial parameters written to PLY: {initial_points_path}")
 
@@ -1334,13 +1363,17 @@ def upload_densification_statistics(
         position_sum: np.ndarray,
         position_count: np.ndarray,
         direction_sum: np.ndarray,
+        camera_sum: np.ndarray | None = None,
 ) -> None:
     """Restore canonical row order after a topology change within a window."""
-    renderer.upload_densification_stats({
+    state = {
         "position_sum": np.ascontiguousarray(position_sum.reshape(-1), dtype=np.float32),
         "position_count": np.ascontiguousarray(position_count.reshape(-1), dtype=np.float32),
         "direction_sum": np.ascontiguousarray(direction_sum, dtype=np.float32),
-    })
+    }
+    if camera_sum is not None:
+        state["camera_sum"] = camera_sum
+    renderer.upload_densification_stats(state)
 
 
 def update_densification_statistics(
@@ -1358,6 +1391,7 @@ def update_densification_statistics(
         densification_downweight_normal_gradients: bool = False,
         densification_image_space: bool = False,
         densify_image_grad_per_camera_np: np.ndarray | None = None,
+        camera_sum: np.ndarray | None = None,
 ) -> None:
     if not should_accumulate_densification_statistics(
             iteration, densification_interval, densification_cycle_start_iteration,
@@ -1400,7 +1434,12 @@ def update_densification_statistics(
             raise RuntimeError("Image-space gradient statistics must have shape (N, C, 3)")
         score_norm = np.nan_to_num(np.linalg.norm(image_gradients[..., :2], axis=2),
                                   nan=0., posinf=0., neginf=0.)
-    signal = np.nan_to_num((score_norm * weights).sum(axis=1) / denominator,
+    camera_scores = score_norm * weights
+    if camera_sum is not None:
+        if camera_sum.shape != camera_scores.shape:
+            raise ValueError("Densification camera sums must match the scene camera slots")
+        camera_sum[trainable] += camera_scores[trainable] / denominator[trainable, None]
+    signal = np.nan_to_num(camera_scores.sum(axis=1) / denominator,
                            nan=0., posinf=0., neginf=0.)
     selected = trainable & (signal > 0)
     densify_position_grad_accum_np[selected, 0] += signal[selected]
@@ -1446,6 +1485,20 @@ def position_densification_snapshot_statistics(
     return signal, sample_counts, threshold
 
 
+def clone_second_view_support(camera_sum: np.ndarray, min_ratio: float) -> np.ndarray:
+    """Compare distinct camera contributions accumulated over the same density window."""
+    if camera_sum.shape[1] < 2:
+        return np.zeros(camera_sum.shape[0], dtype=bool)
+    largest_two = np.partition(camera_sum, -2, axis=1)[:, -2:]
+    second, first = largest_two.T
+    return (first > 0) & (second >= min_ratio * first)
+
+
+def remap_densification_camera_sums(camera_sum: np.ndarray, keep: np.ndarray, new_count: int) -> np.ndarray:
+    children = np.zeros((new_count, camera_sum.shape[1]), dtype=camera_sum.dtype)
+    return np.concatenate((camera_sum[keep], children))
+
+
 def maybe_make_densification_result(
         iteration: int,
         config: OptimizationConfig,
@@ -1466,6 +1519,10 @@ def maybe_make_densification_result(
         force_densification: bool = False,
         densification_scene_extent: float | None = None,
         scheduled_prune_indices: list[int] | None = None,
+        *,
+        camera_sum: np.ndarray | None = None,
+        roughness: torch.Tensor | None = None,
+        metalness: torch.Tensor | None = None,
 ) -> dict | None:
     if densification_interval <= 0 or iteration < densify_after:
         return None
@@ -1502,14 +1559,26 @@ def maybe_make_densification_result(
     candidate_count = np.count_nonzero(candidates & trainable_surfel_mask.detach().cpu().numpy().reshape(-1))
     result = None
     if candidate_count:
+        clone_supported = None
+        if (clone_max_scale is not None and config.densification_clone_second_view_ratio > 0
+                and iteration >= config.densification_clone_second_view_start_iteration):
+            if camera_sum is None:
+                raise ValueError("Per-camera sums are required for the clone second-view decision")
+            clone_supported = clone_second_view_support(camera_sum, config.densification_clone_second_view_ratio)
         result = density.make_under_reconstruction_clones(
             positions=positions, rotations=rotations, scales=scales, albedos=albedos,
             opacities=opacities, betas=betas, powers=powers,
+            clone_view_supported=clone_supported,
             selection_score_np=signals / threshold, trainable_surfel_mask=trainable_surfel_mask,
             grad_threshold=1.0, max_clone_fraction=config.densification_max_new_fraction,
             clone_scale_factor=config.densification_split_scale_factor,
             min_clone_scale=config.densification_scale_min, clone_max_scale=clone_max_scale,
         )
+        if result:
+            source = torch.as_tensor(result["source_index"], device=positions.device, dtype=torch.long)
+            for name, values in (("roughness", roughness), ("metalness", metalness)):
+                if values is not None:
+                    result["new"][name] = values.detach().index_select(0, source).cpu().numpy()
     if densification_verbose:
         # Percentiles and device-to-host counts are diagnostics, not selection work.
         quantiles = np.quantile(signals, [0, .5, .9, .95, .98, 1]) if signals.size else np.zeros(6)
