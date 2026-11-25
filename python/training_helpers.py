@@ -989,6 +989,7 @@ def compute_snapshot_adjoint_images(
         forward_out: dict[str, dict],
         target_images: dict[str, np.ndarray],
         camera_ids: list[str],
+        rgb_asinh_scale: float = 0.0,
 ) -> dict[str, Any]:
     loss_grad_images: dict[str, np.ndarray] = {}
 
@@ -998,7 +999,7 @@ def compute_snapshot_adjoint_images(
 
         current_rgb_np = render.get_forward_linear_rgb(forward_out, camera_name)
         target_rgb_np = target_images[camera_name]
-        loss_grad_images[camera_name] = losses.compute_l2_grad(current_rgb_np, target_rgb_np)
+        loss_grad_images[camera_name] = losses.compute_l2_grad(current_rgb_np, target_rgb_np[..., :3], rgb_asinh_scale)
 
     if not loss_grad_images:
         return {}
@@ -1101,6 +1102,7 @@ def compute_initial_losses_and_save_outputs(
         save_linear_raw: bool = False,
         alpha_loss_weighted: float = 0.0,
         *,
+        rgb_asinh_scale: float = 0.0,
         roughness: torch.Tensor | None = None,
         metalness: torch.Tensor | None = None,
 ) -> tuple[float, ...]:
@@ -1141,7 +1143,8 @@ def compute_initial_losses_and_save_outputs(
         tgt_np = target_images[camera_name]
         rgb_loss_value = losses.compute_l2_loss(
             img_linear_np,
-            tgt_np,
+            tgt_np[..., :3],
+            rgb_asinh_scale,
         )
         initial_rgb_loss += rgb_loss_value
         io_utils.save_render(
@@ -1521,6 +1524,7 @@ def maybe_make_densification_result(
         scheduled_prune_indices: list[int] | None = None,
         *,
         camera_sum: np.ndarray | None = None,
+        generator: torch.Generator | None = None,
         roughness: torch.Tensor | None = None,
         metalness: torch.Tensor | None = None,
 ) -> dict | None:
@@ -1569,6 +1573,7 @@ def maybe_make_densification_result(
             positions=positions, rotations=rotations, scales=scales, albedos=albedos,
             opacities=opacities, betas=betas, powers=powers,
             clone_view_supported=clone_supported,
+            generator=generator,
             selection_score_np=signals / threshold, trainable_surfel_mask=trainable_surfel_mask,
             grad_threshold=1.0, max_clone_fraction=config.densification_max_new_fraction,
             clone_scale_factor=config.densification_split_scale_factor,

@@ -597,7 +597,7 @@ namespace Pale {
                         float3 normalW = normalize(cross(surfel.tanU, surfel.tanV));
                         if (dot(normalW, -layerRay.direction) < 0.0f) normalW = -normalW;
                         brdf = evaluateSurfelBrdf(
-                            settings.surfelBrdfKind, surfel, normalW, lightDirection, -layerRay.direction);
+                            settings.stableGgx, settings.surfelBrdfKind, surfel, normalW, lightDirection, -layerRay.direction);
                     }
                     const float compositeWeight = rendering.transmittance * layerWeight;
                     rendering.radiance +=

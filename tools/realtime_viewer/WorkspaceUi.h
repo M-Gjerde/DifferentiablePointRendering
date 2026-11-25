@@ -92,6 +92,10 @@ namespace viewer::ui {
     inline bool color3(const char* label,float* value) {
         return property(label,[&]{return ImGui::ColorEdit3("##value",value,ImGuiColorEditFlags_NoInputs|ImGuiColorEditFlags_Float);});
     }
+    inline bool openFolderInShell(const std::filesystem::path& folder) {
+        const auto open=ImGui::GetPlatformIO().Platform_OpenInShellFn;
+        return open&&open(ImGui::GetCurrentContext(),folder.c_str());
+    }
     template<std::size_t N> bool pathInput(const char* label,std::array<char,N>& buffer) {
         ImGui::TextDisabled("%s",label); ImGui::SetNextItemWidth(-1);
         ImGui::PushID(label); const bool changed=ImGui::InputText("##path",buffer.data(),buffer.size()); ImGui::PopID(); return changed;

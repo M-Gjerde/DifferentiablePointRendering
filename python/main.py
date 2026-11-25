@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 
 import pale
@@ -50,7 +51,8 @@ def main(config: OptimizationConfig | None = None,
         companions = start_companions(config)
 
         try:
-            run_optimization(renderer, config, renderer_settings, viewer_session=session)
+            with session.monitor_adjoint_kernels(pale) if session else nullcontext():
+                run_optimization(renderer, config, renderer_settings, viewer_session=session)
         finally:
             stop_companions(companions)
 

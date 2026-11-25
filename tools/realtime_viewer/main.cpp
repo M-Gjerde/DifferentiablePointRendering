@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -48,6 +49,7 @@
 
 #include "Renderer/GPUDataStructures.h"
 #include "Renderer/RenderPackage.h"
+#include "Renderer/AdjointKernelProgress.h"
 #include "Renderer/Kernels/IntersectionKernels.h"
 #include "Core/ScopedTimer.h"
 #include "Core/DeviceAllocation.h"
@@ -56,6 +58,7 @@
 #include "SurfaceOverlap.h"
 #include "Renderer/SurfaceOverlapScene.h"
 #include "ResponsiveWork.h"
+#include "OrbitVideo.h"
 #include "ViewportScreenshot.h"
 #include "ViewportTexture.h"
 #include "RawLinearImage.h"
@@ -164,6 +167,32 @@ namespace {
     struct SceneBounds {
         glm::vec3 center{0.0f};
         float radius = 1.0f;
+    };
+
+    struct OrbitFramingBounds {
+        SceneBounds model;
+        SceneBounds withoutPointLights;
+    };
+
+    struct OrbitVideoSettings {
+        enum LookAt { ModelCenter, WorldOrigin, Custom };
+
+        int fps = 30;
+        int seconds = 6;
+        int resolution = 1;
+        float elevation = 20.0f;
+        int lookAt = ModelCenter;
+        glm::vec3 customLookAt{0.0f};
+        std::optional<float> distance = 5.0f;
+        bool excludePointLights = false;
+        static constexpr std::array<std::array<int, 2>, 4> sizes{{
+            {854, 480}, {1280, 720}, {1920, 1080}, {3840, 2160}
+        }};
+
+        [[nodiscard]] glm::vec3 lookAtPoint(glm::vec3 modelCenter) const {
+            if (lookAt == ModelCenter) return modelCenter;
+            return lookAt == Custom ? customLookAt : glm::vec3(0.0f);
+        }
     };
 
     enum class CameraSource {
@@ -1729,6 +1758,49 @@ namespace {
         return {.center = center, .radius = radius};
     }
 
+    OrbitFramingBounds orbitModelBounds(const Pale::SceneBuild::BuildProducts& buildProducts, SceneBounds fallback) {
+        // Each TLAS leaf contains one instance's world-space bounds.
+        const float infinity = std::numeric_limits<float>::infinity();
+        glm::vec3 low(infinity);
+        glm::vec3 high(-infinity);
+        const auto accumulatedBounds = [&](SceneBounds emptyBounds) -> SceneBounds {
+            if (!std::isfinite(low.x)) return emptyBounds;
+            return {0.5f * (low + high), std::max(0.5f * glm::length(high - low), 0.001f)};
+        };
+        for (const auto& node : buildProducts.topLevelNodes) {
+            if (!node.count || buildProducts.instances[node.leftChild].geometryType != Pale::GeometryType::PointCloud)
+                continue;
+            low = glm::min(low, Pale::sycl2glm(node.aabbMin));
+            high = glm::max(high, Pale::sycl2glm(node.aabbMax));
+        }
+        const SceneBounds model = accumulatedBounds(fallback);
+        if (std::none_of(buildProducts.lights.begin(), buildProducts.lights.end(),
+                         [](const auto& light) { return light.lightType == Pale::LightType::Surfel; })) {
+            return {model, model};
+        }
+
+        low = glm::vec3(infinity);
+        high = glm::vec3(-infinity);
+        for (const auto& instance : buildProducts.instances) {
+            if (instance.geometryType != Pale::GeometryType::PointCloud) continue;
+            const auto& range = buildProducts.pointCloudRanges[instance.geometryIndex];
+            const auto transform = syclMatrixToGlm(buildProducts.transforms[instance.transformIndex].objectToWorld);
+            const glm::mat3 linear(transform);
+            for (uint32_t i = 0; i < range.pointCount; ++i) {
+                const auto& point = buildProducts.points[range.firstPoint + i];
+                if (point.isEmissive()) continue;
+                const glm::vec3 center(transform * glm::vec4(Pale::sycl2glm(point.position), 1.0f));
+                const glm::vec3 u = linear * (point.scale.x() * Pale::sycl2glm(point.tanU));
+                const glm::vec3 v = linear * (point.scale.y() * Pale::sycl2glm(point.tanV));
+                // Axis-aligned extent of the world-space support ellipse.
+                const glm::vec3 extent = glm::sqrt(u * u + v * v);
+                low = glm::min(low, center - extent);
+                high = glm::max(high, center + extent);
+            }
+        }
+        return {model, accumulatedBounds(model)};
+    }
+
     OrbitCamera makeInitialOrbitCamera(
         const Pale::SceneBuild::BuildProducts& buildProducts,
         const SceneBounds& bounds) {
@@ -2633,6 +2705,7 @@ int main(int argc, char** argv) {
             savedViewerDefaultPath(originalInitialPointCloudPath);
 
         Pale::Log::init(spdlog::level::level_enum::info);
+        Pale::enableAdjointKernelProgress(true);
         glfwSetErrorCallback(glfwErrorCallback);
 
         Pale::AssetManager assetManager{256};
@@ -2668,6 +2741,7 @@ int main(int argc, char** argv) {
             Pale::SceneUpload::allocateAndUpload(buildProducts, queue);
 
         SceneBounds bounds = computeSceneBounds(buildProducts);
+        OrbitFramingBounds sceneOrbitBounds = orbitModelBounds(buildProducts, bounds);
         OrbitCamera orbit = makeInitialOrbitCamera(buildProducts, bounds);
         OrbitCamera initialOrbit = orbit;
         std::filesystem::path currentScenePath = args.scenePath;
@@ -2860,6 +2934,13 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> screenshotPixels;
         std::string screenshotStatus;
         uint64_t screenshotSequence = 0;
+        OrbitVideoSettings orbitVideoSettings;
+        OrbitFramingBounds orbitVideoBounds = sceneOrbitBounds;
+        bool orbitVideoRequested = false, orbitVideoActive = false;
+        std::atomic<bool> cancelOrbitVideo{false};
+        std::atomic<int> orbitVideoFrames{0};
+        std::filesystem::path orbitVideoDirectory;
+        std::string orbitVideoStatus;
         DebugDisplayBuffers debugDisplayBuffers;
         float terminalTargetAttenuation = 0.9f;
         OrbitCamera displayedOrbit = orbit;
@@ -3061,6 +3142,7 @@ int main(int argc, char** argv) {
             renderBuildProducts = buildProducts;
             renderBuildProducts.cameraGPUs.clear();
             bounds = computeSceneBounds(buildProducts);
+            sceneOrbitBounds = orbitModelBounds(buildProducts, bounds);
             orbit.farClip = std::max(1000.0f, bounds.radius * 20.0f);
             tracerDirty = true;
             renderRequested = true;
@@ -5414,8 +5496,9 @@ int main(int argc, char** argv) {
                 std::ofstream output(previewFailureLog,std::ios::app);viewer::writeJsonValue(output,event);output<<'\n';
             } catch(const std::exception& error) {Pale::Log::PA_WARN("Cannot write long-preview diagnostics: {}",error.what());}
         };
-        const auto drawPreviewFailureNotice=[&](const viewer::ViewportCanvas& canvas,bool busy) {
+        const auto drawPreviewFailureNotice=[&](const viewer::ViewportCanvas& canvas,bool busy, bool adjointPending) {
             const bool longWork=previewWatchdog.longRunning();
+            if(adjointPending && longWork && !previewRecovery.failed())return false;
             if(previewRecovery.error().empty()&&!longWork)return false;
             const auto cursor=ImGui::GetCursorScreenPos();
             ImGui::SetCursorScreenPos(ImVec2(canvas.min.x+50,canvas.min.y+8));
@@ -5519,8 +5602,8 @@ int main(int argc, char** argv) {
                     }
                 ImGui::EndCombo();
             }
-            ImGui::SameLine();
             if (training.hasRun()) {
+                ImGui::SameLine();
                 ImGui::SetNextItemWidth(168);
                 const char* liveSource = trainingActive ? "Live training" : "Latest preview";
                 const char* source = "Editable snapshot";
@@ -5551,12 +5634,15 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndCombo();
                 }
-                // The viewed iteration belongs to the published image. Keep
-                // it visible while a different checkpoint loads/renders.
+                // Keep the published iteration visible during live updates.
+                const auto selectedView = queuedSceneSource.value_or(training.view);
                 std::optional<uint64_t> requestedIteration;
-                if(training.view==viewer::TrainingView::History)requestedIteration=training.historyIteration;
-                else if(queuedSceneSource!=viewer::TrainingView::Frozen&&pendingTrainingPreview&&pendingTrainingPreview->run==training.runIdentity())
-                    requestedIteration=pendingTrainingPreview->iteration;
+                if (selectedView == viewer::TrainingView::History) {
+                    requestedIteration = training.historyIteration;
+                } else if (selectedView == viewer::TrainingView::Saved && training.view == viewer::TrainingView::Saved &&
+                           pendingTrainingPreview && pendingTrainingPreview->run == training.runIdentity()) {
+                    requestedIteration = pendingTrainingPreview->iteration;
+                }
                 const bool iterationLoading = requestedIteration && *requestedIteration != training.viewedIteration;
                 std::string iterationLabel="Iteration "+std::to_string(training.viewedIteration);
                 const std::string loadingLabel = iterationLoading
@@ -5566,15 +5652,15 @@ int main(int argc, char** argv) {
                 if(ImGui::IsItemHovered()) {
                     ImGui::BeginTooltip();
                     ImGui::Text("Displayed surfel iteration: %llu",static_cast<unsigned long long>(training.viewedIteration));
-                    if(requestedIteration&&*requestedIteration!=training.viewedIteration)
+                    if(iterationLoading)
                         ImGui::Text("Loading checkpoint: %llu",static_cast<unsigned long long>(*requestedIteration));
                     if(training.hasCurrentRun())ImGui::Text("Run iteration: %llu",static_cast<unsigned long long>(training.integer("iteration")));
                     ImGui::TextUnformatted(modelReadOnly()?"Read-only inspection":source);
                     ImGui::EndTooltip();
                 }
-                ImGui::SameLine();
                 if (trainingActive) {
-                    bool followLive = queuedSceneSource.value_or(training.view) == viewer::TrainingView::Live;
+                    ImGui::SameLine();
+                    bool followLive = selectedView == viewer::TrainingView::Live;
                     const bool waitingForPreview = followLive && !canFreezeTrainingPreview();
                     if (waitingForPreview) ImGui::BeginDisabled();
                     if (ImGui::Checkbox("Follow live", &followLive)) {
@@ -5600,15 +5686,16 @@ int main(int argc, char** argv) {
                         training.checkpointNavigation = viewer::kLatestSavedCheckpoint;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Load the latest saved checkpoint and hold it in the viewport.");
-                    ImGui::SameLine();
                     if (iterationLoading) {
-                        ImGui::TextDisabled("%s", loadingLabel.c_str());
                         ImGui::SameLine();
+                        ImGui::TextDisabled("%s", loadingLabel.c_str());
                     }
                 }
             }
-            const bool compactOverlays = trainingActive && ImGui::GetContentRegionAvail().x < 164.f;
+            ImGui::SameLine();
+            const bool compactOverlays = ImGui::GetContentRegionAvail().x < 164.f;
             const float overlayWidth = compactOverlays ? ImGui::GetFrameHeight() : 164.f;
+            if (ImGui::GetContentRegionAvail().x < overlayWidth) ImGui::NewLine();
             ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),ImGui::GetWindowWidth()-overlayWidth-12));
             const bool openOverlays = compactOverlays
                 ? viewer::ui::iconButton("Gizmos & overlays", viewer::ui::Icon::View, false, ImVec2(overlayWidth, overlayWidth))
@@ -5666,6 +5753,14 @@ int main(int argc, char** argv) {
                 displayedLightMarkers.push_back({glm::vec3(lights[i].getComponent<Pale::TransformComponent>().getTransform()*glm::vec4(lightLocalCenters[i],1)),{static_cast<int>(i),-1},entityName(lights[i])});
             for(const auto& marker:surfelLightMarkers)displayedLightMarkers.push_back({marker.worldCenter,{-1,marker.editorIndex},"Surfel light "+std::to_string(marker.editorIndex)});
             displayedOverlayPointCloud=currentPointCloudPath;displayedOverlayScene=currentScenePath;
+            orbitVideoBounds = sceneOrbitBounds;
+            if ((modelReadOnly() || displayedLivePacket) && !loadedTrainingSceneRun.empty() &&
+                loadedTrainingSceneRun == training.runIdentity()) {
+                orbitVideoDirectory = training.runDirectory();
+            } else {
+                orbitVideoDirectory = std::filesystem::absolute(currentPointCloudPath).lexically_normal().parent_path();
+                if (orbitVideoDirectory.filename() == "points") orbitVideoDirectory = orbitVideoDirectory.parent_path();
+            }
         };
         const auto drawDatasetComparison = [&](const viewer::ViewportCanvas& canvas,
                                                CameraSource source, const Pale::CameraGPU& camera,
@@ -5753,6 +5848,23 @@ int main(int argc, char** argv) {
             }
             ImGui::EndGroup();ImGui::SetCursorScreenPos(after);
         };
+        const auto adjointKernelStatus=[&] {
+            auto status = Pale::adjointKernelProgressMessage();
+            if(status.empty() && training.process.active()) status = training.adjointKernelStatus;
+            return status;
+        };
+        const auto drawAdjointKernelStatus=[](const viewer::ViewportCanvas& canvas,const std::string& status) {
+            if(status.empty() || canvas.size.x <= 48.f || canvas.size.y <= 42.f) return;
+            const ImVec2 label(canvas.min.x+48.f,canvas.min.y+42.f);
+            const ImVec2 limit(canvas.min.x+canvas.size.x,canvas.min.y+canvas.size.y);
+            const auto textSize=ImGui::CalcTextSize(status.c_str());
+            auto* draw=ImGui::GetWindowDrawList();
+            draw->PushClipRect(canvas.min,limit,true);
+            draw->AddRectFilled(label,ImVec2(label.x+textSize.x+16.f,label.y+textSize.y+10.f),
+                ImGui::GetColorU32(viewer::ui::panel),4.f);
+            draw->AddText(ImVec2(label.x+8.f,label.y+5.f),ImGui::GetColorU32(ImGuiCol_Text),status.c_str());
+            draw->PopClipRect();
+        };
         const auto drawDisplayedLightMarkers=[&](const Pale::CameraGPU& camera,ImVec2 origin,ImVec2 size,bool hoverable,
                 viewer::SceneItemKind selectedKind,int selectedSurfel,int selectedArea) {
             std::optional<LightMarkerSelection> hovered;std::string name;float nearest=14.f*14.f;
@@ -5830,6 +5942,231 @@ int main(int argc, char** argv) {
             try {previewWork.start(std::move(work));}
             catch(const std::exception& error) {previewWatchdog.finish();previewCompletion={};recordPreviewFailure(error.what());}
         };
+
+        const auto drawCameraSettings = [&] {
+            if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+                const ScopedSectionIndent sectionIndent;
+                int cameraSourceIndex = cameraSource == CameraSource::SceneXml ? 1 : 0;
+                const char* cameraSources[] = {"Viewport camera", "scene.xml camera"};
+                if (ImGui::Combo("Camera source", &cameraSourceIndex, cameraSources, 2)) {
+                    cameraSource =
+                        cameraSourceIndex == 1 && !buildProducts.cameraGPUs.empty()
+                            ? CameraSource::SceneXml
+                            : CameraSource::Viewport;
+                    cameraDirty = true;
+                    tracerDirty = true;
+                    renderRequested = true;
+                }
+
+                if (cameraSource == CameraSource::SceneXml) {
+                    ImGui::TextDisabled("Up/Down: next/previous scene camera (wraps)");
+                    if (buildProducts.cameraGPUs.empty()) {
+                        ImGui::Text("No scene.xml cameras loaded");
+                    } else if (ImGui::BeginCombo(
+                                   "Scene camera",
+                                   buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)].name)) {
+                        for (std::size_t cameraIndex = 0; cameraIndex < buildProducts.cameraGPUs.size(); ++cameraIndex) {
+                            const bool selected =
+                                static_cast<int>(cameraIndex) == selectedSceneCameraIndex;
+                            const char* cameraName = buildProducts.cameraGPUs[cameraIndex].name;
+                            if (ImGui::Selectable(cameraName, selected)) {
+                                selectedSceneCameraIndex = static_cast<int>(cameraIndex);
+                                cameraDirty = true;
+                                tracerDirty = true;
+                                renderRequested = true;
+                            }
+                            if (selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+
+                if(cameraSource==CameraSource::SceneXml&&ImGui::Button("Fit camera image"))cameraImageView.reset();
+                ImGui::Checkbox("Ground truth comparison", &showDatasetReference);
+                ImGui::SetItemTooltip("Show the matching dataset image alongside the scene camera preview.");
+                if (ImGui::Button("Reset view")) {
+                    resetOrbitView();
+                }
+                if (cameraSource == CameraSource::Viewport) {
+                    if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {
+                        cameraDirty = true;
+                    }
+                }
+            }
+        };
+
+        const auto canRenderOrbit = [&] {
+            return texture.id && !orbitVideoDirectory.empty() && sceneMatchesDisplayedPreview() &&
+                !sceneUploadPending && (!modelReadOnly() || training.loadedGeneration != 0);
+        };
+        const auto makeOrbitVideoCamera = [&] {
+            const auto [width, height] = OrbitVideoSettings::sizes[orbitVideoSettings.resolution];
+            const auto& framingBounds = !orbitVideoSettings.distance && orbitVideoSettings.excludePointLights
+                ? orbitVideoBounds.withoutPointLights : orbitVideoBounds.model;
+            OrbitCamera camera = displayedOrbit;
+            camera.target = orbitVideoSettings.lookAtPoint(framingBounds.center);
+            camera.fovyDegrees = std::clamp(camera.fovyDegrees, 5.0f, 160.0f);
+            const float halfVerticalFov = 0.5f * glm::radians(camera.fovyDegrees);
+            const float halfHorizontalFov = std::atan(std::tan(halfVerticalFov) * width / height);
+            // A sphere around the pivot must still contain the whole model
+            // when the look-at point is away from the model center.
+            const float radius = framingBounds.radius + glm::length(framingBounds.center - camera.target);
+            camera.distance = orbitVideoSettings.distance.value_or(
+                1.12f * radius / std::sin(std::min(halfVerticalFov, halfHorizontalFov)));
+            camera.nearClip = std::min({camera.nearClip, 0.05f * framingBounds.radius, 0.05f * camera.distance});
+            camera.farClip = std::max(camera.farClip, camera.distance + 2.0f * radius);
+            return camera;
+        };
+        const auto drawOrbitVideo = [&](bool busy) {
+            if (!ImGui::CollapsingHeader("Render 360° orbit", ImGuiTreeNodeFlags_DefaultOpen)) return;
+            const ScopedSectionIndent sectionIndent;
+            ImGui::BeginDisabled(orbitVideoActive);
+            ImGui::TextUnformatted("Look-at point");
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::Combo("##OrbitLookAt", &orbitVideoSettings.lookAt, "Model center\0World origin (0, 0, 0)\0Custom (X, Y, Z)\0");
+            if (orbitVideoSettings.lookAt == OrbitVideoSettings::Custom) {
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputFloat3("##OrbitLookAtCoordinates", glm::value_ptr(orbitVideoSettings.customLookAt), "%.6g");
+            }
+
+            bool autoFrame = !orbitVideoSettings.distance;
+            if (ImGui::Checkbox("Auto frame", &autoFrame)) {
+                if (autoFrame) orbitVideoSettings.distance.reset();
+                else orbitVideoSettings.distance = makeOrbitVideoCamera().distance;
+            }
+            ImGui::SetItemTooltip("Choose the distance automatically to fit the model around the look-at point.");
+            ImGui::BeginDisabled(!autoFrame);
+            ImGui::Checkbox("Exclude point lights from auto frame", &orbitVideoSettings.excludePointLights);
+            ImGui::SetItemTooltip("Frame the non-emissive surfels when available.");
+            ImGui::EndDisabled();
+            if (orbitVideoSettings.distance) {
+                ImGui::InputFloat("Distance", &*orbitVideoSettings.distance, 0.0f, 0.0f, "%.6g");
+                ImGui::SetItemTooltip("Camera distance from the look-at point, in scene units.");
+            } else if (!orbitVideoDirectory.empty()) {
+                ImGui::TextDisabled("Distance %.6g", makeOrbitVideoCamera().distance);
+            }
+
+            constexpr auto clamp = ImGuiSliderFlags_AlwaysClamp;
+            ImGui::SliderFloat("Elevation", &orbitVideoSettings.elevation, 1.0f, 85.0f, "%.1f°", clamp);
+            ImGui::SliderInt("Frame rate", &orbitVideoSettings.fps, 12, 120, "%d fps", clamp);
+            ImGui::SliderInt("Duration", &orbitVideoSettings.seconds, 1, 60, "%d s", clamp);
+            ImGui::Combo("Resolution", &orbitVideoSettings.resolution, "854 × 480\0" "1280 × 720\0"
+                "1920 × 1080\0" "3840 × 2160\0");
+            ImGui::EndDisabled();
+            if (!orbitVideoDirectory.empty()) {
+                ImGui::TextWrapped("MP4 output folder\n%s", orbitVideoDirectory.c_str());
+                if (ImGui::Button("Open output folder")) {
+                    std::error_code error;
+                    if (!std::filesystem::is_directory(orbitVideoDirectory, error) ||
+                        !viewer::ui::openFolderInShell(orbitVideoDirectory)) {
+                        orbitVideoStatus = "Could not open orbit output folder. " + orbitVideoDirectory.string();
+                    }
+                }
+            }
+            const int frameCount = orbitVideoSettings.fps * orbitVideoSettings.seconds;
+            if (orbitVideoActive) {
+                const int frames = orbitVideoFrames.load();
+                const auto label = std::to_string(frames) + " / " + std::to_string(frameCount) + " frames";
+                ImGui::ProgressBar(static_cast<float>(frames) / frameCount, ImVec2(-1, 0), label.c_str());
+                const bool cancelling = cancelOrbitVideo.load();
+                ImGui::BeginDisabled(cancelling);
+                if (ImGui::Button(cancelling ? "Cancelling..." : "Cancel render")) cancelOrbitVideo.store(true);
+                ImGui::EndDisabled();
+            } else {
+                const bool ready = !busy && canRenderOrbit();
+                ImGui::BeginDisabled(!ready);
+                if (ImGui::Button("Render MP4")) orbitVideoRequested = true;
+                ImGui::EndDisabled();
+                if (!ready) ImGui::TextDisabled("Waiting for the reconstruction preview.");
+            }
+            if (!orbitVideoStatus.empty()) ImGui::TextWrapped("%s", orbitVideoStatus.c_str());
+        };
+
+        const auto startOrbitVideo = [&] {
+            orbitVideoRequested = false;
+            if (!canRenderOrbit()) {
+                orbitVideoStatus = "Wait for the loaded reconstruction to finish its preview.";
+                return;
+            }
+
+            const auto directory = orbitVideoDirectory;
+            const auto [width, height] = OrbitVideoSettings::sizes[orbitVideoSettings.resolution];
+            const int fps = orbitVideoSettings.fps;
+            const int frameCount = fps * orbitVideoSettings.seconds;
+            const float elevation = orbitVideoSettings.elevation;
+            if (!std::isfinite(elevation)) {
+                orbitVideoStatus = "Enter an elevation between 1° and 85°.";
+                return;
+            }
+            const auto camera = makeOrbitVideoCamera();
+            if (!std::isfinite(camera.target.x) || !std::isfinite(camera.target.y) || !std::isfinite(camera.target.z)) {
+                orbitVideoStatus = "Enter finite X, Y, and Z coordinates for the look-at point.";
+                return;
+            }
+            if (!std::isfinite(camera.distance) || camera.distance <= 0.0f) {
+                orbitVideoStatus = "Enter a finite distance greater than zero.";
+                return;
+            }
+            if (!(camera.nearClip > 0.0f) || !std::isfinite(camera.farClip) || !std::isfinite(camera.fovyDegrees)) {
+                orbitVideoStatus = "The selected camera settings are outside the supported range.";
+                return;
+            }
+            const auto modelBounds = orbitVideoBounds.model;
+            const auto initialOffset = Pale::sycl2glm(displayedCamera.pos) - camera.target;
+            const auto renderSettings = makeViewerDebugSettings(settings, ViewImageMode::Rendered);
+            const viewer::DisplayTransform display{exposure, gamma, useSrgbEncoding};
+            const auto background = viewportBackgroundColor;
+            const bool forceOpacity = forceRenderOpacity;
+            auto result = std::make_shared<std::string>();
+            orbitVideoStatus.clear();
+            orbitVideoFrames.store(0);
+            cancelOrbitVideo.store(false);
+            startPreviewJob([&, directory, width, height, fps, frameCount, elevation, initialOffset, camera = camera,
+                    modelBounds, renderSettings, display, background, forceOpacity, result]() mutable {
+                try {
+                    viewer::OrbitVideoEncoder encoder(cancelOrbitVideo);
+                    encoder.start(directory, width, height, fps);
+                    auto exportScene = sceneGpu;
+                    exportScene.profileCounters = nullptr;
+                    Pale::PathTracer exportTracer(queue, renderSettings);
+                    exportTracer.setScene(exportScene, buildProducts);
+                    const auto releaseSensor = [&](Pale::SensorGPU* exportSensor) {
+                        queue.wait();
+                        destroySensor(queue, *exportSensor);
+                    };
+                    auto exportSensor = createSensor(queue, camera.makeGpuCamera(width, height));
+                    std::unique_ptr<Pale::SensorGPU, decltype(releaseSensor)> sensorLifetime(&exportSensor, releaseSensor);
+                    exportSensor.exposureCorrection = display.exposure;
+                    exportSensor.gammaCorrection = display.gamma;
+                    exportSensor.useSrgbEncoding = display.srgb;
+                    std::vector<Pale::SensorGPU> sensors(1);
+                    viewer::ViewportBackgroundCache backgroundCache;
+                    std::vector<uint8_t> framePixels;
+                    Pale::ScopedTimerDetail::setProfilingEnabled(false);
+                    for (int frame = 0; frame < frameCount && !cancelOrbitVideo.load(); ++frame) {
+                        camera.lookAlong(-viewer::orbitVideoEyeDirection(initialOffset, elevation, frame, frameCount));
+                        exportSensor.camera = camera.makeGpuCamera(width, height);
+                        clearSensor(queue, exportSensor);
+                        sensors[0] = exportSensor;
+                        exportTracer.renderForward(sensors, false);
+                        queue.wait_and_throw();
+                        composeViewportPixels(Pale::downloadSensorRGBARAW(queue, exportSensor), display, camera,
+                            exportSensor.camera, modelBounds, width, height, false, forceOpacity,
+                            background, backgroundCache, framePixels);
+                        if (!encoder.writeFrame(framePixels)) break;
+                        orbitVideoFrames.store(frame + 1);
+                    }
+                    const auto output = encoder.finish();
+                    *result = output.empty() ? "Orbit render cancelled." : "Saved " + output.string();
+                } catch (const std::exception& error) {
+                    *result = "Orbit render failed. " + std::string(error.what());
+                }
+            }, [&, result] { orbitVideoStatus = std::move(*result); }, "Rendering 360° orbit");
+            orbitVideoActive = previewWork.busy();
+            if (!orbitVideoActive) orbitVideoStatus = "Could not start the orbit render worker.";
+        };
         const auto loadRequestedInitializer=[&] {
             const auto directory=*training.initializedPointCloudRequest;
             training.initializedPointCloudRequest.reset();
@@ -5884,11 +6221,20 @@ int main(int argc, char** argv) {
             viewer::ui::inspectorRail(inspectorPage,showAdvancedTools);ImGui::EndChild();ImGui::SameLine(0,8);
             const auto cachedPage=inspectorBodies[static_cast<int>(inspectorPage)].valid?inspectorPage:lastDrawnInspector;
             auto& cachedInspector=inspectorBodies[static_cast<int>(cachedPage)];
-            if(inspectorPage!=viewer::ui::Inspector::Reconstruction&&cachedInspector.valid)
+            const bool liveOrbitControls = orbitVideoActive && inspectorPage == viewer::ui::Inspector::Camera;
+            if(inspectorPage!=viewer::ui::Inspector::Reconstruction&&cachedInspector.valid&&!liveOrbitControls)
                 ImGui::SetNextWindowScroll(ImVec2(-1,cachedInspector.scroll));
             ImGui::BeginChild("InspectorContents",ImVec2(0,0));
             if(inspectorPage==viewer::ui::Inspector::Reconstruction) {
                 if(training.drawSetup(busyHasWorkspace,true))launch=viewer::TrainingLaunch::Primary;
+            }
+            else if (liveOrbitControls) {
+                // The export uses its own camera. The viewport camera state
+                // is stable while this worker is running.
+                ImGui::BeginDisabled();
+                drawCameraSettings();
+                ImGui::EndDisabled();
+                drawOrbitVideo(true);
             }
             else if(cachedInspector.valid) {
                 cachedInspector.geometry.draw(*ImGui::GetWindowDrawList(),ImGui::GetWindowPos(),cachedInspector.size);
@@ -5912,7 +6258,8 @@ int main(int argc, char** argv) {
             const auto fullCanvas = viewer::viewportCanvas();
             const auto viewportCanvas = drawDatasetComparison(fullCanvas, busyCameraSource, busyCamera, walkNavigationActive);
             const auto available=viewportCanvas.size;
-            const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,true);
+            const auto kernelStatus=adjointKernelStatus();
+            const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,true,!kernelStatus.empty());
             if(texture.id) {
                 const auto canvas=viewportCanvas.min;
                 const ImVec2 canvasMax(canvas.x+available.x,canvas.y+available.y);
@@ -5990,7 +6337,11 @@ int main(int argc, char** argv) {
                     }
                 }
                 ImGui::PopClipRect();viewer::finishViewportCanvas(fullCanvas);
+            } else if(!kernelStatus.empty()) {
+                drawViewportToolRail(viewportCanvas.min,busySelectionIndex>=0);
+                viewer::finishViewportCanvas(fullCanvas);
             } else ImGui::TextWrapped("The first preview will appear when compilation finishes.");
+            drawAdjointKernelStatus(viewportCanvas,kernelStatus);
             if(walkNavigationActive&&!queuedWalkFinish) {
                 queuedOrbit.lookAround(io.MouseDelta);
                 const glm::vec3 direction{float(ImGui::IsKeyDown(ImGuiKey_D))-float(ImGui::IsKeyDown(ImGuiKey_A)),float(ImGui::IsKeyDown(ImGuiKey_W))-float(ImGui::IsKeyDown(ImGuiKey_S)),float(ImGui::IsKeyDown(ImGuiKey_E))-float(ImGui::IsKeyDown(ImGuiKey_Q))};
@@ -6021,11 +6372,13 @@ int main(int argc, char** argv) {
             viewer::TrainingSession& training;
             viewer::TrainingSession& exporter;
             viewer::PreviewWork& preview;
+            std::atomic<bool>& cancelOrbit;
             ~ViewerWorkLifetime() {
+                cancelOrbit.store(true);
                 training.shutdown();exporter.shutdown();
                 try {preview.finish();}catch(...){}
             }
-        } viewerWorkLifetime{training.process,meshExport.process,previewWork};
+        } viewerWorkLifetime{training.process,meshExport.process,previewWork,cancelOrbitVideo};
 
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -6045,6 +6398,8 @@ int main(int argc, char** argv) {
                 catch(const std::bad_alloc&) {completionFailed("Preview memory allocation failed. Reduce preview resolution or diagnostic cost, then retry.");}
                 catch(const std::exception& error) {completionFailed(error.what());}
                 catch(...) {completionFailed("Unknown preview worker failure");}
+                if (orbitVideoActive && orbitVideoStatus.empty()) orbitVideoStatus = "The orbit render worker stopped unexpectedly.";
+                orbitVideoActive = false;
                 previewCompletion={};
                 training.loadingInitializer=false;
                 if(queuedProfilingSettings) {
@@ -6097,7 +6452,7 @@ int main(int argc, char** argv) {
                     followLaunchAfterPreview=false;
                 }
             }
-            if(previewWork.busy()&&previewWatchdog.reportDue())recordLongPreview();
+            if(previewWork.busy()&&!orbitVideoActive&&previewWatchdog.reportDue())recordLongPreview();
             if(previewWork.busy()) {drawBusyFrame();continue;}
             if(training.preparedReconstruction) {
                 if(!modelReadOnly()&&!saveWorkingSnapshot()) {
@@ -6878,58 +7233,8 @@ int main(int argc, char** argv) {
                 }
             }
             if (inspectorPage == viewer::ui::Inspector::Camera) {
-            if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
-                const ScopedSectionIndent sectionIndent;
-                int cameraSourceIndex = cameraSource == CameraSource::SceneXml ? 1 : 0;
-                const char* cameraSources[] = {"Viewport camera", "scene.xml camera"};
-                if (ImGui::Combo("Camera source", &cameraSourceIndex, cameraSources, 2)) {
-                    cameraSource =
-                        cameraSourceIndex == 1 && !buildProducts.cameraGPUs.empty()
-                            ? CameraSource::SceneXml
-                            : CameraSource::Viewport;
-                    cameraDirty = true;
-                    tracerDirty = true;
-                    renderRequested = true;
-                }
-
-                if (cameraSource == CameraSource::SceneXml) {
-                    ImGui::TextDisabled("Up/Down: next/previous scene camera (wraps)");
-                    if (buildProducts.cameraGPUs.empty()) {
-                        ImGui::Text("No scene.xml cameras loaded");
-                    } else if (ImGui::BeginCombo(
-                                   "Scene camera",
-                                   buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)].name)) {
-                        for (std::size_t cameraIndex = 0; cameraIndex < buildProducts.cameraGPUs.size(); ++cameraIndex) {
-                            const bool selected =
-                                static_cast<int>(cameraIndex) == selectedSceneCameraIndex;
-                            const char* cameraName = buildProducts.cameraGPUs[cameraIndex].name;
-                            if (ImGui::Selectable(cameraName, selected)) {
-                                selectedSceneCameraIndex = static_cast<int>(cameraIndex);
-                                cameraDirty = true;
-                                tracerDirty = true;
-                                renderRequested = true;
-                            }
-                            if (selected) {
-                                ImGui::SetItemDefaultFocus();
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                }
-
-                if(cameraSource==CameraSource::SceneXml&&ImGui::Button("Fit camera image"))cameraImageView.reset();
-                ImGui::Checkbox("Ground truth comparison", &showDatasetReference);
-                ImGui::SetItemTooltip("Show the matching dataset image alongside the scene camera preview.");
-                if (ImGui::Button("Reset view")) {
-                    resetOrbitView();
-                }
-                if (cameraSource == CameraSource::Viewport) {
-                    if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {
-                        cameraDirty = true;
-                    }
-                }
-            }
-
+                drawCameraSettings();
+                drawOrbitVideo(false);
             }
             if (inspectorPage == viewer::ui::Inspector::Files) {
             if (modelReadOnly()) ImGui::BeginDisabled();
@@ -7927,7 +8232,8 @@ int main(int argc, char** argv) {
             const auto fullCanvas = viewer::viewportCanvas();
             const auto viewportCanvas = drawDatasetComparison(fullCanvas, displayedCameraSource, displayedCamera, navigationInputCaptured);
             const auto available=viewportCanvas.size;
-            const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,false);
+            const auto kernelStatus=adjointKernelStatus();
+            const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,false,!kernelStatus.empty());
             if (cameraSource == CameraSource::Viewport) {
                 const uint32_t targetRenderWidth = renderExtentFromAvailable(fullCanvas.size.x);
                 const uint32_t targetRenderHeight = renderExtentFromAvailable(fullCanvas.size.y);
@@ -8196,9 +8502,13 @@ int main(int argc, char** argv) {
                 }
                 if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) pressedLightMarker.reset();
                 ImGui::PopClipRect();viewer::finishViewportCanvas(fullCanvas);
+            } else if(!kernelStatus.empty()) {
+                drawViewportToolRail(viewportCanvas.min,selectedSurfelEditorIndex>=0);
+                viewer::finishViewportCanvas(fullCanvas);
             } else {
                 ImGui::TextWrapped("%s", training.openedReconstruction?"Loading saved reconstruction...":modelReadOnly() ? "Waiting for the launched training run to publish a scene. See Run monitor for initialization or errors." : "No preview yet");
             }
+            drawAdjointKernelStatus(viewportCanvas,kernelStatus);
             drawViewportStatus(false);
             ImGui::End();
 
@@ -8259,6 +8569,10 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT);
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glfwSwapBuffers(window);
+            if (orbitVideoRequested && !glfwWindowShouldClose(window)) {
+                startOrbitVideo();
+                if (previewWork.busy()) continue;
+            }
             if(!glfwWindowShouldClose(window)) {
                 const auto now=viewer::PreviewRecovery::Clock::now();
                 if(previewRecovery.retryDue(now))renderRequested=true;
@@ -8291,6 +8605,7 @@ int main(int argc, char** argv) {
         // in-flight preview/JIT work to release renderer resources.
         training.process.shutdown();
         meshExport.shutdown();
+        cancelOrbitVideo.store(true);
         glfwHideWindow(window);
         try {previewWork.finish();}catch(const std::exception& error) {Pale::Log::PA_WARN("Preview shutdown: {}",error.what());}
 

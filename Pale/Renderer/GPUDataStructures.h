@@ -901,6 +901,7 @@ namespace Pale {
         uint32_t numGatherPasses = 1;
         CameraGatherKernelKind cameraGatherKernelKind = CameraGatherKernelKind::CameraGatherKernel2;
         SurfelBrdfKind surfelBrdfKind = SurfelBrdfKind::Lambertian;
+        bool stableGgx = false;
         uint32_t numAdjointShadowRays = 8;
         bool renderDebugGradientImages = false;
         uint32_t surfelIndexForDebugImages = 1; // or kDebugGradientAllSurfels

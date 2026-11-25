@@ -2451,7 +2451,7 @@ namespace Pale {
 
             SurfelBrdfMaterialDerivatives localMaterial;
             const float3 brdf = surfel
-                ? evaluateSurfelBrdf(settings.surfelBrdfKind, *surfel, surfaceNormalW, lightDirection, outgoing,
+                ? evaluateSurfelBrdf(settings.stableGgx, settings.surfelBrdfKind, *surfel, surfaceNormalW, lightDirection, outgoing,
                     material ? &localMaterial : nullptr)
                 : diffuseBrdf;
             accumulatedRadiance +=

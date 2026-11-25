@@ -3,17 +3,109 @@
 //
 #include "Renderer/Kernels/AdjointKernels.h"
 #include "Renderer/AdjointSampling.h"
+#include "Renderer/AdjointKernelProgress.h"
 #include "AdjointGradientKernels.h"
 #include "Core/ScopedTimer.h"
 #include "IntersectionKernels.h"
 #include "CameraCoverage.h"
 #include "Renderer/Kernels/KernelHelpers.h"
 #include "spdlog/fmt/bundled/base.h"
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <exception>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 import Pale.Log;
 namespace Pale {
+    namespace {
+        using ProgressClock = std::chrono::steady_clock;
+        struct TrackedAdjointKernel {
+            std::string_view name;
+            ProgressClock::time_point started;
+            std::optional<sycl::event> event;
+            bool ready = false;
+        };
+
+        std::atomic_bool trackAdjointKernels{false};
+        std::mutex adjointProgressMutex;
+        std::vector<TrackedAdjointKernel> adjointKernelDispatches;
+        bool waitForKernelCompletion = false;
+        std::uint64_t currentAdjointPass = 0;
+        thread_local std::uint64_t trackedAdjointPass = 0;
+    }
+
+    void enableAdjointKernelProgress(bool enabled) {
+        trackAdjointKernels.store(enabled, std::memory_order_relaxed);
+        if (!enabled) {
+            std::lock_guard lock(adjointProgressMutex);
+            adjointKernelDispatches.clear();
+            ++currentAdjointPass;
+        }
+    }
+
+    AdjointKernelProgressScope::AdjointKernelProgressScope(const sycl::queue& queue) {
+        if (!trackAdjointKernels.load(std::memory_order_relaxed)) return;
+        std::lock_guard lock(adjointProgressMutex);
+        adjointKernelDispatches.clear();
+        waitForKernelCompletion = queue.get_device().is_cpu();
+        trackedAdjointPass = pass_ = ++currentAdjointPass;
+        exceptions_ = std::uncaught_exceptions();
+    }
+
+    AdjointKernelProgressScope::~AdjointKernelProgressScope() {
+        if (!pass_) return;
+        trackedAdjointPass = 0;
+        if (std::uncaught_exceptions() > exceptions_) {
+            std::lock_guard lock(adjointProgressMutex);
+            if (pass_ == currentAdjointPass) adjointKernelDispatches.clear();
+        }
+    }
+
+    AdjointKernelDispatch::AdjointKernelDispatch(std::string_view name) {
+        if (!trackedAdjointPass) return;
+        std::lock_guard lock(adjointProgressMutex);
+        if (trackedAdjointPass != currentAdjointPass) return;
+        for (const auto& kernel : adjointKernelDispatches) {
+            if (kernel.name == name) return;
+        }
+        index_ = adjointKernelDispatches.size();
+        adjointKernelDispatches.push_back({name, ProgressClock::now(), std::nullopt});
+        pass_ = trackedAdjointPass;
+    }
+
+    void AdjointKernelDispatch::submitted(const sycl::event& event) const {
+        if (!pass_) return;
+        std::lock_guard lock(adjointProgressMutex);
+        if (pass_ == currentAdjointPass) adjointKernelDispatches[index_].event = event;
+    }
+
+    std::string adjointKernelProgressMessage() {
+        using Status = sycl::info::event_command_status;
+        std::lock_guard lock(adjointProgressMutex);
+        const TrackedAdjointKernel* pending = nullptr;
+        std::size_t ready = 0;
+        for (auto& kernel : adjointKernelDispatches) {
+            if (kernel.event) {
+                const auto status = kernel.event->get_info<sycl::info::event::command_execution_status>();
+                // On GPUs AdaptiveCpp submits after JIT/cache work. Its CPU
+                // backend queues that work on a worker, so wait for completion.
+                if (status == Status::complete || (!waitForKernelCompletion && status == Status::running)) {
+                    kernel.ready = true;
+                    kernel.event.reset();
+                }
+            }
+            if (kernel.ready) ++ready;
+            else if (!pending) pending = &kernel;
+        }
+        // A warm queue usually dispatches faster than the user can read this.
+        if (!pending || ProgressClock::now() - pending->started < std::chrono::milliseconds(200)) return {};
+        return "Preparing adjoint kernels · " + std::to_string(ready) + "/" +
+            std::to_string(adjointKernelDispatches.size()) + " ready · " + std::string(pending->name);
+    }
+
     static void waitForAdjointKernelTiming(sycl::event &event) {
         // DeviceSelector uses an in-order queue. Intermediate consumers are
         // ordered without a host barrier; retain barriers for scoped timings.
@@ -393,7 +485,7 @@ namespace Pale {
                             SurfelBrdfMaterialDerivatives material;
                             const auto &surface = eventRecord.xSurface[i];
                             const float3 brdf = evaluateSurfelBrdf(
-                                settings.surfelBrdfKind, scene.points[primitiveIndex], orientedNormals[i],
+                                settings.stableGgx, settings.surfelBrdfKind, scene.points[primitiveIndex], orientedNormals[i],
                                 lightDirection, -surface.incomingDirection, &material);
                             directRadianceOut[i] += incident * brdf;
                             materialOut[i].baseColor += incident * material.baseColor;
@@ -995,6 +1087,7 @@ namespace Pale {
         const uint32_t imageWidth = sensor.camera.width;
         const uint32_t imageHeight = sensor.camera.height;
         uint32_t raysPerSet = imageWidth * imageHeight;
+        const AdjointKernelDispatch dispatch("Ray generation");
         sycl::event kernelEvent1 = queue.parallel_for<struct RayGenAdjointKernelTag>(
             sycl::range<1>(raysPerSet), [=](sycl::id<1> globalId) {
                 const auto globalRayIndex = static_cast<uint32_t>(globalId[0]);
@@ -1048,6 +1141,7 @@ namespace Pale {
                     clearPendingAdjointStageX(intermediates.pendingStageX[rayState.pathId]);
                 }
             });
+        dispatch.submitted(kernelEvent1);
         waitForAdjointKernelTiming(kernelEvent1);
     }
 
@@ -1071,6 +1165,7 @@ namespace Pale {
             pkg.singlePointCloudInstance && rendererDebugPointHitBatchSize(settings) > 1u &&
             intermediates.adjointPrimarySlabCache != nullptr &&
             activeRayCount <= intermediates.adjointPrimarySlabCacheCapacity;
+        const AdjointKernelDispatch dispatch("Ray intersection");
         sycl::event kernelEvent2 = queue.parallel_for<AdjointIntersectKernel<ProfileCounters>>(
             sycl::range<1>(activeRayCount), [=](sycl::id<1> globalId) {
                 GPUSceneBuffers scene = sceneCapture;
@@ -1420,6 +1515,7 @@ namespace Pale {
                     addRenderProfileCounter(&counters->adjointMaxSplatTerminations, profileLimits);
                 }
             });
+        dispatch.submitted(kernelEvent2);
         waitForAdjointKernelTiming(kernelEvent2);
     }
 
@@ -1464,6 +1560,7 @@ namespace Pale {
         // One work item evaluates each slab's lighting once, then emits both
         // target and camera-visibility gradients. Each member keeps its own
         // shadow connection when lighting is not shared.
+        const AdjointKernelDispatch dispatch("Surface gradients");
         sycl::event kernelEvent = queue.parallel_for(sycl::range<1>(measurementEventCount), [=](sycl::id<1> globalId) {
             GPUSceneBuffers scene = sceneCapture;
             if constexpr (!ProfileCounters) scene.profileCounters = nullptr;
@@ -1706,6 +1803,7 @@ namespace Pale {
                 suffixTransmittance *= occluder.oneMinusAlpha;
             }
         });
+        dispatch.submitted(kernelEvent);
         waitForAdjointKernelTiming(kernelEvent);
     }
 
@@ -1766,6 +1864,7 @@ namespace Pale {
         // One work item owns one slab/light event. It traverses the shared
         // x_Q-to-light segment once and distributes the result over all slab
         // members. x_Q, the anchor normal, and the launch offset are detached.
+        const AdjointKernelDispatch dispatch("Point-light gradients");
         sycl::event kernelEvent = queue.parallel_for(
             sycl::range<1>(eventCount),
             [=](sycl::id<1> globalId) {
@@ -1810,7 +1909,7 @@ namespace Pale {
                     memberSurfaceCosine[localIndex] = surfaceCosine;
                     hasActiveMember = true;
                     const float3 brdf = evaluateSurfelBrdf(
-                        settings.surfelBrdfKind, surfel, state.orientedNormal,
+                        settings.stableGgx, settings.surfelBrdfKind, surfel, state.orientedNormal,
                         rayDirection, -surface.incomingDirection);
                     memberBrdf[localIndex] = brdf;
                     const float layerWeight = eventRecord.layerWeights[localIndex];
@@ -2125,7 +2224,7 @@ namespace Pale {
                                 (eventRecord.layerWeights[parameterIndex] * segmentTransmittance *
                                  inverseDistanceSquared * memberSurfaceCosine[parameterIndex] * invSpp);
                             const auto gradient = differentiateSurfelGgxDirections(
-                                surfel, state.orientedNormal, rayDirection, -surface.incomingDirection, brdfAdjoint);
+                                settings.stableGgx, surfel, state.orientedNormal, rayDirection, -surface.incomingDirection, brdfAdjoint);
                             gradWorldRotation += cross(state.orientedNormal, gradient.normal);
                         }
                     }
@@ -2151,7 +2250,7 @@ namespace Pale {
                     SurfelBrdfMaterialDerivatives material{.baseColor = float3{surfel.alpha_r * M_1_PIf}};
                     if (settings.surfelBrdfKind == SurfelBrdfKind::Ggx) {
                         evaluateSurfelBrdf(
-                            settings.surfelBrdfKind, surfel, state.orientedNormal,
+                            settings.stableGgx, settings.surfelBrdfKind, surfel, state.orientedNormal,
                             rayDirection, -surface.incomingDirection, &material);
                     }
                     const float albedoScale = eventRecord.layerWeights[parameterIndex] * invSpp;
@@ -2198,6 +2297,7 @@ namespace Pale {
                     }
                 }
             });
+        dispatch.submitted(kernelEvent);
         waitForAdjointKernelTiming(kernelEvent);
     }
 
@@ -2228,6 +2328,7 @@ namespace Pale {
         // slabs are sparse; reserving a work item (and traversal private state)
         // for every possible member leaves most lanes inactive. Each member
         // still reconstructs and differentiates its own light connection.
+        const AdjointKernelDispatch dispatch("Point-light gradients");
         sycl::event kernelEvent4 = queue.parallel_for(sycl::range<1>(eventCount), [=](sycl::id<1> globalId) {
             GPUSceneBuffers scene = sceneCapture;
             if constexpr (!ProfileCounters) scene.profileCounters = nullptr;
@@ -2257,7 +2358,7 @@ namespace Pale {
                 const float3 rayDirection = segmentVector / targetDistance;
                 const float3 outgoing = -xSurface.incomingDirection;
                 const float3 brdfX = evaluateSurfelBrdf(
-                    settings.surfelBrdfKind, surfelX, xState.orientedNormal, rayDirection, outgoing);
+                    settings.stableGgx, settings.surfelBrdfKind, surfelX, xState.orientedNormal, rayDirection, outgoing);
                 const float3 transportWithoutTauAndGeometric = pointLightIntensity * layerWeight * brdfX;
                 const float scalarWeightWithoutTauAndGeometric = dot(pathWeight, transportWithoutTauAndGeometric);
                 const bool ggx = settings.surfelBrdfKind == SurfelBrdfKind::Ggx;
@@ -2523,7 +2624,7 @@ namespace Pale {
                     const float3 brdfAdjoint = pathWeight * pointLightIntensity *
                         (layerWeight * segmentTransmittance * lightGeometry.geometricTerm * invSpp);
                     const auto gradient = differentiateSurfelGgxDirections(
-                        surfelX, xState.orientedNormal, rayDirection, outgoing, brdfAdjoint);
+                        settings.stableGgx, surfelX, xState.orientedNormal, rayDirection, outgoing, brdfAdjoint);
                     gradBrdfWrtNormal = gradient.normal;
                     // The light direction is normalize(light position - hit position).
                     gradEdgeWrtHitPosition -=
@@ -2561,6 +2662,7 @@ namespace Pale {
                 }
             }
         });
+        dispatch.submitted(kernelEvent4);
         waitForAdjointKernelTiming(kernelEvent4);
     }
 
@@ -2597,10 +2699,12 @@ namespace Pale {
                                             uint32_t cameraSlotCount) {
         const auto gradients = pkg.gradients;
         const SurfelGradientRecord *records = pkg.intermediates.gradientRecords;
+        const AdjointKernelDispatch dispatch("Gradient reduction");
         auto event = pkg.queue.parallel_for<struct reduceSurfelGradientRecords>(
             sycl::range<1>(gradientRecordCount), [=](sycl::id<1> id) {
                 accumulateSurfelGradientRecordDirect(gradients, records[id[0]], cameraSlot, cameraSlotCount);
             });
+        dispatch.submitted(event);
         waitForAdjointKernelTiming(event);
     }
 
@@ -2630,6 +2734,7 @@ namespace Pale {
         auto gradients = pkg.gradients;
         const uint32_t pointCount = static_cast<uint32_t>(gradients.numPoints);
         const uint32_t cameraSlotCount = static_cast<uint32_t>(gradients.cameraSlotCount);
+        const AdjointKernelDispatch dispatch("Clone statistics");
         sycl::event kernelEvent6 = queue.parallel_for<class ComputePerPrimitiveCloneSignalStatsKernel>(
             sycl::range<1>(pointCount), [=](sycl::id<1> globalId) {
                 const uint32_t primitiveIndex = static_cast<uint32_t>(globalId[0]);
@@ -2682,6 +2787,7 @@ namespace Pale {
                 gradients.cloneSignalDisagreement[primitiveIndex] = cloneSignalDisagreement;
                 gradients.cloneSignalActiveCameraCount[primitiveIndex] = cloneSignalActiveCameraCount;
             });
+        dispatch.submitted(kernelEvent6);
         waitForAdjointKernelTiming(kernelEvent6);
     }
 
@@ -2727,6 +2833,7 @@ namespace Pale {
         const uint32_t height = sensor.height;
         const uint32_t pixelCount = width * height;
         const bool useMeanDepth = pkg.settings.normalFromDepthUseMeanDepth;
+        const AdjointKernelDispatch dispatch("Depth normals");
         sycl::event kernelEvent7 = queue.parallel_for<class NormalFromDepthAdjointKernel>(
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 const uint32_t pixelIndex = tid[0];
@@ -2791,6 +2898,7 @@ namespace Pale {
                 atomicAddFloat(sensor.medianDepthAdjointBuffer[idxU], gZU);
                 atomicAddFloat(sensor.medianDepthAdjointBuffer[idxD], gZD);
             });
+        dispatch.submitted(kernelEvent7);
         waitForAdjointKernelTiming(kernelEvent7);
     }
 
@@ -2899,6 +3007,7 @@ namespace Pale {
         const auto gradients = pkg.gradients;
         const bool writeDebugImages = settings.renderDebugGradientImages && pkg.debugImages != nullptr;
         const DebugImages debug = writeDebugImages ? pkg.debugImages[cameraIndex] : DebugImages{};
+        const AdjointKernelDispatch dispatch("Camera coverage");
         auto event = pkg.queue.parallel_for<class CameraCoverageBackwardKernelTag>(
             sycl::range<1>(sensor.width * sensor.height), [=](sycl::id<1> id) {
                 const auto pixel = static_cast<uint32_t>(id[0]);
@@ -2978,6 +3087,7 @@ namespace Pale {
                     }
                 }
             });
+        dispatch.submitted(event);
         waitForAdjointKernelTiming(event);
     }
 
@@ -3009,6 +3119,7 @@ namespace Pale {
         const float localLayerDepthEpsilon = rendererDebugLocalLayerDepthEpsilon(settings);
         const float localLayerNormalCosineThreshold =
                 rendererDebugLocalLayerNormalCosineThreshold(settings);
+        const AdjointKernelDispatch dispatch("Surface regularizers");
         sycl::event kernelEvent8 = queue.parallel_for<class SurfaceRegularizersBackwardKernel>(
             sycl::range<1>(pixelCount), [=](sycl::id<1> tid) {
                 constexpr float kAlphaEpsilon = 1.0e-8f;
@@ -3582,6 +3693,7 @@ namespace Pale {
                 }
 
             });
+        dispatch.submitted(kernelEvent8);
         waitForAdjointKernelTiming(kernelEvent8);
     }
 

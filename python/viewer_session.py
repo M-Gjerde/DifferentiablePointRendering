@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,40 @@ class ViewerSession:
                           mesh_extraction_interval=getattr(config,"mesh_extraction_interval",0),
                           parameters={key: float(getattr(config, key)) for key in TUNABLE_FIELDS})
         self._write_status(force=True)
+
+    @contextmanager
+    def monitor_adjoint_kernels(self, renderer_module):
+        # Older locally selected modules can still launch training.
+        message = getattr(renderer_module, "adjoint_kernel_progress_message", None)
+        if message is None:
+            yield
+            return
+
+        stop = threading.Event()
+        path = self.directory / "adjoint_progress.json"
+
+        def publish_progress():
+            previous = ""
+            while not stop.wait(0.1):
+                current = message()
+                if current != previous:
+                    try:
+                        atomic_json(path, {"message": current})
+                    except OSError:
+                        return
+                    previous = current
+
+        renderer_module.enable_adjoint_kernel_progress(True)
+        worker = threading.Thread(target=publish_progress, name="adjoint-progress", daemon=True)
+        worker.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            worker.join()
+            renderer_module.enable_adjoint_kernel_progress(False)
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
 
     def boundary(self, config, iteration: int) -> dict[str, float]:
         """Commands are consumed at iteration boundaries, never inside kernels."""

@@ -83,13 +83,14 @@ def apply_local_rotation_update_to_quaternions_inplace(
         }
 
 
-def _sample_beta_footprint_positions(positions, rotations, scales, betas, count):
+def _sample_beta_footprint_positions(positions, rotations, scales, betas, count, generator=None):
     """Draw independent positions from each parent's normalized tangent-plane kernel."""
     tu, tv, _ = quaternion_to_tangent_frame_torch(rotations)
     # K(u,v) = (1-u^2-v^2)^b, b = 4*exp(beta), on the unit disk.
     # Including the polar area Jacobian gives r^2 ~ Beta(1, b+1).
     beta_exponent = 4.0 * torch.exp(betas.reshape(-1))
-    uniforms = torch.rand((positions.shape[0], count, 2), device=positions.device, dtype=positions.dtype)
+    uniforms = torch.rand((positions.shape[0], count, 2), device=positions.device,
+                          dtype=positions.dtype, generator=generator)
     # Stable inverse CDF: 1 - (1-U)^(1/(b+1)), including sharp kernels.
     radius = torch.sqrt(-torch.expm1(
         torch.log1p(-uniforms[:, :, 0]) / (beta_exponent[:, None] + 1.0)
@@ -119,6 +120,7 @@ def make_under_reconstruction_clones(
         clone_max_scale=None,
         grad_position_np=None,
     clone_view_supported=None,
+    generator=None,
 ):
     """Optionally clone small surfels within their footprint and split larger ones.
 
@@ -232,7 +234,7 @@ def make_under_reconstruction_clones(
 
         if split_idx.numel() > 0:
             sampled = _sample_beta_footprint_positions(
-                positions[split_idx], rotations[split_idx], scales[split_idx], betas[split_idx], 2,
+                positions[split_idx], rotations[split_idx], scales[split_idx], betas[split_idx], 2, generator,
             )
             child_sc = scales[split_idx] / safe_clone_scale_factor
 
@@ -251,7 +253,7 @@ def make_under_reconstruction_clones(
 
         if clone_idx.numel() > 0:
             children["position"][:clone_idx.numel()] = _sample_beta_footprint_positions(
-                positions[clone_idx], rotations[clone_idx], scales[clone_idx], betas[clone_idx], 1,
+                positions[clone_idx], rotations[clone_idx], scales[clone_idx], betas[clone_idx], 1, generator,
             )[:, 0]
 
         scores = selection_score[source_index_t].cpu().numpy().astype(np.float32, copy=False)

@@ -151,7 +151,7 @@ namespace Pale {
     };
 
     inline bool computeSurfelGgxTerms(
-        const Point& surfel, const float3& normal,
+        bool stableGgx, const Point& surfel, const float3& normal,
         const float3& incoming, const float3& outgoing, SurfelGgxTerms& terms) {
         const float nDotI = dot(normal, incoming);
         const float nDotO = dot(normal, outgoing);
@@ -176,7 +176,13 @@ namespace Pale {
         const float alphaSquared = alpha * alpha;
         terms.oneMinusAlphaSquared = 1.0f - alphaSquared;
         const float nDotHSquared = terms.nDotH * terms.nDotH;
-        terms.distributionDenom = (1.0f - nDotHSquared) + alphaSquared * nDotHSquared;
+        if (stableGgx) {
+            // For unit vectors, |n x h|^2 equals 1 - (n.h)^2, including at half-width.
+            const float3 sinHalf = cross(normal, terms.halfVector);
+            terms.distributionDenom = dot(sinHalf, sinHalf) + alphaSquared * nDotHSquared;
+        } else {
+            terms.distributionDenom = (1.0f - nDotHSquared) + alphaSquared * nDotHSquared;
+        }
         const float distribution = (alphaSquared * M_1_PIf) /
             (terms.distributionDenom * terms.distributionDenom);
         terms.smithRootI = sycl::sqrt(alphaSquared + terms.oneMinusAlphaSquared * nDotI * nDotI);
@@ -189,7 +195,7 @@ namespace Pale {
     }
 
     inline float3 evaluateSurfelBrdf(
-        SurfelBrdfKind kind, const Point& surfel, const float3& normal,
+        bool stableGgx, SurfelBrdfKind kind, const Point& surfel, const float3& normal,
         const float3& incoming, const float3& outgoing,
         SurfelBrdfMaterialDerivatives* material = nullptr) {
         if (material) *material = {};
@@ -199,7 +205,7 @@ namespace Pale {
         }
 
         SurfelGgxTerms terms{};
-        if (!computeSurfelGgxTerms(surfel, normal, incoming, outgoing, terms)) {
+        if (!computeSurfelGgxTerms(stableGgx, surfel, normal, incoming, outgoing, terms)) {
             return float3{0.0f};
         }
         const float3 oneMinusFresnel = float3{1.0f} - terms.fresnel;
@@ -236,10 +242,10 @@ namespace Pale {
     };
 
     inline SurfelBrdfDirectionGradient differentiateSurfelGgxDirections(
-        const Point& surfel, const float3& normal, const float3& incoming,
+        bool stableGgx, const Point& surfel, const float3& normal, const float3& incoming,
         const float3& outgoing, const float3& adjoint) {
         SurfelGgxTerms terms{};
-        if (!computeSurfelGgxTerms(surfel, normal, incoming, outgoing, terms)) return {};
+        if (!computeSurfelGgxTerms(stableGgx, surfel, normal, incoming, outgoing, terms)) return {};
 
         const float specularWeight =
             dot(adjoint, terms.fresnel) * surfel.alpha_r * terms.specularWithoutFresnel;
@@ -254,6 +260,19 @@ namespace Pale {
             terms.oneMinusViewHalf * terms.oneMinusViewHalf *
             dot(adjoint, (float3{1.0f} - terms.fresnelZero) *
                 (float3{terms.specularWithoutFresnel} - terms.diffuse));
+        if (stableGgx) {
+            // Only tangents to the unit normal and normalized half-vector are observable.
+            // Form the small vectors before multiplying by the large dD/d(n.h).
+            const float3 sinHalf = cross(normal, terms.halfVector);
+            const float3 normalTangent = cross(sinHalf, normal);
+            const float3 halfTangent = cross(terms.halfVector, sinHalf);
+            const float3 viewTangent = cross(cross(terms.halfVector, outgoing), terms.halfVector);
+            return {
+                dIncomingCosine * incoming + dOutgoingCosine * outgoing + dHalfCosine * normalTangent,
+                dIncomingCosine * normal +
+                    (dHalfCosine * halfTangent + dViewHalf * viewTangent) * terms.inverseHalfLength,
+            };
+        }
         const float3 halfGradient = dHalfCosine * normal + dViewHalf * outgoing;
         return {
             dIncomingCosine * incoming + dOutgoingCosine * outgoing + dHalfCosine * terms.halfVector,

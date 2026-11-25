@@ -4,6 +4,7 @@
 #include <pybind11/stl.h>
 
 #include "Renderer/RenderPackage.h"
+#include "Renderer/AdjointKernelProgress.h"
 #include "Renderer/SurfaceOverlapScene.h"
 #include <chrono>
 #include "Renderer/Kernels/KernelHelpers.h"
@@ -181,6 +182,7 @@ class PythonRenderer
 
     struct RgbLossOptions
     {
+        float rgbAsinhScale = 0.0f;
         float alphaLossWeight = 0.0f;
         bool alphaLossOpacityOnly = false;
         bool alphaLossAbsolute = false;
@@ -203,6 +205,7 @@ class PythonRenderer
 
     struct DeviceTrainingStepOptions
     {
+        float minimumRoughness = Pale::kMinimumGgxRoughness;
         std::string optimizer = "adam";
         bool skipZeroGradientSurfels = false;
         bool useLogScale = true;
@@ -375,6 +378,7 @@ public:
                 get_b(settingsDict,
                       "share_local_layer_direct_lighting",
                       m_settings.rendererDebugShareLocalLayerDirectLighting);
+            m_settings.stableGgx = get_b(settingsDict, "stable_ggx", false);
             const std::string surfelBsdf = get_s(settingsDict, "surfel_bsdf", "lambertian");
             if (surfelBsdf == "ggx") {
                 m_settings.surfelBrdfKind = Pale::SurfelBrdfKind::Ggx;
@@ -1086,25 +1090,27 @@ public:
         auto queue = deviceSelector->getQueue();
         auto batch = selectTrainingBatch(cameraNamesList, "evaluate_loss_from_current_forward");
         const auto options = parseRgbLossOptions(optionsDictionary);
-        std::vector<std::array<float, 2>> components(batch.sensors.size());
+        std::vector<std::array<float, 3>> components(batch.sensors.size());
         try {
             py::gil_scoped_release release;
             for (std::size_t i = 0; i < batch.sensors.size(); ++i) {
                 launchRgbLossAdjointKernel(queue, batch.sensors[i], *batch.targets[i], options, false);
-                queue.memcpy(components[i].data(), batch.targets[i]->loss, 2 * sizeof(float));
+                queue.memcpy(components[i].data(), batch.targets[i]->loss, sizeof(components[i]));
             }
             queue.wait_and_throw();
         } catch (...) { queue.wait(); throw; }
-        py::dict total, rgb, alpha;
+        py::dict total, rgb, linearL2, alpha;
         for (std::size_t i = 0; i < batch.sensors.size(); ++i) {
             const auto name = py::str(batch.targets[i]->cameraName);
             total[name] = components[i][0] + components[i][1];
             rgb[name] = components[i][0];
+            linearL2[name] = components[i][2];
             alpha[name] = components[i][1];
         }
         py::dict result;
         result["loss_values"] = total;
-        result["l2_loss_values"] = rgb;
+        result["rgb_loss_values"] = rgb;
+        result["l2_loss_values"] = linearL2;
         result["alpha_loss_values"] = alpha;
         return result;
     }
@@ -1141,11 +1147,11 @@ public:
         }
 
         py::dict lossValues;
-        py::dict l2LossValues;
+        py::dict rgbLossValues, l2LossValues;
         py::dict alphaLossValues;
         for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
         {
-            std::array<float, 2> lossComponents{};
+            std::array<float, 3> lossComponents{};
             syclQueue.memcpy(
                 lossComponents.data(),
                 selectedBatch.targets[cameraIndex]->loss,
@@ -1155,11 +1161,13 @@ public:
                 strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
             lossValues[py::str(cameraName)] = lossComponents[0] + lossComponents[1];
             alphaLossValues[py::str(cameraName)] = lossComponents[1];
-            l2LossValues[py::str(cameraName)] = lossComponents[0];
+            rgbLossValues[py::str(cameraName)] = lossComponents[0];
+            l2LossValues[py::str(cameraName)] = lossComponents[2];
         }
 
         py::dict adjointImages;
         adjointImages["loss_values"] = std::move(lossValues);
+        adjointImages["rgb_loss_values"] = std::move(rgbLossValues);
         adjointImages["l2_loss_values"] = std::move(l2LossValues);
         adjointImages["alpha_loss_values"] = std::move(alphaLossValues);
         adjointImages["gradient_stats"] = makeGradientStatsDictionary(gradients);
@@ -1213,11 +1221,11 @@ public:
         }
 
         py::dict lossValues;
-        py::dict l2LossValues;
+        py::dict rgbLossValues, l2LossValues;
         py::dict alphaLossValues;
         for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
         {
-            std::array<float, 2> lossComponents{};
+            std::array<float, 3> lossComponents{};
             syclQueue.memcpy(
                 lossComponents.data(),
                 selectedBatch.targets[cameraIndex]->loss,
@@ -1227,11 +1235,13 @@ public:
                 strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
             lossValues[py::str(cameraName)] = lossComponents[0] + lossComponents[1];
             alphaLossValues[py::str(cameraName)] = lossComponents[1];
-            l2LossValues[py::str(cameraName)] = lossComponents[0];
+            rgbLossValues[py::str(cameraName)] = lossComponents[0];
+            l2LossValues[py::str(cameraName)] = lossComponents[2];
         }
 
         py::dict result;
         result["loss_values"] = std::move(lossValues);
+        result["rgb_loss_values"] = std::move(rgbLossValues);
         result["l2_loss_values"] = std::move(l2LossValues);
         result["alpha_loss_values"] = std::move(alphaLossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
@@ -1277,11 +1287,11 @@ public:
         }
 
         py::dict lossValues;
-        py::dict l2LossValues;
+        py::dict rgbLossValues, l2LossValues;
         py::dict alphaLossValues;
         for (std::size_t cameraIndex = 0; cameraIndex < selectedBatch.sensors.size(); ++cameraIndex)
         {
-            std::array<float, 2> lossComponents{};
+            std::array<float, 3> lossComponents{};
             syclQueue.memcpy(
                 lossComponents.data(),
                 selectedBatch.targets[cameraIndex]->loss,
@@ -1291,11 +1301,13 @@ public:
                 strnlen(selectedBatch.sensors[cameraIndex].name, sizeof(selectedBatch.sensors[cameraIndex].name)));
             lossValues[py::str(cameraName)] = lossComponents[0] + lossComponents[1];
             alphaLossValues[py::str(cameraName)] = lossComponents[1];
-            l2LossValues[py::str(cameraName)] = lossComponents[0];
+            rgbLossValues[py::str(cameraName)] = lossComponents[0];
+            l2LossValues[py::str(cameraName)] = lossComponents[2];
         }
 
         py::dict result;
         result["loss_values"] = std::move(lossValues);
+        result["rgb_loss_values"] = std::move(rgbLossValues);
         result["l2_loss_values"] = std::move(l2LossValues);
         result["alpha_loss_values"] = std::move(alphaLossValues);
         result["point_count"] = static_cast<std::uint64_t>(gradients.numPoints);
@@ -1372,7 +1384,7 @@ public:
         const bool hasRegularizers = regularizers.depth || regularizers.normal || regularizers.intra;
         if (hasRegularizers) ensureSensorAdjoints(batch.sensors);
         SurfaceRegularizerHostValues logging;
-        std::vector<std::array<float, 2>> imageLosses(batch.sensors.size());
+        std::vector<std::array<float, 3>> imageLosses(batch.sensors.size());
         try
         {
             py::gil_scoped_release release;
@@ -1398,7 +1410,7 @@ public:
             launchPointBvhRefitKernel(queue);
             if (hasRegularizers) enqueueSurfaceRegularizerLogging(queue, logging);
             for (std::size_t i = 0; i < batch.sensors.size(); ++i)
-                queue.memcpy(imageLosses[i].data(), batch.targets[i]->loss, 2 * sizeof(float));
+                queue.memcpy(imageLosses[i].data(), batch.targets[i]->loss, sizeof(imageLosses[i]));
             queue.wait_and_throw();
         }
         catch (...)
@@ -1407,15 +1419,17 @@ public:
             queue.wait();
             throw;
         }
-        py::dict lossValues, l2LossValues, alphaLossValues;
+        py::dict lossValues, rgbLossValues, l2LossValues, alphaLossValues;
         for (std::size_t i = 0; i < batch.sensors.size(); ++i) {
             const auto name = py::str(batch.targets[i]->cameraName);
             lossValues[name] = imageLosses[i][0] + imageLosses[i][1];
-            l2LossValues[name] = imageLosses[i][0];
+            rgbLossValues[name] = imageLosses[i][0];
+            l2LossValues[name] = imageLosses[i][2];
             alphaLossValues[name] = imageLosses[i][1];
         }
         py::dict result;
         result["loss_values"] = lossValues;
+        result["rgb_loss_values"] = rgbLossValues;
         result["l2_loss_values"] = l2LossValues;
         result["alpha_loss_values"] = alphaLossValues;
         if (hasRegularizers)
@@ -5149,6 +5163,9 @@ private:
             get_f(optionsDictionary, "learning_rate_opacity", options.learningRateOpacity);
         options.learningRateBeta =
             get_f(optionsDictionary, "learning_rate_beta", options.learningRateBeta);
+        options.minimumRoughness = get_f(optionsDictionary, "minimum_roughness", Pale::kMinimumGgxRoughness);
+        if (!std::isfinite(options.minimumRoughness) || options.minimumRoughness < Pale::kMinimumGgxRoughness || options.minimumRoughness > 1.0f)
+            throw std::invalid_argument("minimum_roughness must be in [GGX_MIN_ROUGHNESS, 1]");
         options.learningRateRoughness = get_f(optionsDictionary, "learning_rate_roughness", 0.0f);
         options.learningRateMetalness = get_f(optionsDictionary, "learning_rate_metalness", 0.0f);
         if (!std::isfinite(options.learningRateRoughness) || options.learningRateRoughness < 0.0f ||
@@ -5172,6 +5189,9 @@ private:
     static RgbLossOptions parseRgbLossOptions(const py::dict& optionsDictionary)
     {
         RgbLossOptions options;
+        options.rgbAsinhScale = get_f(optionsDictionary, "rgb_asinh_scale", 0.0f);
+        if (!std::isfinite(options.rgbAsinhScale) || options.rgbAsinhScale < 0.0f)
+            throw std::invalid_argument("rgb_asinh_scale must be finite and nonnegative");
         options.alphaLossWeight = get_f(optionsDictionary, "alpha_loss_weight", 0.0f);
         options.alphaLossOpacityOnly = get_b(optionsDictionary, "alpha_loss_opacity_only", false);
         options.alphaLossAbsolute = get_b(optionsDictionary, "alpha_loss_absolute", false);
@@ -5623,6 +5643,7 @@ private:
                 lrOpacity = options.learningRateOpacity,
                 lrBeta = options.learningRateBeta,
                 lrRoughness = options.learningRateRoughness,
+                minimumRoughness = options.minimumRoughness,
                 lrMetalness = options.learningRateMetalness,
                 cameraBatchScale = options.cameraBatchScale](sycl::id<1> itemId)
             {
@@ -5795,9 +5816,9 @@ private:
                 const float metalnessGradient = lrMetalness > 0.0f
                     ? cleanGradient(gradMetalness[primitiveIndex] * cameraBatchScale) : 0.0f;
                 // Project legacy values below the lobe floor even if the current gradient is zero.
-                if (lrRoughness > 0.0f && point.roughness < Pale::kMinimumGgxRoughness)
+                if (lrRoughness > 0.0f && point.roughness < minimumRoughness)
                 {
-                    point.roughness = Pale::kMinimumGgxRoughness;
+                    point.roughness = minimumRoughness;
                 }
 
                 // Scene storage remains in physical radii in every optimization mode.
@@ -6001,7 +6022,7 @@ private:
                 {
                     const float update = adamUpdate(
                         roughnessGradient, roughnessM[primitiveIndex], roughnessV[primitiveIndex], lrRoughness);
-                    point.roughness = clampValue(point.roughness - update, Pale::kMinimumGgxRoughness, 1.0f);
+                    point.roughness = clampValue(point.roughness - update, minimumRoughness, 1.0f);
                 }
                 if (lrMetalness > 0.0f)
                 {
@@ -6631,7 +6652,8 @@ private:
 
         const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         target.rgba = sycl::malloc_device<Pale::float4>(pixelCount, queue);
-        target.loss = sycl::malloc_device<float>(2u, queue);
+        // Optimized RGB objective, weighted alpha loss, and linear-RGB half-MSE.
+        target.loss = sycl::malloc_device<float>(3u, queue);
         if (!target.rgba || !target.loss)
         {
             throw std::runtime_error("ensureTrainingTargetCapacity: failed to allocate device target buffers");
@@ -6724,7 +6746,7 @@ private:
         sensor.densificationImageSpace = options.densificationImageSpace;
         const float floorSquared = options.densificationRadianceFloor * options.densificationRadianceFloor;
 
-        queue.fill(target.loss, 0.0f, 2u);
+        queue.fill(target.loss, 0.0f, 3u);
 
         queue.parallel_for<class RgbLossAdjointKernelTag>(
             sycl::range<1>(pixelCount),
@@ -6736,15 +6758,24 @@ private:
                 alphaLossWeight = options.alphaLossWeight,
                 alphaLossAbsolute = options.alphaLossAbsolute,
                 invElementCount, relativeDensification = options.relativeDensification,
-                floorSquared, writeAdjoints](sycl::id<1> pixelId)
+                floorSquared, rgbAsinhScale = options.rgbAsinhScale, writeAdjoints](sycl::id<1> pixelId)
             {
                 const std::uint32_t pixelIndex = static_cast<std::uint32_t>(pixelId[0]);
                 const Pale::float4 rendered = framebuffer[pixelIndex];
                 const Pale::float4 targetPixel = targetRgba[pixelIndex];
 
-                const float diffR = rendered.x() - targetPixel.x();
-                const float diffG = rendered.y() - targetPixel.y();
-                const float diffB = rendered.z() - targetPixel.z();
+                auto residual = [rgbAsinhScale](float prediction, float reference) {
+                    if (rgbAsinhScale == 0.0f) return prediction - reference;
+                    return rgbAsinhScale * (sycl::asinh(prediction / rgbAsinhScale) -
+                                            sycl::asinh(reference / rgbAsinhScale));
+                };
+                auto pullback = [rgbAsinhScale](float prediction) {
+                    if (rgbAsinhScale == 0.0f) return 1.0f;
+                    return rgbAsinhScale / sycl::hypot(prediction, rgbAsinhScale);
+                };
+                const float diffR = residual(rendered.x(), targetPixel.x());
+                const float diffG = residual(rendered.y(), targetPixel.y());
+                const float diffB = residual(rendered.z(), targetPixel.z());
                 const float l2Contribution =
                     0.5f * (diffR * diffR + diffG * diffG + diffB * diffB) * invElementCount;
 
@@ -6754,6 +6785,13 @@ private:
                     sycl::memory_scope::device,
                     sycl::access::address_space::global_space>(lossOut[0]);
                 lossAtomic.fetch_add(l2Contribution);
+                const float rawR = rendered.x() - targetPixel.x();
+                const float rawG = rendered.y() - targetPixel.y();
+                const float rawB = rendered.z() - targetPixel.z();
+                auto linearL2Atomic = sycl::atomic_ref<
+                    float, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                    sycl::access::address_space::global_space>(lossOut[2]);
+                linearL2Atomic.fetch_add(0.5f * (rawR*rawR + rawG*rawG + rawB*rawB) * invElementCount);
 
                 float barAlpha = 0.0f;
                 if (alphaLossWeight > 0.0f) {
@@ -6782,9 +6820,9 @@ private:
                         ? relativeDensificationWeight(rendered, targetPixel, floorSquared) : 0.0f;
 
                 framebuffer[pixelIndex] = Pale::float4{
-                    diffR * invElementCount,
-                    diffG * invElementCount,
-                    diffB * invElementCount,
+                    diffR * pullback(rendered.x()) * invElementCount,
+                    diffG * pullback(rendered.y()) * invElementCount,
+                    diffB * pullback(rendered.z()) * invElementCount,
                     barAlpha
                 };
             });
@@ -6839,7 +6877,10 @@ PYBIND11_MODULE(pale, m)
     m.attr("IMAGE_SPACE_DENSIFICATION_COORDINATES") = "ndc";
     m.attr("BETA_MIN") = Pale::kBetaMin;
     m.attr("BETA_MAX") = Pale::kBetaMax;
+    m.attr("SUPPORTS_HDR_TRAINING") = true;
     m.attr("GGX_MIN_ROUGHNESS") = Pale::kMinimumGgxRoughness;
+    m.def("enable_adjoint_kernel_progress", &Pale::enableAdjointKernelProgress);
+    m.def("adjoint_kernel_progress_message", &Pale::adjointKernelProgressMessage);
     py::class_<PythonRenderer>(m, "Renderer")
         .def(py::init<
                  const std::string&,

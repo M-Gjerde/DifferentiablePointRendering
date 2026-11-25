@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace viewer {
@@ -18,6 +19,7 @@ namespace viewer {
         std::filesystem::file_time_type stamp_{};
         std::string partial_;
         std::vector<std::string> header_;
+        static constexpr ImVec4 plotColors_[]={ui::blue,ui::accent,ui::green,{.82f,.5f,.76f,1},{.85f,.5f,.47f,1}};
         static std::vector<std::string> fields(const std::string& line) {
             std::vector<std::string> result;std::string value;bool quoted=false;
             for(std::size_t i=0;i<line.size();++i) {
@@ -33,6 +35,8 @@ namespace viewer {
             return end==value.c_str()||*end!='\0'?std::numeric_limits<float>::quiet_NaN():result;
         }
     public:
+        using Series = std::vector<std::pair<const char*,const char*>>;
+
         std::vector<float> iterations;
         std::map<std::string,std::vector<float>> columns;
         std::map<std::string,std::string> latestText;
@@ -86,19 +90,58 @@ namespace viewer {
             }
             return nearest;
         }
-        void plot(const char* label,const std::vector<std::pair<const char*,const char*>>& series,
-                  bool rolling,int window,bool logarithmic=false,float height=120,bool independentRightAxis=false,bool integerCounts=false,bool cumulative=false) const {
-            ImGui::PushID(label);ImGui::TextUnformatted(label);
-            static constexpr ImVec4 colors[]={ui::blue,ui::accent,ui::green,{.82f,.5f,.76f,1},{.85f,.5f,.47f,1}};
+        // Use measured update numbers even when the two runs evaluate at different intervals.
+        // Limit the reference to the observed run so a long control does not compress early training.
+        [[nodiscard]] TrainingMetrics withControlCD(const TrainingMetrics& control) const {
+            TrainingMetrics joined;
+            std::map<float,std::array<float,4>> rows;
+            const float missing=std::numeric_limits<float>::quiet_NaN();
+            const std::array<float,4> empty{missing,missing,missing,missing};
+            const float end=iterations.empty()?std::numeric_limits<float>::infinity():
+                *std::max_element(iterations.begin(),iterations.end());
+            const std::array<const char*,4> keys{"cd","accuracy","completion","control_cd"};
+            for(std::size_t i=0;i<iterations.size();++i) {
+                auto& row=rows.try_emplace(iterations[i],empty).first->second;
+                for(std::size_t c=0;c<3;++c)row[c]=static_cast<float>(sample(keys[c],i));
+            }
+            for(std::size_t i=0;i<control.iterations.size();++i) {
+                const float step=control.iterations[i];
+                const float cd=static_cast<float>(control.sample("cd",i));
+                if(step<=end&&std::isfinite(cd))rows.try_emplace(step,empty).first->second[3]=cd;
+            }
+            for(const auto& [step,row]:rows) {
+                joined.iterations.push_back(step);
+                for(std::size_t c=0;c<keys.size();++c)joined.columns[keys[c]].push_back(row[c]);
+            }
+            return joined;
+        }
+        void drawPlotHeading(const char* label,const Series& series,bool integerCounts=false,bool cumulative=false) const {
+            ImGui::TextUnformatted(label);
             const float legendRight=ImGui::GetCursorScreenPos().x+ImGui::GetContentRegionAvail().x;
             for(std::size_t i=0;i<series.size();++i) {
-                char text[160];const double value=cumulative&&!iterations.empty()?
+                char text[160];double value=cumulative&&!iterations.empty()?
                     sample(series[i].first,iterations.size()-1,true):latest(series[i].first);
+                // Union-aligned control checkpoints may end before the current run's latest measurement.
+                if(!std::isfinite(value)&&std::string_view(series[i].first)=="control_cd") {
+                    if(const auto col=columns.find("control_cd");col!=columns.end())
+                        for(auto it=col->second.rbegin();it!=col->second.rend();++it)
+                            if(std::isfinite(*it)) {value=*it;break;}
+                }
                 if(!std::isfinite(value))std::snprintf(text,sizeof(text),"%s —",series[i].second);
                 else std::snprintf(text,sizeof(text),integerCounts?"%s %.0f":"%s %.4g",series[i].second,value);
                 if(i&&ImGui::GetItemRectMax().x+ImGui::GetStyle().ItemSpacing.x+ImGui::CalcTextSize(text).x<legendRight)ImGui::SameLine();
-                ImGui::TextColored(colors[i%5],"%s",text);
+                ImGui::TextColored(plotColors_[i%5],"%s",text);
             }
+        }
+        void plot(const char* label,const Series& series,bool rolling,int window,bool logarithmic=false,float height=120,
+                  bool independentRightAxis=false,bool integerCounts=false,bool cumulative=false) const {
+            drawPlotHeading(label,series,integerCounts,cumulative);
+            drawPlotArea(label,series,rolling,window,logarithmic,height,independentRightAxis,integerCounts,cumulative);
+        }
+        void drawPlotArea(const char* label,const Series& series,bool rolling,int window,bool logarithmic=false,float height=120,
+                          bool independentRightAxis=false,bool integerCounts=false,bool cumulative=false) const {
+            ImGui::PushID(label);
+            const auto& colors=plotColors_;
             const auto origin=ImGui::GetCursorScreenPos();const ImVec2 size(std::max(60.f,ImGui::GetContentRegionAvail().x),height);
             ImGui::InvisibleButton("##plot",size);const bool hovered=ImGui::IsItemHovered();auto* draw=ImGui::GetWindowDrawList();
             draw->AddRectFilled(origin,ImVec2(origin.x+size.x,origin.y+size.y),ImGui::GetColorU32(ui::canvas),4);

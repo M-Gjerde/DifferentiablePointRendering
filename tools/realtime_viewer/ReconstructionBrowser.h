@@ -78,19 +78,20 @@ namespace viewer {
         [[nodiscard]] const std::filesystem::path& selection() const {return selection_;}
         [[nodiscard]] bool scanning() const {return scan_.valid();}
         [[nodiscard]] const std::filesystem::path& currentFolder() const {return folder_;}
-        std::optional<std::filesystem::path> draw(bool enabled) {
+        std::optional<std::filesystem::path> draw(bool enabled,bool control=false) {
             if(scan_.valid()&&scan_.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
                 try {
                     auto runs=scan_.get();
                     if(scanRoot_==root_) {runs_=std::move(runs);runsChanged_=true;revealSelection_=true;}else refresh();
                 }catch(const std::exception& error) {error_=error.what();}
             }
-            if(requested_) {ImGui::OpenPopup("Open reconstruction");requested_=false;}
+            const char* title=control?"Select control run":"Open reconstruction";
+            if(requested_) {ImGui::OpenPopup(title);requested_=false;}
             std::optional<std::filesystem::path> selected;
             ImGui::SetNextWindowSize(ImVec2(940,600),ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowSizeConstraints(ImVec2(720,440),ImVec2(FLT_MAX,FLT_MAX));
-            if(ImGui::BeginPopupModal("Open reconstruction",&visible_)) {
-                ImGui::TextUnformatted("Open a saved point cloud, objective history and recorded geometry metrics.");
+            if(ImGui::BeginPopupModal(title,&visible_)) {
+                ImGui::TextUnformatted(control?"Choose a run with recorded mesh CD.":"Open a saved point cloud, objective history and recorded geometry metrics.");
                 if(!enabled)ImGui::TextWrapped("Stop the current reconstruction before opening a saved run.");
                 if(ImGui::BeginTabBar("Sources")) {
                     if(ImGui::BeginTabItem("App outputs")) {
@@ -123,7 +124,7 @@ namespace viewer {
                             ImGui::TableSetupScrollFreeze(0,1);ImGui::TableHeadersRow();
                             auto* specs=ImGui::TableGetSortSpecs();sortRuns(specs);if(specs)specs->SpecsDirty=false;
                             std::vector<std::size_t> filtered;
-                            for(std::size_t i=0;i<runs_.size();++i)if(matches(runs_[i]))filtered.push_back(i);
+                            for(std::size_t i=0;i<runs_.size();++i)if(matches(runs_[i])&&(!control||runs_[i].hasGeometry))filtered.push_back(i);
                             auto current=std::find_if(filtered.begin(),filtered.end(),[&](auto i) {return runs_[i].directory==selection_;});
                             if(current==filtered.end()&&!filtered.empty()) {selection_=runs_[filtered.front()].directory;current=filtered.begin();revealSelection_=true;}
                             if(filtered.empty()&&!scan_.valid())selection_.clear();
@@ -158,7 +159,7 @@ namespace viewer {
                         }
                         ImGui::TextDisabled("Selected: %s",selection_.empty()?"None":selection_.lexically_relative(root_).string().c_str());
                         if(!enabled||selection_.empty())ImGui::BeginDisabled();
-                        if(ImGui::Button("Open selected reconstruction",ImVec2(-1,30)))selected=selection_;
+                        if(ImGui::Button(control?"Use selected control":"Open selected reconstruction",ImVec2(-1,30)))selected=selection_;
                         if(!enabled||selection_.empty())ImGui::EndDisabled();
                         ImGui::EndTabItem();
                     }
@@ -171,10 +172,10 @@ namespace viewer {
                             catch(const std::exception& error) {error_=error.what();}
                         }
                         if(ImGui::Button("Up"))navigate(folder_.parent_path());
-                        ImGui::SameLine();ImGui::TextUnformatted("Select the folder containing run_config.json and the saved outputs.");
-                        const bool valid=enabled&&isReconstructionDirectory(folder_);
+                        ImGui::SameLine();ImGui::TextUnformatted(control?"Select the folder containing geometry_metrics.csv.":"Select the folder containing run_config.json and the saved outputs.");
+                        const bool valid=enabled&&(control?reconstructionFile(folder_/"geometry_metrics.csv"):isReconstructionDirectory(folder_));
                         if(!valid)ImGui::BeginDisabled();
-                        if(ImGui::Button("Open this reconstruction",ImVec2(-1,30)))selected=folder_;
+                        if(ImGui::Button(control?"Use this control":"Open this reconstruction",ImVec2(-1,30)))selected=folder_;
                         if(!valid)ImGui::EndDisabled();
                         ImGui::TextDisabled("Folders · newest creation time first");
                         if(ImGui::BeginTable("RunFolders",2,ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_ScrollY,ImVec2(0,-42))) {

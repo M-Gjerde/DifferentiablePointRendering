@@ -360,6 +360,61 @@ namespace viewer {
         int requestedMonitorTab=-1;
         TrainingMetrics metrics,geometryMetrics,statusLossMetrics;
         ReconstructionBrowser reconstructionBrowser;
+        bool choosingControl=false;
+        std::map<std::string,std::string> controlRuns;
+        std::filesystem::path controlDirectory;
+        TrainingMetrics controlMetrics;
+        std::chrono::steady_clock::time_point nextControlRead{};
+        std::string controlError;
+        std::string controlDataset() const {
+            const auto& config=openedReconstruction?openedReconstruction->config:runConfig;
+            const auto recorded=reconstructionSetting(config,"dataset_path");
+            return (recorded.IsScalar()?std::filesystem::path(recorded.as<std::string>()):
+                std::filesystem::path(dataset.data())).lexically_normal().string();
+        }
+        void rememberControl(const std::filesystem::path& folder) {
+            const auto key=controlDataset();
+            auto updated=controlRuns;
+            if(folder.empty())updated.erase(key);
+            else updated[key]=folder.string();
+            auto saved=readJson(preferences);
+            if(!saved.IsMap())saved=YAML::Node(YAML::NodeType::Map);
+            saved["geometry_control_runs"]=updated;
+            writeJsonAtomic(preferences,saved);
+            controlRuns=std::move(updated);
+            nextControlRead={};
+            controlError.clear();
+        }
+        void refreshControlMetrics() {
+            const auto at=controlRuns.find(controlDataset());
+            const std::filesystem::path folder=at==controlRuns.end()?std::filesystem::path{}:std::filesystem::path(at->second);
+            if(folder!=controlDirectory) {
+                controlDirectory=folder;
+                controlMetrics=TrainingMetrics{};
+                nextControlRead={};
+                controlError.clear();
+            }
+            const auto now=std::chrono::steady_clock::now();
+            if(!controlDirectory.empty()&&now>=nextControlRead) {
+                const auto csv=controlDirectory/"geometry_metrics.csv";
+                if(reconstructionFile(csv))controlMetrics.update(csv,true);
+                else controlMetrics=TrainingMetrics{};
+                nextControlRead=now+std::chrono::seconds(1);
+            }
+        }
+        void drawControlPicker() {
+            if(ImGui::SmallButton("Select control run"))openReconstructionBrowser(true);
+            if(!controlDirectory.empty()) {
+                ImGui::SameLine();
+                if(ImGui::SmallButton("Clear##control")) {
+                    try {rememberControl({});}catch(const std::exception& ex) {controlError=ex.what();}
+                }
+                ImGui::TextWrapped("Control: %s",controlDirectory.filename().string().c_str());
+                if(ImGui::IsItemHovered())ImGui::SetTooltip("%s",controlDirectory.string().c_str());
+                if(controlMetrics.iterations.empty())ImGui::TextDisabled("Waiting for control geometry_metrics.csv");
+            }
+            if(!controlError.empty())ImGui::TextWrapped("%s",controlError.c_str());
+        }
         std::optional<SavedReconstruction> openedReconstruction,preparedReconstruction;
         std::future<SavedReconstruction> reconstructionLoad;
         std::filesystem::path historyPath;
@@ -375,6 +430,7 @@ namespace viewer {
         TrainingView view = TrainingView::Snapshot;
         YAML::Node status, live, runConfig;
         std::string message, log, selectableLog;
+        std::string adjointKernelStatus;
         ImGuiID logScrollInput=0,logScrollWindow=0;
         TrainingLog logReader;
         std::vector<float> losses;
@@ -428,6 +484,9 @@ namespace viewer {
                         set(*buffer, saved[key].as<std::string>());
                     }
                 densification.restore(saved["densification"]);
+                if(const auto records=saved["geometry_control_runs"];records&&records.IsMap())
+                    for(const auto& entry:records)if(entry.first.IsScalar()&&entry.second.IsScalar())
+                        controlRuns.emplace(entry.first.Scalar(),entry.second.Scalar());
             }
             refreshDatasets();
         }
@@ -468,8 +527,7 @@ namespace viewer {
                 if(!datasetRoot[0])throw std::runtime_error("Set the Dataset library folder in Run options first");
                 const auto root=expandedPath(datasetRoot.data(),std::filesystem::current_path());
                 std::filesystem::create_directories(root);
-                const auto open=ImGui::GetPlatformIO().Platform_OpenInShellFn;
-                if(!open||!open(ImGui::GetCurrentContext(),root.c_str()))
+                if(!ui::openFolderInShell(root))
                     throw std::runtime_error("Could not open dataset folder: "+root.string());
                 message="Dataset library: "+root.string();
             }catch(const std::exception& error) {message=error.what();}
@@ -529,17 +587,18 @@ namespace viewer {
                 message="Reconstruction output folder is unavailable: "+folder.string();
                 return;
             }
-            const auto open=ImGui::GetPlatformIO().Platform_OpenInShellFn;
-            if(!open||!open(ImGui::GetCurrentContext(),folder.c_str()))
+            if(!ui::openFolderInShell(folder))
                 message="Could not open reconstruction output folder: "+folder.string();
         }
         [[nodiscard]] const std::filesystem::path& runIdentity() const {
             return openedReconstruction?openedReconstruction->entry.directory:process.directory;
         }
-        void openReconstructionBrowser() {
+        void openReconstructionBrowser(bool control=false) {
             try {
                 const auto cwd=expandedPath(workingDirectory.data(),std::filesystem::current_path());
-                reconstructionBrowser.open(expandedPath(output.data(),cwd),hasRun()?runDirectory():std::filesystem::path{});
+                choosingControl=control;
+                const auto selected=control?controlDirectory:(hasRun()?runDirectory():std::filesystem::path{});
+                reconstructionBrowser.open(expandedPath(output.data(),cwd),selected);
             }catch(const std::exception& error) {message=error.what();}
         }
         void requestOpenReconstruction(const std::filesystem::path& folder) {
@@ -559,8 +618,14 @@ namespace viewer {
             message="Finding the latest reconstruction...";
         }
         void drawReconstructionBrowser() {
-            if(const auto folder=reconstructionBrowser.draw(!process.active()&&!openingSaved())) {
-                try {requestOpenReconstruction(*folder);}catch(const std::exception& error) {message=error.what();}
+            if(const auto folder=reconstructionBrowser.draw(choosingControl||(!process.active()&&!openingSaved()),choosingControl)) {
+                try {
+                    if(choosingControl)rememberControl(*folder);
+                    else requestOpenReconstruction(*folder);
+                }catch(const std::exception& error) {
+                    if(choosingControl)controlError=error.what();
+                    else message=error.what();
+                }
             }
         }
         // The UI calls this only at a renderer handoff, after preserving edits.
@@ -639,6 +704,9 @@ namespace viewer {
                 updateAppliedParameters(next["parameters"]);
             }
             if (auto next = readJson(process.directory / "live.json"); next.IsMap()) live = next;
+            const auto adjointProgress = readJson(process.directory / "adjoint_progress.json");
+            adjointKernelStatus = process.active() && adjointProgress.IsMap()
+                ? adjointProgress["message"].as<std::string>("") : "";
             if (!runConfig.IsMap()) runConfig = readJson(process.runDirectory / "run_config.json");
             if (integer("iteration") != plottedIteration && status["loss"].IsScalar()) {
                 try {
@@ -777,7 +845,7 @@ namespace viewer {
             status = YAML::Node(); live = YAML::Node(); runConfig = YAML::Node();
             losses.clear(); appliedParameters.reset();
             metrics.reset();geometryMetrics.reset();statusLossMetrics.reset();stopRequested=false;
-            logReader.reset();log.clear();selectableLog.clear();
+            logReader.reset();log.clear();selectableLog.clear();adjointKernelStatus.clear();
             checkpointNavigation.reset();checkpointSelection.reset();historyPath.clear();
             plottedIteration = viewedIteration = loadedGeneration = 0; view = TrainingView::Live;
             YAML::Node saved;
@@ -786,6 +854,7 @@ namespace viewer {
             saved["working_directory"] = std::string(workingDirectory.data()); saved["module_directory"] = std::string(moduleDirectory.data());
             saved["dataset_root"]=std::string(datasetRoot.data());
             saved["environment_preferences_version"]=jsonNumber(1);
+            saved["geometry_control_runs"]=controlRuns;
             try {
                 densification.rememberCurrentProfile();
                 saved["densification"] = densification.preferences();
@@ -1123,22 +1192,49 @@ namespace viewer {
             ImGui::Checkbox("Rolling window##metrics",&rollingMetrics);ImGui::SameLine();
             ImGui::SetNextItemWidth(100);ImGui::InputInt("Window (iterations)",&metricWindow);metricWindow=std::max(1,metricWindow);
             ImGui::SameLine();ImGui::Checkbox("Log Y scale",&logMetrics);
+            refreshControlMetrics();
+            static const TrainingMetrics::Series imageSeries{{"loss_rgb_mean","RGB"},{"loss_rgb_l2_mean","RGB L2"},{"loss_total_mean","Total"}};
+            static const TrainingMetrics::Series regularizerSeries{
+                {"loss_normal_consistency_weighted_mean","Normal (left)"},
+                {"loss_depth_distortion_weighted_mean","Depth (right)"},
+                {"loss_alpha_weighted_mean","Alpha (right)"}
+            };
+            static const TrainingMetrics::Series geometrySeries{{"cd","Chamfer"},{"accuracy","Accuracy"},{"completion","Completion"}};
+            static const auto comparisonSeries=[] {
+                auto series=geometrySeries;
+                series.emplace_back("control_cd","Control CD");
+                return series;
+            }();
+            const auto combined=controlMetrics.iterations.empty()?std::nullopt:std::optional{geometryMetrics.withControlCD(controlMetrics)};
+            const auto& distances=combined?*combined:geometryMetrics;
+            const auto& distanceSeries=combined?comparisonSeries:geometrySeries;
+            const bool showDistances=combined.has_value()||!geometryMetrics.iterations.empty();
+            constexpr const char* imageTitle="Image loss / objective";
+            constexpr const char* regularizerTitle="Weighted regularizers";
+            constexpr const char* distanceTitle="Ground truth distances";
             const int count=ImGui::GetContentRegionAvail().x>900?3:2;
             if(ImGui::BeginTable("MetricPanels",count,ImGuiTableFlags_SizingStretchSame)) {
-                ImGui::TableNextColumn();metrics.plot("Image loss / objective",{{"loss_rgb_mean","RGB"},{"loss_rgb_l2_mean","RGB L2"},{"loss_total_mean","Total"}},rollingMetrics,metricWindow,logMetrics);
+                ImGui::TableNextColumn();metrics.drawPlotHeading(imageTitle,imageSeries);
+                ImGui::TableNextColumn();metrics.drawPlotHeading(regularizerTitle,regularizerSeries);
+                if(count==3&&showDistances) {
+                    ImGui::TableNextColumn();distances.drawPlotHeading(distanceTitle,distanceSeries);
+                }
+                // A separate row keeps plot tops aligned even when a legend wraps.
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();metrics.drawPlotArea(imageTitle,imageSeries,rollingMetrics,metricWindow,logMetrics);
                 ImGui::TableNextColumn();
-                metrics.plot("Weighted regularizers",{
-                    {"loss_normal_consistency_weighted_mean","Normal (left)"},
-                    {"loss_depth_distortion_weighted_mean","Depth (right)"},
-                    {"loss_alpha_weighted_mean","Alpha (right)"}
-                },rollingMetrics,metricWindow,logMetrics,120,true);
+                metrics.drawPlotArea(regularizerTitle,regularizerSeries,rollingMetrics,metricWindow,logMetrics,120,true);
                 ImGui::TableNextColumn();
+                if(showDistances) {
+                    if(count==2)distances.drawPlotHeading(distanceTitle,distanceSeries);
+                    distances.drawPlotArea(distanceTitle,distanceSeries,rollingMetrics,metricWindow,logMetrics);
+                }
                 if(!geometryMetrics.iterations.empty()) {
-                    geometryMetrics.plot("Ground truth distances",{{"cd","Chamfer"},{"accuracy","Accuracy"},{"completion","Completion"}},rollingMetrics,metricWindow,logMetrics);
                     ImGui::TextDisabled("Evaluated mesh at iteration %.0f · evaluation distance units",geometryMetrics.iterations.back());
                 } else if(openedReconstruction)ImGui::TextWrapped("No Chamfer, accuracy or completion evaluations were saved for this reconstruction.");
                 else if(status.IsMap()&&status["ground_truth"].IsNull())ImGui::TextWrapped("GT evaluation is disabled for this run.");
                 else ImGui::TextWrapped("GT Chamfer, accuracy and completion appear after mesh checkpoint evaluation. Configure mesh_extraction_interval in config.py to control evaluation cadence.");
+                drawControlPicker();
                 ImGui::EndTable();
             }
             if(ImGui::TreeNodeEx("Geometry / density / runtime",ImGuiTreeNodeFlags_DefaultOpen)) {

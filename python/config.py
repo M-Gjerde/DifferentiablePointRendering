@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 4
+    adjoint_passes: int = 16
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -37,6 +37,8 @@ class RendererSettingsConfig:
         settings = asdict(self)
         settings.update({
             "surfel_bsdf": config.surfel_bsdf,
+            "stable_ggx": config.stable_ggx,
+            "seed": config.renderer_seed,
             "depth_distort_weight": config.depth_distort_weight,
             "depth_distort_world_space": config.depth_distort_world_space,
             "depth_distort_squared": config.depth_distort_squared,
@@ -61,6 +63,11 @@ class OptimizationConfig:
     pointcloud_ply: str = "initial.ply"
     dataset_path: Path = Path("./Output/target")
     target_color_space: str = "linear"
+    # Compare linear HDR radiance in asinh space to reduce gradient spikes from bright highlights.
+    rgb_objective: str = "asinh"
+    # None (JSON null) sets the scale to the 75th percentile of positive linear luminance
+    # across the training images. The run records it as "resolved_asinh_scale" in rgb_objective.json.
+    rgb_asinh_scale: float | None = None
     output_dir: Path = Path("OptimizationOutput")
     checkpoint: Path | None = None
 
@@ -92,7 +99,7 @@ class OptimizationConfig:
     # position optionally receives a second scale with selectable decay shape.
     use_global_lr_decay: bool = False
     global_lr_scale_init: float = 1.0
-    global_lr_scale_final: float = 0.5
+    global_lr_scale_final: float = 1.0
     use_position_lr_decay: bool = True
     position_lr_decay_exponential: bool = True  # True: exponential (2DGS); False: linear.
     position_lr_scale_init: float = 1.0
@@ -101,9 +108,9 @@ class OptimizationConfig:
     # Decay duration independent of training length; hold final scales afterward.
     lr_decay_max_steps: int = 30_000
 
-    depth_distort_weight: float = 0.05
-    depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
-    depth_distort_squared: bool = True  # World-space only: True uses squared depth differences, False absolute; NDC always uses squared differences.
+    depth_distort_weight: float = 1000
+    depth_distort_world_space: bool = False  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_squared: bool = True  # World-space only: True uses squared depth di21fferences, False absolute; NDC always uses squared differences.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 1.0e-3
     normal_consistency_start_iteration: int = 0
@@ -119,6 +126,9 @@ class OptimizationConfig:
 
     # Rendering model
     surfel_bsdf: str = "ggx" # ggx or lambertian
+    minimum_roughness: float = 0.12  # Perceptual GGX roughness for trainable materials.
+    stable_ggx: bool = True
+    renderer_seed: int = 137
     adjoint_spp: int | None = None  # None preserves RendererSettingsConfig defaults.
     local_layer_depth_epsilon: float | None = None  # None preserves the native h default.
     share_local_layer_direct_lighting: bool = False
@@ -132,7 +142,7 @@ class OptimizationConfig:
     # Pruning and topology maintenance
     min_surfel_area: float = math.pi * 1.0e-4
     min_surfel_opacity: float = 0.2  # Strict opacity < threshold; 0 disables opacity pruning.
-    topology_freeze_last_iterations: int = 4_000  # 0 disables the final densification/pruning freeze.
+    topology_freeze_last_iterations: int = 0  # 0 disables the final densification/pruning freeze.
     # Pruning and topology maintenance
     prune_interval: int = 100
     prune_after: int = 0
@@ -140,6 +150,7 @@ class OptimizationConfig:
     inactive_transport_min_score: float = 10.0
 
     # Densification: schedule
+    densification_seed: int | None = 42  # Torch seed for placing split and clone children.
     densification_interval: int = 200
     densify_after: int = 0
     densification_stats_skip_interval_start: bool = False # Only collect stats during the last half of the densification interval
@@ -158,17 +169,17 @@ class OptimizationConfig:
     densification_diagnostics: bool = True
 
     # Threshold units follow densification_image_space (normalized image or world).
-    densification_grad_abs_min: float = 0.0008
-    densification_grad_abs_min_final: float = 0.0008
+    densification_grad_abs_min: float = 0.0003
+    densification_grad_abs_min_final: float = 0.0003
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.
     densification_scale_min: float = math.sqrt(min_surfel_area / math.pi)
     densification_use_cloning: bool = True  # Small eligible surfels clone within their beta footprint; larger ones split.
-    densification_clone_scale_fraction: float = 0.0035 # Clone when max(su,sv) <= this * training-camera extent.
+    densification_clone_scale_fraction: float = 0.003 # Clone when max(su,sv) <= this * training-camera extent.
 
     densification_clone_second_view_ratio: float = 0.30  # Zero disables the second-view requirement.
-    densification_clone_second_view_start_iteration: int = 4000
+    densification_clone_second_view_start_iteration: int = 0
 
     rebuild_bvh_interval: int = densification_interval
     # Mesh extraction and evaluation
@@ -278,6 +289,17 @@ def _checkpoint_config_value(run_config: dict, key: str):
         renderer_settings = run_config.get("renderer_settings", {})
         if isinstance(renderer_settings, dict):
             return renderer_settings.get("adjoint_passes")
+    if value is None:
+        # Historical stock checkpoints predate HDR objectives and the configurable GGX floor.
+        renderer = run_config.get("renderer_settings", {})
+        if key == "rgb_objective":
+            return "linear"
+        if key == "minimum_roughness":
+            return 0.01
+        if key == "stable_ggx":
+            return renderer.get("stable_ggx", False)
+        if key == "renderer_seed":
+            return renderer.get("seed", 42)
     return value
 
 
@@ -378,6 +400,8 @@ def configure_checkpoint(config: OptimizationConfig, cli_overrides: set[str]) ->
         if field_name in excluded or field_name in cli_overrides:
             continue
         value = _checkpoint_config_value(run_config, field_name)
+        if field_name == "densification_seed" and value is None:
+            config.densification_seed = None  # Legacy runs used the ambient Torch generator.
         if value is not None:
             if field_name == "ground_truth":
                 value = Path(value)
@@ -580,6 +604,10 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     objective = parser.add_argument_group("objective and regularizers")
+    objective.add_argument("--rgb-objective", choices=("asinh", "linear"),
+                           help="Asinh compresses highlight residuals to reduce gradient spikes. Linear uses raw radiance half-MSE.")
+    objective.add_argument("--rgb-asinh-scale", type=float,
+                           help="Positive radiance scale. By default use training luminance percentile 75.")
     _add_boolean_argument(
         objective, "--alpha-loss-absolute",
         help="Use absolute alpha error instead of half squared error (zero gradient at an exact match).",
@@ -620,8 +648,13 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     rendering = parser.add_argument_group("rendering")
+    rendering.add_argument("--minimum-roughness", type=float,
+                           help="Lower bound for trainable perceptual GGX roughness.")
+    rendering.add_argument("--renderer-seed", type=int, help="Path-tracing random seed.")
+    _add_boolean_argument(rendering, "--stable-ggx",
+                          help="Evaluate the GGX lobe and its directional derivatives using cross products.")
     rendering.add_argument("--surfel-bsdf", choices=["lambertian", "ggx"],
-                           help="Direct-light surfel BSDF (default: lambertian).")
+                           help="Direct-light surfel BSDF (default: ggx).")
     rendering.add_argument("--adjoint-spp", type=int, help="Override adjoint samples per pixel.")
     rendering.add_argument("--local-layer-depth-epsilon", type=float,
                            help="Override slab depth h in scene units; must exceed 1e-6.")
@@ -633,6 +666,8 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     )
 
     densification_schedule = parser.add_argument_group("densification: schedule")
+    densification_schedule.add_argument("--densification-seed", type=int,
+                                         help="Random seed for split and clone placement.")
     _add_typed_fields(
         densification_schedule,
         int,
@@ -836,6 +871,14 @@ def parse_args(config_type: type[OptimizationConfig] = OptimizationConfig) -> Op
     config.pointcloud_ply_is_explicit = "pointcloud_ply" in cli_overrides
 
     configure_checkpoint(config, cli_overrides)
+    if not 0.01 <= config.minimum_roughness <= 1.0:
+        parser.error("--minimum-roughness must be in [0.01, 1]")
+    if config.rgb_asinh_scale is not None and (not math.isfinite(config.rgb_asinh_scale) or config.rgb_asinh_scale <= 0):
+        parser.error("--rgb-asinh-scale must be finite and positive")
+    if config.densification_seed is not None and not 0 <= config.densification_seed < 2**64:
+        parser.error("--densification-seed must be an unsigned 64-bit integer")
+    if not 0 <= config.renderer_seed <= 2**31 - 1:
+        parser.error("--renderer-seed must be a nonnegative 32-bit signed integer")
     if config.adjoint_spp is not None and config.adjoint_spp < 1:
         parser.error("--adjoint-spp must be positive")
     if config.local_layer_depth_epsilon is not None and (

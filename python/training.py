@@ -381,7 +381,9 @@ def make_rgb_loss_state(
         "per_camera_loss_values": {},
     })
 
-    rgb_loss_values = adjoint_images.get("l2_loss_values", adjoint_images.get("loss_values", {}))
+    rgb_loss_values = adjoint_images.get("rgb_loss_values")
+    if rgb_loss_values is None:
+        rgb_loss_values = adjoint_images.get("l2_loss_values", adjoint_images.get("loss_values", {}))
     rgb_l2_loss_values = adjoint_images.get("l2_loss_values", rgb_loss_values)
     alpha_loss_values = adjoint_images.get("alpha_loss_values", {})
     for camera_name in active_training_camera_ids:
@@ -439,9 +441,12 @@ def make_device_training_step_options(
         include_depth_distortion: bool = False,
         include_normal_consistency: bool = False,
         include_intra_slab_depth: bool = False,
+        rgb_asinh_scale: float = 0.0,
 ) -> dict[str, Any]:
     return {
         "optimizer": config.optimizer_type,
+        "minimum_roughness": config.minimum_roughness,
+        "rgb_asinh_scale": rgb_asinh_scale,
         "skip_zero_gradient_surfels": bool(config.skip_zero_gradient_surfels),
         "use_log_scale": bool(config.use_log_scale),
         "learning_rate_position": active_learning_rates.get(
@@ -543,6 +548,7 @@ def compute_iteration_gradients(
         alpha_loss_weight: float = 0.0,
         alpha_loss_opacity_only: bool = False,
         alpha_loss_absolute: bool = False,
+        rgb_asinh_scale: float = 0.0,
 ) -> IterationGradientResult:
     active_camera_name = active_camera_name_for_iteration(
         active_training_camera_ids,
@@ -551,6 +557,7 @@ def compute_iteration_gradients(
     photo_gradients, adjoint_images = renderer.render_rgb_loss_backward(
         list(active_training_camera_ids),
         {
+            "rgb_asinh_scale": rgb_asinh_scale,
             "densification_relative_error": densification_relative_error,
             "densification_radiance_floor": densification_radiance_floor,
             "densification_full_position": densification_full_position,
@@ -685,6 +692,19 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     )
 
 
+    rgb_asinh_scale = losses.resolve_rgb_asinh_scale(
+        target_images.values(), config.rgb_objective, config.rgb_asinh_scale,
+    )
+    if (rgb_asinh_scale or config.stable_ggx or config.minimum_roughness != 0.01) and not getattr(pale, "SUPPORTS_HDR_TRAINING", False):
+        raise RuntimeError("Rebuild the pale Python module to use the configured HDR and GGX training options")
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    (config.output_dir / "rgb_objective.json").write_text(json.dumps({
+        "objective": config.rgb_objective,
+        "resolved_asinh_scale": rgb_asinh_scale,
+        "scale_source": ("linear" if config.rgb_objective == "linear" else
+                         "explicit" if config.rgb_asinh_scale is not None else "positive_training_luminance_p75"),
+    }, indent=2))
+
     depth_distortion_base_weight = float(config.depth_distort_weight)
     depth_distortion_start_iteration = int(config.depth_distort_start_iteration)
 
@@ -705,7 +725,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
 
     print_status(
         "Loss terms: "
-        "rgb=half_MSE, "
+        f"rgb={config.rgb_objective} half-MSE, asinh_scale={rgb_asinh_scale:.8g}, "
         f"alpha_weight={config.alpha_loss_weight:.3e}, "
         f"alpha_start_iter={config.alpha_loss_start_iteration}, "
         f"depth_distortion={use_depth_distortion} "
@@ -728,6 +748,9 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
     print_status(f"Fetched {initial_params['position'].shape[0]} initial points from PLY.")
 
     device = torch.device(config.device)
+    densification_generator = None
+    if config.densification_seed is not None:
+        densification_generator = torch.Generator(device=device).manual_seed(config.densification_seed)
 
     positions, rotations, scales, albedos, opacities, betas, powers = helpers.create_torch_parameters_from_initial(
         initial_params, device)
@@ -848,6 +871,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         use_intra_slab_depth=use_intra_slab_depth,
         save_linear_raw=config.save_snapshot_linear_raw,
         alpha_loss_weighted=initial_alpha_loss,
+        rgb_asinh_scale=rgb_asinh_scale,
         roughness=roughness,
         metalness=metalness,
     )
@@ -1237,6 +1261,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         active_learning_rates=active_learning_rates,
                         camera_batch_scale=camera_batch_scale,
                         accumulate_densification_stats=accumulate_density,
+                        rgb_asinh_scale=rgb_asinh_scale,
                     )
                     device_step_options.update({
                         "track_densification_cameras": track_camera_window,
@@ -1387,6 +1412,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             force_densification=True,
                             densification_scene_extent=training_scene_extent,
                             scheduled_prune_indices=indices_to_remove_list, camera_sum=camera_sum,
+                            generator=densification_generator,
                             roughness=roughness, metalness=metalness,
                         )
 
@@ -1673,6 +1699,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                                 forward_out=save_forward_out,
                                 target_images=target_images,
                                 camera_ids=training_camera_ids,
+                                rgb_asinh_scale=rgb_asinh_scale,
                             )
 
                         helpers.save_iteration_outputs(
@@ -1897,6 +1924,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                     intra_slab_depth_weight=intra_slab_depth_weight,
                     densification_relative_error=bool(config.densification_relative_error and densification_interval > 0),
                     densification_radiance_floor=float(config.densification_radiance_floor),
+                    rgb_asinh_scale=rgb_asinh_scale,
                     alpha_loss_weight=active_alpha_loss_weight,
                     alpha_loss_opacity_only=bool(config.alpha_loss_opacity_only),
                     alpha_loss_absolute=bool(config.alpha_loss_absolute),
@@ -2028,7 +2056,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                 optimizer.step()
                 with torch.no_grad():
                     for name, parameter in active_material_parameters.items():
-                        minimum = pale.GGX_MIN_ROUGHNESS if name == "roughness" else 0.0
+                        minimum = config.minimum_roughness if name == "roughness" else 0.0
                         parameter[trainable_surfel_mask] = parameter[trainable_surfel_mask].clamp(minimum, 1.0)
                 density.apply_local_rotation_update_to_quaternions_inplace(
                     rotations,
@@ -2110,6 +2138,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                         force_densification=True,
                         densification_scene_extent=training_scene_extent,
                         scheduled_prune_indices=indices_to_remove_list, camera_sum=camera_sum,
+                        generator=densification_generator,
                         roughness=roughness, metalness=metalness,
                     )
 
@@ -2332,6 +2361,7 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
                             forward_out=save_forward_out,
                             target_images=target_images,
                             camera_ids=training_camera_ids,
+                            rgb_asinh_scale=rgb_asinh_scale,
                         )
 
                     helpers.save_iteration_outputs(
@@ -2577,7 +2607,8 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         tgt_np = target_images[camera_name]
         rgb_loss_cam = losses.compute_l2_loss(
             img_linear_np,
-            tgt_np,
+            tgt_np[..., :3],
+            rgb_asinh_scale,
         )
         final_rgb_loss += rgb_loss_cam
         final_total_loss += rgb_loss_cam

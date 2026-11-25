@@ -8,6 +8,7 @@ module;
 #include <limits>
 #include <stdexcept>
 #include "Kernels/SyclBridge.h"
+#include "AdjointKernelProgress.h"
 #include "Core/ScopedTimer.h"
 
 module Pale.Render.PathTracer;
@@ -634,6 +635,7 @@ namespace Pale {
     void PathTracer::renderBackward(std::vector<SensorGPU> &sensors, PointGradients &gradients,
                                     DebugImages *debugImages, bool waitForCompletion,
                                     bool computeCloneStatistics) {
+        const AdjointKernelProgressScope kernelProgress(m_queue);
         uint32_t maximumCameraRayCount = 0u;
         for (const auto &sensor: sensors) {
             const uint32_t requiredRayCapacity = sensor.width * sensor.height;
@@ -711,6 +713,7 @@ namespace Pale {
         PointGradients &normalConsistencyGradients,
         PointGradients &intraSlabDepthGradients,
         DebugImages *debugImages, bool waitForCompletion) {
+        const AdjointKernelProgressScope kernelProgress(m_queue);
         m_settings.rayGenMode = RayGenMode::Adjoint;
         Log::PA_DEBUG("Submitting surface regularizer backward pass");
 

@@ -200,8 +200,11 @@ def main(method, argv=None):
     default_root, suffix, mesh_name = DEFAULTS[method]
     p=argparse.ArgumentParser(description=f'Evaluate all {method} batch meshes and saved surface-point counts.')
     p.add_argument('--output-root',type=Path,default=Path(default_root),help='Training output root containing scene directories (with method-specific suffixes)')
-    p.add_argument('--ground-truth-root',type=Path,default=Path('/home/magnus/phd/models'))
-    p.add_argument('--scenes','--scene','--datasets',nargs='+',default=list(SCENES))
+    reference_source = p.add_mutually_exclusive_group()
+    reference_source.add_argument('--ground-truth-root', type=Path, default=Path('/home/magnus/phd/models'))
+    reference_source.add_argument('--capture-root', type=Path,
+                                  help='Discover scenes in a PBdR dataset collection and use the gt.ply inside each capture')
+    p.add_argument('--scenes','--scene','--datasets',nargs='+')
     p.add_argument('--iterations',type=int,nargs='+',help='Default: final PLY for workshop; 7000 30000 for 2DGS; latest saved checkpoint otherwise')
     if method == 'workshop':
         p.add_argument('--mesh-subdir',type=Path,help='Explicit mesh directory relative to each run (default: mesh, or meshes/iteration_<N> with --iterations); use . for a mesh at the run root')
@@ -220,8 +223,23 @@ def main(method, argv=None):
     mesh_subdir = getattr(a, 'mesh_subdir', None)
     if mesh_subdir is not None and (mesh_subdir.is_absolute() or '..' in mesh_subdir.parts):
         p.error('mesh-subdir must be relative to the run directory without ..')
+    references = {}
+    if a.capture_root is not None:
+        root = a.capture_root.expanduser()
+        if not root.is_dir():
+            p.error(f'Capture root does not exist: {root}')
+        for capture in sorted(root.iterdir()):
+            if not (capture / 'scene.xml').is_file():
+                continue
+            scene_name = capture.name.removesuffix('_pbdr').removesuffix('_2dgs')
+            scene_name = 'workbench' if scene_name == 'workshop' else scene_name
+            if scene_name in references:
+                p.error(f'Multiple captures resolve to {scene_name} under {root}')
+            references[scene_name] = (capture / 'gt.ply').resolve()
+        if not references:
+            p.error(f'No capture directories containing scene.xml under {root}')
     names=[]
-    for name in a.scenes:
+    for name in (a.scenes or references or SCENES):
         name=name.removesuffix('_pbdr').removesuffix('_2dgs')
         name='workbench' if name=='workshop' else name
         if '/' in name or '\\' in name or name in ('.','..',''):
@@ -229,6 +247,10 @@ def main(method, argv=None):
         if name not in names:names.append(name)
     output=a.output_root.expanduser().resolve()
     gt_root=a.ground_truth_root.expanduser().resolve()
+    if a.capture_root is not None:
+        for name in names:
+            if name not in references or not references[name].is_file():
+                p.error(f'Missing capture or gt.ply for {name} under {a.capture_root}')
     rows=[]
     if not a.list_only:
         if __package__:
@@ -245,7 +267,7 @@ def main(method, argv=None):
             iterations = a.iterations or [None]
         else:
             iterations = a.iterations or ([7000,30000] if method=='2dgs' else [available[-1] if available else None])
-        gt_path=gt_root/(name+'.ply')
+        gt_path = references[name] if references else gt_root / (name + '.ply')
         gt=None
         for iteration in dict.fromkeys(iterations):
             checkpoint, mesh = input_paths(model, method, iteration, a.mesh_name, mesh_subdir)
