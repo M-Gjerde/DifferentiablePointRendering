@@ -269,19 +269,81 @@ add_sycl_to_target(TARGET PaleLibRealtime)
 add_executable(PaleRealtimeViewer main.cpp)
 
 # Keep the Python optimizer's native module current when building the viewer.
-set(PALE_TRAINING_BUILD_DIR "" CACHE PATH "Configured build directory for the pale training module")
-if(NOT EXISTS "${PALE_TRAINING_BUILD_DIR}/CMakeCache.txt")
-    message(FATAL_ERROR
-        "Set PALE_TRAINING_BUILD_DIR to an existing build directory configured "
-        "from this repository with BUILD_PYBIND=ON.")
+set(PALE_TRAINING_BUILD_DIR "" CACHE PATH "Override for the pale training build directory")
+if(NOT PALE_TRAINING_BUILD_DIR STREQUAL "")
+    if(NOT EXISTS "${PALE_TRAINING_BUILD_DIR}/CMakeCache.txt")
+        message(FATAL_ERROR
+            "Set PALE_TRAINING_BUILD_DIR to a build of this repository configured with "
+            "BUILD_PYBIND=ON, or clear it to build pale with the viewer.")
+    endif()
+    set(pale_training_module_dir "${PALE_TRAINING_BUILD_DIR}")
+    add_custom_target(PaleTrainingModule
+        COMMAND "${CMAKE_COMMAND}" --build "${PALE_TRAINING_BUILD_DIR}" --target pale
+        COMMENT "Updating the pale training module"
+        USES_TERMINAL
+        VERBATIM)
+else()
+    include(ExternalProject)
+
+    # Match the viewer's project environment search when no environment is active.
+    if(NOT Python3_EXECUTABLE AND NOT Python3_ROOT_DIR AND NOT DEFINED ENV{Python3_ROOT_DIR}
+            AND NOT DEFINED ENV{VIRTUAL_ENV} AND NOT DEFINED ENV{CONDA_PREFIX})
+        get_filename_component(repository_name "${PALE_ROOT}" NAME)
+        find_program(project_python NAMES python
+            PATHS
+                "$ENV{HOME}/miniconda3/envs/${repository_name}/bin"
+                "$ENV{HOME}/anaconda3/envs/${repository_name}/bin"
+                "${PALE_ROOT}/.venv/bin"
+                "$ENV{HOME}/miniconda3/envs/pale/bin"
+                "$ENV{HOME}/anaconda3/envs/pale/bin"
+            NO_DEFAULT_PATH NO_CACHE)
+        if(project_python)
+            set(Python3_EXECUTABLE "${project_python}")
+        endif()
+    endif()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+    set(pale_training_module_dir "${CMAKE_CURRENT_BINARY_DIR}/pale-training")
+    set(pale_training_cmake_args
+        "-DBUILD_PYBIND:BOOL=ON"
+        "-DCMAKE_BUILD_TYPE:STRING=Release"
+        "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE:PATH=${pale_training_module_dir}"
+        "-DCMAKE_C_COMPILER:FILEPATH=${CMAKE_C_COMPILER}"
+        "-DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}"
+        "-DCMAKE_MAKE_PROGRAM:FILEPATH=${CMAKE_MAKE_PROGRAM}"
+        "-DAdaptiveCpp_DIR:PATH=${AdaptiveCpp_DIR}"
+        "-DOpenEXR_DIR:PATH=${OpenEXR_DIR}"
+        "-DPython3_EXECUTABLE:FILEPATH=${Python3_EXECUTABLE}"
+        "-DPython_EXECUTABLE:FILEPATH=${Python3_EXECUTABLE}")
+    if(CMAKE_TOOLCHAIN_FILE)
+        list(APPEND pale_training_cmake_args "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=${CMAKE_TOOLCHAIN_FILE}")
+    endif()
+
+    # AdaptiveCpp appends its resolved options to the normal ACPP_EXTRA_ARGS variable.
+    string(REPLACE ";" "|" pale_training_extra_args "$CACHE{ACPP_EXTRA_ARGS}")
+    list(APPEND pale_training_cmake_args "-DACPP_EXTRA_ARGS:STRING=${pale_training_extra_args}")
+    foreach(setting IN ITEMS CMAKE_PREFIX_PATH ACPP_TARGETS ACPP_CLANG ACPP_CPU_CXX ACPP_CUDA_PATH ACPP_ROCM_PATH
+            ACPP_EXTRA_COMPILE_OPTIONS ACPP_USE_ACCELERATED_CPU)
+        string(REPLACE ";" "|" value "${${setting}}")
+        list(APPEND pale_training_cmake_args "-D${setting}:STRING=${value}")
+    endforeach()
+
+    ExternalProject_Add(PaleTrainingModule
+        SOURCE_DIR "${PALE_ROOT}"
+        PREFIX "${pale_training_module_dir}"
+        BINARY_DIR "${pale_training_module_dir}"
+        LIST_SEPARATOR "|"
+        CMAKE_ARGS ${pale_training_cmake_args}
+        BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR> --config Release --target pale
+        BUILD_ALWAYS TRUE
+        BUILD_BYPRODUCTS "${pale_training_module_dir}/pale${CMAKE_SHARED_MODULE_SUFFIX}"
+        INSTALL_COMMAND ""
+        EXCLUDE_FROM_ALL TRUE
+        USES_TERMINAL_BUILD TRUE)
+    target_compile_definitions(PaleRealtimeViewer PRIVATE
+        "PALE_TRAINING_PYTHON_EXECUTABLE=\"${Python3_EXECUTABLE}\"")
 endif()
-message(STATUS "Viewer training build: ${PALE_TRAINING_BUILD_DIR}")
-add_custom_target(PaleTrainingModule
-    COMMAND "${CMAKE_COMMAND}" --build "${PALE_TRAINING_BUILD_DIR}"
-            --target pale
-    COMMENT "Updating the pale training module"
-    USES_TERMINAL
-    VERBATIM)
+message(STATUS "Viewer training build: ${pale_training_module_dir}")
 add_dependencies(PaleRealtimeViewer PaleTrainingModule)
 
 # The cached world-space overlap diagnostic parallelizes host footprint queries.
@@ -293,7 +355,7 @@ target_compile_options(PaleRealtimeViewer
         $<$<CONFIG:Release>:-O3>)
 target_compile_definitions(PaleRealtimeViewer
         PRIVATE
-        PALE_TRAINING_MODULE_DIR=\"${PALE_TRAINING_BUILD_DIR}\"
+        PALE_TRAINING_MODULE_DIR=\"${pale_training_module_dir}\"
         PALE_DEFAULT_ASSET_DIR=\"${PALE_ROOT}/Assets\")
 target_include_directories(PaleRealtimeViewer
         PRIVATE

@@ -438,6 +438,7 @@ namespace viewer {
         std::chrono::steady_clock::time_point lastPoll{};
         std::filesystem::path preferences;
         std::string detectedPython, detectedModuleDirectory;
+        static constexpr int environmentPreferencesVersion = 2;
 
         static void set(std::array<char, 2048>& buffer, const std::string& value) {
             std::snprintf(buffer.data(), buffer.size(), "%s", value.c_str());
@@ -446,6 +447,9 @@ namespace viewer {
             set(output, (repository / "python/OptimizationOutput").string());
             set(workingDirectory, (repository / "python").string());
             set(datasetRoot, expandedPath("~/ValeDrive/phd/pbdr/datasets/pbdr_synthetic",repository).string());
+#ifdef PALE_TRAINING_PYTHON_EXECUTABLE
+            set(python,PALE_TRAINING_PYTHON_EXECUTABLE);
+#else
             const char* environment = std::getenv("VIRTUAL_ENV");
             set(python,"python3");
             if(environment)set(python,(std::filesystem::path(environment)/"bin/python").string());
@@ -461,6 +465,7 @@ namespace viewer {
                     expandedPath("~/anaconda3/envs/pale/bin/python",repository)})
                     if(std::filesystem::is_regular_file(candidate)) {set(python,candidate.string());break;}
             }
+#endif
 #ifdef PALE_TRAINING_MODULE_DIR
             set(moduleDirectory,PALE_TRAINING_MODULE_DIR);
 #else
@@ -471,18 +476,29 @@ namespace viewer {
             preferences = repository / "output/viewer_training.json";
             const auto saved = readJson(preferences);
             if (saved.IsMap()) {
+                const int environmentVersion = saved["environment_preferences_version"].as<int>(0);
                 // Older builds persisted the generic launcher default, which can
                 // resolve to a different Python in a desktop app than in a shell.
-                const bool legacyPython = !saved["environment_preferences_version"] && saved["python"] &&
-                    (saved["python"].as<std::string>() == "python3" || saved["python"].as<std::string>() == "python");
-                for (const auto& [key, buffer] : std::array<std::pair<const char*, std::array<char,2048>*>,7>{
+                const auto pythonPreference = saved["python"].as<std::string>("");
+                const bool legacyPython = environmentVersion == 0 &&
+                    (pythonPreference == "python3" || pythonPreference == "python");
+                if (saved["python"] && !legacyPython) set(python, pythonPreference);
+                if (const auto savedModule = saved["module_directory"]; savedModule) {
+                    const auto modulePreference = savedModule.as<std::string>();
+                    bool useSavedModule = !(legacyPython && modulePreference.empty());
+#if defined(PALE_TRAINING_MODULE_DIR) && defined(PALE_TRAINING_PYTHON_EXECUTABLE)
+                    // The old default was saved as a path every time training launched.
+                    const auto previousDefault = (repository / "cmake-build-pybind").lexically_normal();
+                    if (environmentVersion < environmentPreferencesVersion &&
+                        std::filesystem::path(modulePreference).lexically_normal() == previousDefault)
+                        useSavedModule = false;
+#endif
+                    if (useSavedModule) set(moduleDirectory, modulePreference);
+                }
+                for (const auto& [key, buffer] : std::array<std::pair<const char*, std::array<char,2048>*>,5>{
                     {{"dataset", &dataset}, {"output", &output}, {"ground_truth", &groundTruth},
-                     {"python", &python}, {"working_directory", &workingDirectory}, {"module_directory", &moduleDirectory}, {"dataset_root",&datasetRoot}}})
-                    if (saved[key]) {
-                        if (legacyPython && (std::string(key)=="python" ||
-                            (std::string(key)=="module_directory" && saved[key].as<std::string>().empty()))) continue;
-                        set(*buffer, saved[key].as<std::string>());
-                    }
+                     {"working_directory", &workingDirectory}, {"dataset_root", &datasetRoot}}})
+                    if (saved[key]) set(*buffer, saved[key].as<std::string>());
                 densification.restore(saved["densification"]);
                 if(const auto records=saved["geometry_control_runs"];records&&records.IsMap())
                     for(const auto& entry:records)if(entry.first.IsScalar()&&entry.second.IsScalar())
@@ -850,10 +866,12 @@ namespace viewer {
             plottedIteration = viewedIteration = loadedGeneration = 0; view = TrainingView::Live;
             YAML::Node saved;
             saved["dataset"] = std::string(dataset.data()); saved["output"] = std::string(output.data());
-            saved["ground_truth"] = std::string(groundTruth.data()); saved["python"] = std::string(python.data());
-            saved["working_directory"] = std::string(workingDirectory.data()); saved["module_directory"] = std::string(moduleDirectory.data());
+            saved["ground_truth"] = std::string(groundTruth.data());
+            saved["working_directory"] = std::string(workingDirectory.data());
+            if (detectedPython != python.data()) saved["python"] = std::string(python.data());
+            if (detectedModuleDirectory != moduleDirectory.data()) saved["module_directory"] = std::string(moduleDirectory.data());
             saved["dataset_root"]=std::string(datasetRoot.data());
-            saved["environment_preferences_version"]=jsonNumber(1);
+            saved["environment_preferences_version"] = jsonNumber(environmentPreferencesVersion);
             saved["geometry_control_runs"]=controlRuns;
             try {
                 densification.rememberCurrentProfile();

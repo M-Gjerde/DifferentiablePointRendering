@@ -816,6 +816,15 @@ namespace Pale {
         const float width = static_cast<float>(cam.width);
         const float height = static_cast<float>(cam.height);
 
+        if (cam.orthographic) {
+            const float3 ndc{2.0f * (px + jx) / width - 1.0f,
+                             1.0f - 2.0f * (py + jy) / height, 0.0f};
+            const auto offset = transformPoint(cam.invProj, ndc);
+            // Start on the camera plane so forward depth still measures from cam.pos.
+            return Ray{transformPoint(cam.invView, float3{offset.x(), offset.y(), 0.0f}),
+                       transformDirection(cam.invView, float3{0.0f, 0.0f, -1.0f})};
+        }
+
         const bool useIntrinsics = cam.hasPinholeIntrinsics != 0u && cam.fx > 0.0f && cam.fy > 0.0f;
         const float fallbackFocal = 0.5f * height / sycl::tan(0.5f * glm::radians(cam.fovy));
         const float fx = useIntrinsics ? cam.fx : fallbackFocal;
@@ -835,6 +844,11 @@ namespace Pale {
         const float3 originWorld = transformPoint(cam.invView, float3{0, 0, 0});
 
         return Ray{originWorld, dirWorld};
+    }
+
+    SYCL_EXTERNAL inline float3 cameraRayOriginAtPoint(const CameraGPU &camera, const float3 &point) {
+        if (!camera.orthographic) return camera.pos;
+        return point - camera.forward * dot(point - camera.pos, camera.forward);
     }
 
     inline sycl::int3 worldToCell(const float3 &positionWorld, const DeviceSurfacePhotonMapGrid &grid) {

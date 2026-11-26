@@ -16,19 +16,21 @@ cmake -S tools/realtime_viewer -B build-realtime \
   -DCMAKE_BUILD_TYPE=Debug \
   -DCMAKE_C_COMPILER=/usr/bin/clang-22 \
   -DCMAKE_CXX_COMPILER=/usr/bin/clang++-22 \
-  -DPALE_TRAINING_BUILD_DIR=/path/to/training-build \
   -DAdaptiveCpp_DIR=/usr/local/lib/cmake/AdaptiveCpp
 
 cmake --build build-realtime -j"$(nproc)"
 ```
 
-Building `PaleRealtimeViewer` also updates the Python training module through
-an existing `pale` target. Set `PALE_TRAINING_BUILD_DIR` explicitly when configuring
-the viewer, for example to this checkout's `cmake-build-pybind_install_release`.
-That directory must already be configured from this repository with
-`BUILD_PYBIND=ON`. The update is incremental and
-requires no installation or `sudo`. The viewer's default **Native module directory**
-uses the same training build; saved environment preferences still take precedence.
+Building `PaleRealtimeViewer` configures a Release PBdR build under `pale-training`
+in the viewer's build directory and incrementally builds its `pale` target.
+The viewer uses that module directory and the build's Python interpreter by default.
+Configure from the Python environment used for training or pass
+`-DPython3_EXECUTABLE=/path/to/environment/bin/python` to select it explicitly.
+The interpreter needs Python development headers for the native module build.
+
+Set `-DPALE_TRAINING_BUILD_DIR=/path/to/training-build` to reuse a build of this
+repository already configured with `BUILD_PYBIND=ON`. Clear the option to use the
+viewer-owned build. Explicit runtime choices take precedence.
 
 The AdaptiveCpp driver must use the same LLVM major version as the plugin it
 was built with. Verify this before configuring:
@@ -129,12 +131,14 @@ and working directory under **Python environment**; the working directory must
 contain this repository's updated `main.py`. If needed, set **Native module
 directory** to the directory containing the compatible `pale.so`. An empty value
 inherits `PYTHONPATH`. The interpreter needs the same dependencies as CLI training.
-The initial setup prefers an active virtual environment, a local Conda environment
-named after the repository (such as `DifferentiablePointRendering`), an existing
-repository `.venv`, or a local Conda environment named `pale`. It also detects this
-repository's `cmake-build-pybind/pale.so` when present. Explicit saved environment choices take precedence over detection. Legacy
-preferences that only recorded the generic `python3` default migrate to the
-detected environment; **Use detected environment** restores that choice.
+The viewer-owned build defaults to the interpreter selected at configure time.
+With an external training build, the viewer detects an active virtual environment,
+a local Conda environment named after the repository (such as
+`DifferentiablePointRendering`), a repository `.venv`, or a local Conda environment
+named `pale`. The viewer saves explicit environment choices and follows the current
+build for defaults. Older preferences pointing to the standard `cmake-build-pybind`
+directory migrate to the viewer-owned build when available. **Use detected environment**
+restores the defaults for the current viewer build.
 
 **Start reconstruction** creates a fresh `run_<timestamp>_<sequence>` beneath the output
 root. Existing runs and source datasets are not overwritten. Each launch saves

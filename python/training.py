@@ -696,7 +696,10 @@ def run_optimization(renderer: pale.Renderer, config: OptimizationConfig,
         target_images.values(), config.rgb_objective, config.rgb_asinh_scale,
     )
     if (rgb_asinh_scale or config.stable_ggx or config.minimum_roughness != 0.01) and not getattr(pale, "SUPPORTS_HDR_TRAINING", False):
-        raise RuntimeError("Rebuild the pale Python module to use the configured HDR and GGX training options")
+        raise RuntimeError(
+            f"The pale module loaded from {pale.__file__} lacks the configured HDR and GGX training support. "
+            "Use a current pale build."
+        )
     config.output_dir.mkdir(parents=True, exist_ok=True)
     (config.output_dir / "rgb_objective.json").write_text(json.dumps({
         "objective": config.rgb_objective,

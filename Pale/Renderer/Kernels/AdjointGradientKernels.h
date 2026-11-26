@@ -282,6 +282,12 @@ namespace Pale {
     // Use HIT depth, not center depth: tilted surfels have projective footprints.
     SYCL_EXTERNAL inline float2 footprintTranslationGradientNdc(
         const float3 &worldGradient, const float3 &hitPosition, const CameraGPU &camera) {
+        const float3 right = transformDirection(camera.invView, float3{1, 0, 0});
+        const float3 down = transformDirection(camera.invView, float3{0, -1, 0});
+        if (camera.orthographic) {
+            return float2{camera.invProj.row[0][0] * dot(worldGradient, right),
+                          camera.invProj.row[1][1] * dot(worldGradient, down)};
+        }
         const float depth = -transformPoint(camera.view, hitPosition).z();
         const bool intrinsics = camera.hasPinholeIntrinsics != 0u && camera.fx > 0 && camera.fy > 0;
         const float fallbackFocal = 0.5f * static_cast<float>(camera.height) /
@@ -290,8 +296,6 @@ namespace Pale {
         const float fy = intrinsics ? camera.fy : fallbackFocal;
         if (!(depth > 0 && fx > 0 && fy > 0 && camera.width > 0 && camera.height > 0) ||
             !sycl::isfinite(depth)) return float2{0.0f};
-        const float3 right = transformDirection(camera.invView, float3{1, 0, 0});
-        const float3 down = transformDirection(camera.invView, float3{0, -1, 0});
         return float2{0.5f * static_cast<float>(camera.width) * depth / fx * dot(worldGradient, right),
                       0.5f * static_cast<float>(camera.height) * depth / fy * dot(worldGradient, down)};
     }

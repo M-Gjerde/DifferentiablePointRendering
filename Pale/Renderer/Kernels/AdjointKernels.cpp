@@ -970,7 +970,7 @@ namespace Pale {
             surfelX,
             xSurface,
             xState,
-            sensor.camera.pos);
+            cameraRayOriginAtPoint(sensor.camera, xState.position));
         const float3 gradWorldRotation = dLossDAlphaK * dAlphaEffDWorldRotation;
         const float3 gradRotation = computeLocalRotationGradientFromWorldRotationGradient(
             surfelX.tanU,
@@ -1611,7 +1611,7 @@ namespace Pale {
                 const Point &surfel = scene.points[primitiveIndex];
                 const ReconstructedSurfelState state = reconstructSurfelState(surfel, surface);
                 targetSlabRadiance += eventRecord.layerWeights[i] * slabDirectRadiance[i];
-                const float3 cameraToSurface = state.position - sensor.camera.pos;
+                const float3 cameraToSurface = state.position - cameraRayOriginAtPoint(sensor.camera, state.position);
                 const float distance = sycl::sqrt(dot(cameraToSurface, cameraToSurface));
                 if (distance < targetDistance) {
                     targetDistance = distance;
@@ -1636,10 +1636,11 @@ namespace Pale {
             const bool canUsePointHitBatches =
                     pointHitBatchSize > 1u &&
                     tryGetSinglePointCloudInstance(scene, directPointInstanceIndex);
-            const float3 cameraToTarget = targetAnchorPosition - sensor.camera.pos;
+            const auto cameraRayOrigin = cameraRayOriginAtPoint(sensor.camera, targetAnchorPosition);
+            const float3 cameraToTarget = targetAnchorPosition - cameraRayOrigin;
             const float3 rayDirection = normalize(cameraToTarget);
             Ray ray{};
-            ray.origin = sensor.camera.pos + rayDirection * RayEpsilon;
+            ray.origin = cameraRayOrigin + rayDirection * RayEpsilon;
             ray.direction = rayDirection;
             float segmentTransmittance = 1.0f;
             for (uint32_t traversalIndex = 0u; traversalIndex < maxSplatEventsPerRay; ++traversalIndex) {
@@ -1684,7 +1685,7 @@ namespace Pale {
                     intersectScene(ray, &worldHit, scene, SurfelIntersectMode::FirstHit);
                 }
                 if (!worldHit.hit) break;
-                const float3 cameraToHit = worldHit.hitPositionW - sensor.camera.pos;
+                const float3 cameraToHit = worldHit.hitPositionW - cameraRayOrigin;
                 const float hitDistance = sycl::sqrt(dot(cameraToHit, cameraToHit));
                 if (hitDistance >= targetDistance - RayEpsilon) break;
                 if (!hasPrebuiltPointLayer) {
@@ -1741,7 +1742,7 @@ namespace Pale {
                             gradScaleU = 2.0f * betaScale * u * u * alphaEffective / (scaleU * oneMinusR2);
                             gradScaleV = 2.0f * betaScale * v * v * alphaEffective / (scaleV * oneMinusR2);
                             const float3 hitMinusP = localHit.hitPositionW - occluderSurfel.position;
-                            const float3 a = occluderSurfel.position - sensor.camera.pos;
+                            const float3 a = occluderSurfel.position - cameraRayOrigin;
                             const float nDotA = dot(occluderNormal, a);
                             const float invNDotD = 1.0f / nDotD;
                             const float3 q = (cross(occluderNormal, a) * nDotD - nDotA * cross(
@@ -2210,7 +2211,7 @@ namespace Pale {
                         surfel,
                         surface,
                         state,
-                        sensor.camera.pos);
+                        cameraRayOriginAtPoint(sensor.camera, state.position));
                     float3 gradWorldRotation = dLossDAlphaK * dAlphaEffDWorldRotation;
 
                     if (memberSurfaceCosine[parameterIndex] > 0.0f) {
@@ -2634,7 +2635,8 @@ namespace Pale {
                     xSurface.incomingDirection, xState.orientedNormal);
                 const float3 gradPosition = transpose(hitPositionJacobian) * gradEdgeWrtHitPosition;
                 const float3x3 hitRotationJacobian = planeHitPointRotationJacobian(
-                    sensor.camera.pos, xSurface.incomingDirection, surfelX.position, xState.orientedNormal);
+                    cameraRayOriginAtPoint(sensor.camera, xState.position),
+                    xSurface.incomingDirection, surfelX.position, xState.orientedNormal);
                 const float3 normalRotationContribution =
                         scalarWeightWithoutTauAndGeometric * cross(
                             xState.orientedNormal,

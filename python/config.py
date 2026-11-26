@@ -20,7 +20,7 @@ class RendererSettingsConfig:
     primal_shadow_rays: int = 1  # Li
     adjoint_shadow_rays: int = 1  # Li
     gather_passes: int = 1
-    adjoint_passes: int = 16
+    adjoint_passes: int = 4
     adjoint_opacity_sampling: bool = True  # False restores fixed qNull/qReflect sampling.
     # qReflect = (1 - mix) * slab_opacity + mix/2; 0.2 keeps both branches >= 0.1.
     # 0 reproduces the pure-opacity experiment but loses derivative support at 0/1.
@@ -108,8 +108,8 @@ class OptimizationConfig:
     # Decay duration independent of training length; hold final scales afterward.
     lr_decay_max_steps: int = 30_000
 
-    depth_distort_weight: float = 1000
-    depth_distort_world_space: bool = False  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
+    depth_distort_weight: float = 0.0005
+    depth_distort_world_space: bool = True  # False: 2DGS squared NDC differences; True: absolute camera-forward differences in scene units.
     depth_distort_squared: bool = True  # World-space only: True uses squared depth di21fferences, False absolute; NDC always uses squared differences.
     depth_distort_start_iteration: int = 0
     normal_consistency_weight: float = 1.0e-3
@@ -169,8 +169,8 @@ class OptimizationConfig:
     densification_diagnostics: bool = True
 
     # Threshold units follow densification_image_space (normalized image or world).
-    densification_grad_abs_min: float = 0.0003
-    densification_grad_abs_min_final: float = 0.0003
+    densification_grad_abs_min: float = 0.0002
+    densification_grad_abs_min_final: float = 0.0002
     densification_grad_abs_min_decay_start_iteration: int = 0
     densification_grad_abs_min_decay_end_iteration: int = 0
     densification_split_scale_factor: float = 1.6 # 1.6 matches 3DGS split procedure.

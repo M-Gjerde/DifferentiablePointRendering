@@ -84,6 +84,7 @@ namespace viewer {
     struct GridProjection {
         glm::mat4 worldFromCamera{1.0f};
         float fx=1, fy=1, cx=0, cy=0;
+        bool orthographic = false;
         bool operator==(const GridProjection&) const = default;
     };
 
@@ -151,14 +152,17 @@ namespace viewer {
                     continue;
                 }
 
-                const glm::vec3 rayDirection=gridRayDirection(projection,static_cast<float>(x),static_cast<float>(y));
+                const glm::vec3 rayDirection = projection.orthographic
+                    ? cameraForward : gridRayDirection(projection, static_cast<float>(x), static_cast<float>(y));
+                const glm::vec3 rayOrigin = projection.orthographic
+                    ? cameraPosition + (x - projection.cx) * rayDx + (y - projection.cy) * rayDy : cameraPosition;
                 const float rayLengthSquared = glm::dot(rayDirection, rayDirection);
                 if (rayDirection.z * rayDirection.z <= 1.0e-12f * rayLengthSquared) {
                     continue;
                 }
 
                 const float invRayZ=1.f/rayDirection.z;
-                const float t = -cameraPosition.z*invRayZ;
+                const float t = -rayOrigin.z*invRayZ;
                 if (t <= 0.0f || t * t * rayLengthSquared <= orbit.nearClip * orbit.nearClip) {
                     continue;
                 }
@@ -169,12 +173,13 @@ namespace viewer {
                 }
                 const float depthFade=1.f-gridSmoothFade((forwardDepth-fadeStart)*invFadeRange);
                 if(depthFade<=0)continue;
-                const glm::vec3 hit=cameraPosition+rayDirection*t;
+                const glm::vec3 hit=rayOrigin+rayDirection*t;
                 // Differentiate the ray/ground intersection itself. Using only
                 // focal depth ignores foreshortening and makes axes subpixel at
                 // grazing camera angles, even when their nominal width is >1px.
-                const glm::vec3 hitDx=t*(rayDx-rayDirection*(rayDx.z*invRayZ));
-                const glm::vec3 hitDy=t*(rayDy-rayDirection*(rayDy.z*invRayZ));
+                const float pixelScale = projection.orthographic ? 1.0f : t;
+                const glm::vec3 hitDx=pixelScale*(rayDx-rayDirection*(rayDx.z*invRayZ));
+                const glm::vec3 hitDy=pixelScale*(rayDy-rayDirection*(rayDy.z*invRayZ));
                 const float pixelX=glm::length(glm::vec2(hitDx.x,hitDy.x));
                 const float pixelY=glm::length(glm::vec2(hitDx.y,hitDy.y));
                 const float yAxis=blendGridCoordinate(rgba,pixelIndex,hit.x,pixelX,spacing,invSpacing,depthFade,yAxisLine,majorLine,minorLine);

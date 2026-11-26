@@ -19,10 +19,18 @@ namespace Pale {
     }
 
     inline SurfaceOverlapView surfaceOverlapView(const CameraGPU& camera) {
+        const auto origin = glm::vec3(surfaceOverlapMatrix(camera.invView)[3]);
+        const auto view = surfaceOverlapMatrix(camera.view);
+        if (camera.orthographic) {
+            const float halfWidth = 0.5f * camera.width;
+            const float halfHeight = 0.5f * camera.height;
+            return {origin, view, halfWidth * camera.proj.row[0][0], halfHeight * camera.proj.row[1][1],
+                    halfWidth * (1.0f + camera.proj.row[0][3]), halfHeight * (1.0f - camera.proj.row[1][3]),
+                    camera.width, camera.height, true};
+        }
         const bool intrinsics = camera.hasPinholeIntrinsics != 0u && camera.fx > 0 && camera.fy > 0;
         const float focal = 0.5f * camera.height / std::tan(0.5f * glm::radians(camera.fovy));
-        return {glm::vec3(surfaceOverlapMatrix(camera.invView)[3]),
-                surfaceOverlapMatrix(camera.view),
+        return {origin, view,
                 intrinsics ? camera.fx : focal, intrinsics ? camera.fy : focal,
                 intrinsics ? camera.cx : 0.5f * camera.width,
                 intrinsics ? camera.cy : 0.5f * camera.height, camera.width, camera.height};

@@ -218,6 +218,7 @@ namespace Pale {
         uint32_t useForAdjointPass = 1; // 0/1
 
         char name[16]{};
+        uint32_t orthographic = 0;
     };
 
     CHECK_16(CameraGPU);

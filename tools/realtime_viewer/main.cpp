@@ -65,6 +65,7 @@
 #include "LinearCompositing.h"
 #include "ViewportPicking.h"
 #include "ViewportGrid.h"
+#include "NavigationGizmo.h"
 #include "TrainingControls.h"
 #include "MeshExportControls.h"
 #include "SceneTree.h"
@@ -424,6 +425,8 @@ namespace {
         float fovyDegrees = 30.0f;
         float nearClip = 0.01f;
         float farClip = 1000.0f;
+        float orthographicHalfHeight = 0.0f;
+        bool orbitRestoresPerspective = false;
 
         [[nodiscard]] glm::vec3 forward() const {
             return orientation * glm::vec3(0.0f, 0.0f, -1.0f);
@@ -444,21 +447,38 @@ namespace {
             orientation = glm::normalize(glm::quatLookAtRH(direction, up));
         }
 
-        bool adoptViewRotation(const glm::mat4& view) {
-            // A rigid view matrix stores the inverse rotation. Ignore the
-            // gizmo's translation so the orbit pivot and distance stay fixed.
-            const auto rotation = glm::quat_cast(glm::transpose(glm::mat3(view)));
-            const float lengthSquared = glm::dot(rotation, rotation);
-            if (!std::isfinite(lengthSquared) || lengthSquared <= 1.0e-20f) return false;
-            orientation = glm::normalize(rotation);
-            return true;
+        [[nodiscard]] bool isOrthographic() const {
+            return orthographicHalfHeight > 0.0f;
+        }
+
+        void setOrthographic(bool enabled) {
+            if (enabled == isOrthographic()) return;
+            if (enabled) {
+                orthographicHalfHeight = distance * tanHalfFov();
+            } else {
+                distance = std::clamp(orthographicHalfHeight / tanHalfFov(), minDistance, maxDistance);
+                orthographicHalfHeight = 0.0f;
+            }
+            orbitRestoresPerspective = false;
+        }
+
+        void snapToAxis(const glm::vec3& eyeAxis) {
+            const bool autoPerspective = !isOrthographic() || orbitRestoresPerspective;
+            setOrthographic(true);
+            orbitRestoresPerspective = autoPerspective;
+            const auto up = eyeAxis.z == 0.0f ? kWorldUp : glm::vec3(0.0f, eyeAxis.z, 0.0f);
+            orientation = glm::normalize(glm::quatLookAtRH(-eyeAxis, up));
         }
 
         [[nodiscard]] glm::mat4 projectionMatrix(uint32_t width, uint32_t height) const {
             const float h = static_cast<float>(std::max(width, 1u));
             const float v = static_cast<float>(std::max(height, 1u));
-            const float fovyRadians = glm::radians(fovyDegrees);
-            const float fy = 0.5f * v / std::tan(0.5f * fovyRadians);
+            if (isOrthographic()) {
+                const float halfWidth = orthographicHalfHeight * h / v;
+                return glm::orthoRH_ZO(-halfWidth, halfWidth, -orthographicHalfHeight,
+                                       orthographicHalfHeight, nearClip, farClip);
+            }
+            const float fy = 0.5f * v / tanHalfFov();
             const float fx = fy;
             const float cx = 0.5f * h;
             const float cy = 0.5f * v;
@@ -471,6 +491,7 @@ namespace {
         }
 
         void orbit(const ImVec2 delta) {
+            if (orbitRestoresPerspective) setOrthographic(false);
             const auto yaw = glm::angleAxis(-delta.x * kLookSensitivity, kWorldUp);
             const auto pitch = glm::angleAxis(-delta.y * kLookSensitivity, glm::vec3(1.0f, 0.0f, 0.0f));
             // World-space yaw multiplies on the left, and camera-local pitch on the right.
@@ -497,13 +518,20 @@ namespace {
         }
 
         void pan(const ImVec2 delta) {
-            const float scale = distance * 0.0015f;
+            const float framingDistance = isOrthographic() ? orthographicHalfHeight / tanHalfFov() : distance;
+            const float scale = framingDistance * 0.0015f;
             target += orientation * glm::vec3(-delta.x * scale, delta.y * scale, 0.0f);
         }
 
         void zoom(float wheelDelta) {
-            distance *= std::exp(-wheelDelta * 0.12f);
-            distance = std::clamp(distance, 0.001f, 10000.0f);
+            const float factor = std::exp(-wheelDelta * 0.12f);
+            if (isOrthographic()) {
+                const float halfFov = tanHalfFov();
+                orthographicHalfHeight = std::clamp(orthographicHalfHeight * factor,
+                                                    minDistance * halfFov, maxDistance * halfFov);
+            } else {
+                distance = std::clamp(distance * factor, minDistance, maxDistance);
+            }
         }
 
         [[nodiscard]] Pale::CameraGPU makeGpuCamera(uint32_t width, uint32_t height) const {
@@ -514,8 +542,7 @@ namespace {
 
             const float h = static_cast<float>(std::max(width, 1u));
             const float v = static_cast<float>(std::max(height, 1u));
-            const float fovyRadians = glm::radians(fovyDegrees);
-            const float fy = 0.5f * v / std::tan(0.5f * fovyRadians);
+            const float fy = 0.5f * v / tanHalfFov();
             const float fx = fy;
             const float cx = 0.5f * h;
             const float cy = 0.5f * v;
@@ -536,14 +563,21 @@ namespace {
             camera.fy = fy;
             camera.cx = cx;
             camera.cy = cy;
-            camera.hasPinholeIntrinsics = 1u;
+            camera.hasPinholeIntrinsics = !isOrthographic();
             camera.useForAdjointPass = 1u;
+            camera.orthographic = isOrthographic();
             Pale::copyName(camera.name, "RealtimeCamera");
             return camera;
         }
 
     private:
         static constexpr float kLookSensitivity = 0.005f;
+        static constexpr float minDistance = 0.001f;
+        static constexpr float maxDistance = 10000.0f;
+
+        [[nodiscard]] float tanHalfFov() const {
+            return std::tan(0.5f * glm::radians(fovyDegrees));
+        }
 
         static glm::mat4 perspectiveOffCenterRhZo(
             float left,
@@ -1827,6 +1861,7 @@ namespace {
         const SceneBounds& bounds,
         const OrbitCamera& fallback) {
         OrbitCamera orbit = fallback;
+        orbit.setOrthographic(false);
         const glm::vec3 cameraPosition = Pale::sycl2glm(camera.pos);
         const glm::vec3 cameraForward = Pale::sycl2glm(camera.forward);
         const float forwardLengthSquared = glm::dot(cameraForward, cameraForward);
@@ -2328,10 +2363,17 @@ namespace {
         if (rawRenderPixels.size() != pixelCount * 4u) return;
         const bool intrinsics=displayedCamera.hasPinholeIntrinsics && displayedCamera.fx>0 && displayedCamera.fy>0;
         const float focal=0.5f*displayedCamera.height/std::tan(0.5f*glm::radians(displayedCamera.fovy));
-        const viewer::GridProjection projection{syclMatrixToGlm(displayedCamera.invView),
+        viewer::GridProjection projection{syclMatrixToGlm(displayedCamera.invView),
             intrinsics?displayedCamera.fx:focal,intrinsics?displayedCamera.fy:focal,
             intrinsics?displayedCamera.cx:0.5f*displayedCamera.width,
             intrinsics?displayedCamera.cy:0.5f*displayedCamera.height};
+        if (displayedCamera.orthographic) {
+            projection.orthographic = true;
+            projection.fx = 0.5f * displayedCamera.width * displayedCamera.proj.row[0][0];
+            projection.fy = 0.5f * displayedCamera.height * displayedCamera.proj.row[1][1];
+            projection.cx = 0.5f * displayedCamera.width * (1.0f + displayedCamera.proj.row[0][3]);
+            projection.cy = 0.5f * displayedCamera.height * (1.0f - displayedCamera.proj.row[1][3]);
+        }
         displayPixels = backgroundCache.get(orbit, bounds, renderWidth, renderHeight,
                                             showViewportGrid, backgroundColor, projection);
         viewer::compositeLinearOverBackground(rawRenderPixels, displayPixels,
@@ -2872,6 +2914,8 @@ int main(int argc, char** argv) {
         int selectedLightIndex = 0;
         bool showLightGizmo = true;
         bool gizmosEnabled = true;
+        bool showNavigationGizmo = true;
+        viewer::NavigationGizmo navigationGizmo;
         int viewportTool = 1;
         bool showLightMarkers = true;
         bool openLightControls = false;
@@ -3009,6 +3053,8 @@ int main(int argc, char** argv) {
         SceneBounds busyBounds=bounds;
         Pale::CameraGPU busyCamera=displayedCamera;
         CameraSource busyCameraSource=cameraSource;
+        CameraSource busyNavigationSource=cameraSource;
+        std::optional<Pale::CameraGPU> busySceneCamera;
         bool queuedOrbitChanged=false,queuedRefresh=false,followLaunchAfterPreview=false;
         bool busyHasWorkspace=false;
         std::filesystem::path loadedTrainingSceneRun;
@@ -3016,7 +3062,7 @@ int main(int argc, char** argv) {
         viewer::ViewportModeShortcuts viewportModeShortcuts;
         std::optional<viewer::TrainingView> queuedSceneSource;
         bool editLatestRequested=false,returnToEditsRequested=false;
-        std::optional<int> queuedCamera;
+        std::optional<CameraSource> queuedCameraSource;
         struct TrainingPreview {
             std::filesystem::path run;
             uint64_t iteration;
@@ -5709,6 +5755,7 @@ int main(int argc, char** argv) {
                 ImGui::SeparatorText("Gizmos");
                 ImGui::Checkbox("Show gizmos",&gizmosEnabled);
                 if(!gizmosEnabled)ImGui::BeginDisabled();
+                ImGui::Checkbox("Navigation gizmo",&showNavigationGizmo);
                 ImGui::Checkbox("Emitter markers",&showLightMarkers);
                 ImGui::Checkbox("Emitter transform handles",&showLightGizmo);
                 ImGui::Checkbox("Surfel transform handles",&showSurfelGizmo);
@@ -5720,6 +5767,58 @@ int main(int argc, char** argv) {
                 ImGui::EndPopup();
             }
             ImGui::Separator();
+        };
+
+        const auto sceneNavigationCamera = [&]() -> const Pale::CameraGPU* {
+            if (selectedSceneCameraIndex < 0 ||
+                static_cast<std::size_t>(selectedSceneCameraIndex) >= buildProducts.cameraGPUs.size()) return nullptr;
+            return &buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)];
+        };
+        const auto updateNavigationGizmo = [&](const viewer::ViewportCanvas& canvas, OrbitCamera& pose,
+                                               CameraSource& source, const Pale::CameraGPU* sceneCamera,
+                                               const SceneBounds& sceneBounds, bool interactive, bool cameraImageReady) {
+            using Action = viewer::NavigationGizmo::Action;
+            const bool usingSceneCamera = source == CameraSource::SceneXml && sceneCamera;
+            const auto view = usingSceneCamera ? syclMatrixToGlm(sceneCamera->view) : pose.viewMatrix();
+            const auto input = navigationGizmo.update(canvas, glm::mat3(view), gizmosEnabled && showNavigationGizmo,
+                interactive && !ImGuizmo::IsUsingAny() && !pressedLightMarker,
+                usingSceneCamera, !usingSceneCamera && pose.isOrthographic(), sceneCamera != nullptr);
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle) &&
+                !ImGui::IsMouseDown(ImGuiMouseButton_Right)) viewportGizmoMouseCapture = false;
+            if (input.capturesMouse && (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
+                ImGui::IsMouseClicked(ImGuiMouseButton_Middle) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+                viewportGizmoMouseCapture = true;
+            }
+            bool cameraChanged = false;
+            if (input.action == Action::Camera) {
+                source = usingSceneCamera ? CameraSource::Viewport : CameraSource::SceneXml;
+                cameraChanged = true;
+            } else if (input.action != Action::None) {
+                const float zoom = -input.delta.y / 20.0f;
+                if (usingSceneCamera && (input.action == Action::Zoom || input.action == Action::Pan)) {
+                    if (cameraImageReady) {
+                        if (input.action == Action::Pan) cameraImageView.drag(input.delta);
+                        else cameraImageView.zoomAt({canvas.min.x + canvas.size.x * 0.5f,
+                                                    canvas.min.y + canvas.size.y * 0.5f}, canvas.min, canvas.size, zoom);
+                    }
+                } else {
+                    if (usingSceneCamera) {
+                        pose = makeOrbitCameraFromSceneCamera(*sceneCamera, sceneBounds, pose);
+                        source = CameraSource::Viewport;
+                    }
+                    switch (input.action) {
+                        case Action::Orbit: pose.orbit(input.delta); break;
+                        case Action::Snap: pose.snapToAxis(input.axis); break;
+                        case Action::Zoom: pose.zoom(zoom); break;
+                        case Action::Pan: pose.pan(input.delta); break;
+                        case Action::Projection: pose.setOrthographic(!pose.isOrthographic()); break;
+                        default: break;
+                    }
+                    cameraChanged = true;
+                }
+            }
+            if (cameraChanged) lastNavigationInput = std::chrono::steady_clock::now();
+            return std::pair{input.capturesMouse, cameraChanged};
         };
 
         const auto refreshLightMarkerMetadata=[&] {
@@ -5905,6 +6004,9 @@ int main(int argc, char** argv) {
             busyHasWorkspace=hasWorkingSnapshot||(!modelReadOnly()&&firstPointCloudHandle(scene).has_value());
             cachedSceneGroups=makeSceneGroups();cachedSceneName=currentScenePath.stem().string();
             queuedOrbit=orbit;busyBounds=displayedBounds;busyCamera=displayedCamera;busyCameraSource=displayedCameraSource;
+            busyNavigationSource = cameraSource;
+            if (const auto* camera = sceneNavigationCamera()) busySceneCamera = *camera;
+            else busySceneCamera.reset();
             busyPointCount=static_cast<uint32_t>(buildProducts.points.size());busyRenderMs=lastRenderMs;
             busyCameraNames.clear();for(const auto& camera:buildProducts.cameraGPUs)busyCameraNames.emplace_back(camera.name);
             busyHasSelection=false;busySelectionName=selectedTreeEntity;busySelectionKind=sceneSelectionKind;
@@ -5989,7 +6091,7 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("Reset view")) {
                     resetOrbitView();
                 }
-                if (cameraSource == CameraSource::Viewport) {
+                if (cameraSource == CameraSource::Viewport && !orbit.isOrthographic()) {
                     if (ImGui::DragFloat("FOV", &orbit.fovyDegrees, 0.25f, 5.0f, 160.0f, "%.1f deg")) {
                         cameraDirty = true;
                     }
@@ -6006,6 +6108,7 @@ int main(int argc, char** argv) {
             const auto& framingBounds = !orbitVideoSettings.distance && orbitVideoSettings.excludePointLights
                 ? orbitVideoBounds.withoutPointLights : orbitVideoBounds.model;
             OrbitCamera camera = displayedOrbit;
+            camera.setOrthographic(false);
             camera.target = orbitVideoSettings.lookAtPoint(framingBounds.center);
             camera.fovyDegrees = std::clamp(camera.fovyDegrees, 5.0f, 160.0f);
             const float halfVerticalFov = 0.5f * glm::radians(camera.fovyDegrees);
@@ -6260,6 +6363,14 @@ int main(int argc, char** argv) {
             const auto available=viewportCanvas.size;
             const auto kernelStatus=adjointKernelStatus();
             const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,true,!kernelStatus.empty());
+            auto navigationSource = queuedCameraSource.value_or(queuedOrbitChanged ? CameraSource::Viewport : busyNavigationSource);
+            const auto [navigationMouse, navigationChanged] = updateNavigationGizmo(
+                viewportCanvas, queuedOrbit, navigationSource, busySceneCamera ? &*busySceneCamera : nullptr,
+                busyBounds, !walkNavigationActive && !previewNoticeHovered, texture.id && busyCameraSource == CameraSource::SceneXml);
+            if (navigationChanged) {
+                queuedOrbitChanged = true;
+                queuedCameraSource = navigationSource;
+            }
             if(texture.id) {
                 const auto canvas=viewportCanvas.min;
                 const ImVec2 canvasMax(canvas.x+available.x,canvas.y+available.y);
@@ -6271,9 +6382,10 @@ int main(int argc, char** argv) {
                 const bool toolsHovered=ImGui::IsMouseHoveringRect(toolsMin,toolsMax);
                 const bool imageHovered=ImGui::IsItemHovered()&&!toolsHovered;
                 drawViewportToolRail(canvas,busySelectionIndex>=0);
-                ImGui::GetWindowDrawList()->AddText(ImVec2(origin.x+12,origin.y+10),ImGui::GetColorU32(viewer::ui::muted),busyCameraSource==CameraSource::SceneXml?busyCamera.name:"User perspective");
+                ImGui::GetWindowDrawList()->AddText(ImVec2(origin.x+12,origin.y+10), ImGui::GetColorU32(viewer::ui::muted),
+                    busyCameraSource == CameraSource::SceneXml ? busyCamera.name : busyCamera.orthographic ? "User orthographic" : "User perspective");
                 const bool replacingScene=previewActivity=="Updating training scene"||!busyOverlayMatchesScene;
-                const auto hoveredMarker=drawDisplayedLightMarkers(busyCamera,origin,size,imageHovered&&!replacingScene,busySelectionKind,busySelectionIndex,busySelectedLightIndex);
+                const auto hoveredMarker=drawDisplayedLightMarkers(busyCamera,origin,size,imageHovered&&!replacingScene&&!navigationMouse,busySelectionKind,busySelectionIndex,busySelectedLightIndex);
                 if(!replacingScene) {
                     if(ImGui::IsMouseClicked(ImGuiMouseButton_Left))pressedLightMarker=hoveredMarker;
                     if(pressedLightMarker&&ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -6282,7 +6394,7 @@ int main(int argc, char** argv) {
                         pressedLightMarker.reset();
                     }
                 }
-                bool gizmoCapturing=viewportGizmoMouseCapture;
+                bool gizmoCapturing=viewportGizmoMouseCapture||navigationMouse;
                 if(replacingScene&&gizmosEnabled&&viewportTool!=0) {
                     displayedSelectedHandles.draw(*ImGui::GetWindowDrawList(),origin,size);
                     if(displayedSelectedHandles.contains(io.MousePos,origin,size)) {
@@ -6290,6 +6402,7 @@ int main(int argc, char** argv) {
                         if(ImGui::IsMouseDown(ImGuiMouseButton_Left))viewportGizmoMouseCapture=true;
                     }
                 }
+                ImGuizmo::Enable(!navigationMouse && !ImGui::GetTopMostPopupModal());
                 if(busyHasSelection&&!replacingScene&&gizmosEnabled&&viewportTool!=0&&
                    (busySelectionKind==viewer::SceneItemKind::Emitter?showLightGizmo:showSurfelGizmo)) {
                     const bool emitter=busySelectionKind==viewer::SceneItemKind::Emitter;
@@ -6297,7 +6410,7 @@ int main(int argc, char** argv) {
                     if(emitter)matrix=glm::translate(glm::scale(matrix,busySelectionScale),busyLightCenter);
                     else matrix=busyPointCloudTransform*matrix;
                     auto view=syclMatrixToGlm(busyCamera.view),projection=syclMatrixToGlm(busyCamera.proj);
-                    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());ImGuizmo::SetOrthographic(false);
+                    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());ImGuizmo::SetOrthographic(busyCamera.orthographic != 0u);
                     ImGuizmo::SetRect(origin.x,origin.y,size.x,size.y);ImGuizmo::PushID(emitter?"area-light-gizmo":"surfel-gizmo");
                     if(ImGuizmo::Manipulate(glm::value_ptr(view),glm::value_ptr(projection),emitter?lightGizmoOperation:surfelGizmoOperation,emitter?(lightGizmoOperation==ImGuizmo::SCALE?ImGuizmo::LOCAL:lightGizmoMode):surfelGizmoMode,glm::value_ptr(matrix))) {
                         if(emitter) {
@@ -6311,29 +6424,21 @@ int main(int argc, char** argv) {
                     }
                     gizmoCapturing=gizmoCapturing||ImGuizmo::IsOver()||ImGuizmo::IsUsingAny();ImGuizmo::PopID();
                 }
-                if(!walkNavigationActive&&busyCameraSource==CameraSource::Viewport) {
-                    auto view=replacingScene?syclMatrixToGlm(busyCamera.view):queuedOrbit.viewMatrix();
-                    const ImVec2 gizmoSize(92,92),gizmoPosition(origin.x+size.x-104,origin.y+12);
-                    ImGuizmo::ViewManipulate(glm::value_ptr(view),queuedOrbit.distance,gizmoPosition,gizmoSize,IM_COL32(16,16,16,96));
-                    if(ImGuizmo::IsUsingViewManipulate() && queuedOrbit.adoptViewRotation(view)) {
-                        queuedOrbitChanged=true;lastNavigationInput=std::chrono::steady_clock::now();
-                    }
-                    gizmoCapturing=gizmoCapturing||ImGuizmo::IsViewManipulateHovered()||ImGuizmo::IsUsingViewManipulate();
-                }
-                if(!ImGui::IsMouseDown(ImGuiMouseButton_Left))viewportGizmoMouseCapture=false;
                 if((imageHovered||(busyCameraSource==CameraSource::SceneXml&&ImGui::IsMouseHoveringRect(canvas,canvasMax)))&&!previewNoticeHovered&&!toolsHovered&&!hoveredMarker&&!gizmoCapturing&&!io.WantTextInput&&!walkNavigationActive&&!ImGui::GetTopMostPopupModal()) {
                     const bool orbitInput=ImGui::IsMouseDragging(ImGuiMouseButton_Left);
                     const bool panInput=ImGui::IsMouseDragging(ImGuiMouseButton_Right)||ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
-                    if(busyCameraSource==CameraSource::SceneXml&&!orbitInput) {
+                    if(navigationSource==CameraSource::SceneXml&&!orbitInput) {
                         if(panInput)cameraImageView.drag(io.MouseDelta);
                         if(io.MouseWheel!=0)cameraImageView.zoomAt(io.MousePos,canvas,available,io.MouseWheel);
                     } else if(orbitInput||panInput||io.MouseWheel!=0) {
-                        lastNavigationInput=std::chrono::steady_clock::now();queuedCamera.reset();
-                        if(busyCameraSource==CameraSource::SceneXml&&!queuedOrbitChanged)queuedOrbit=makeOrbitCameraFromSceneCamera(busyCamera,busyBounds,queuedOrbit);
+                        lastNavigationInput=std::chrono::steady_clock::now();
+                        if(navigationSource==CameraSource::SceneXml&&busySceneCamera)
+                            queuedOrbit=makeOrbitCameraFromSceneCamera(*busySceneCamera,busyBounds,queuedOrbit);
                         if(orbitInput)queuedOrbit.orbit(io.MouseDelta);
                         if(panInput)queuedOrbit.pan(io.MouseDelta);
                         if(io.MouseWheel!=0)queuedOrbit.zoom(io.MouseWheel);
                         queuedOrbitChanged=true;
+                        queuedCameraSource=CameraSource::Viewport;
                     }
                 }
                 ImGui::PopClipRect();viewer::finishViewportCanvas(fullCanvas);
@@ -6341,6 +6446,7 @@ int main(int argc, char** argv) {
                 drawViewportToolRail(viewportCanvas.min,busySelectionIndex>=0);
                 viewer::finishViewportCanvas(fullCanvas);
             } else ImGui::TextWrapped("The first preview will appear when compilation finishes.");
+            navigationGizmo.draw(*ImGui::GetWindowDrawList(), viewportBackgroundColor);
             drawAdjointKernelStatus(viewportCanvas,kernelStatus);
             if(walkNavigationActive&&!queuedWalkFinish) {
                 queuedOrbit.lookAround(io.MouseDelta);
@@ -6436,11 +6542,14 @@ int main(int argc, char** argv) {
                     }
                     rebuildSceneGpu();
                 }
-                if(queuedOrbitChanged) {orbit=queuedOrbit;cameraSource=CameraSource::Viewport;cameraDirty=renderRequested=true;queuedOrbitChanged=false;}
-                if(queuedCamera && *queuedCamera>=0 && static_cast<std::size_t>(*queuedCamera)<buildProducts.cameraGPUs.size()) {
-                    selectedSceneCameraIndex=*queuedCamera;cameraSource=CameraSource::SceneXml;cameraDirty=renderRequested=true;
+                if (queuedOrbitChanged) {
+                    orbit = queuedOrbit;
+                    cameraSource = queuedCameraSource.value_or(CameraSource::Viewport);
+                    if (cameraSource == CameraSource::SceneXml && !sceneNavigationCamera()) cameraSource = CameraSource::Viewport;
+                    cameraDirty = renderRequested = true;
+                    queuedOrbitChanged = false;
                 }
-                queuedCamera.reset();
+                queuedCameraSource.reset();
                 if(queuedWalkFinish) {finishWalkNavigation(*queuedWalkFinish);queuedWalkFinish.reset();}
                 if(queuedView) {setViewImageMode(*queuedView);queuedView.reset();}
                 if(queuedSceneSource) {enterTrainingView(*queuedSceneSource);queuedSceneSource.reset();}
@@ -6556,6 +6665,7 @@ int main(int argc, char** argv) {
                     orbit = makeOrbitCameraFromSceneCamera(
                         buildProducts.cameraGPUs[static_cast<std::size_t>(selectedSceneCameraIndex)], bounds, orbit);
                 }
+                orbit.setOrthographic(false);
                 cameraSource = CameraSource::Viewport;
                 walkNavigationActive = true;
                 navigationInputCaptured = true;
@@ -8234,6 +8344,10 @@ int main(int argc, char** argv) {
             const auto available=viewportCanvas.size;
             const auto kernelStatus=adjointKernelStatus();
             const bool previewNoticeHovered=drawPreviewFailureNotice(viewportCanvas,false,!kernelStatus.empty());
+            const auto [navigationMouse, navigationChanged] = updateNavigationGizmo(
+                viewportCanvas, orbit, cameraSource, sceneNavigationCamera(), displayedBounds,
+                !navigationInputCaptured && !previewNoticeHovered, texture.id && displayedCameraSource == CameraSource::SceneXml);
+            if (navigationChanged) cameraDirty = renderRequested = true;
             if (cameraSource == CameraSource::Viewport) {
                 const uint32_t targetRenderWidth = renderExtentFromAvailable(fullCanvas.size.x);
                 const uint32_t targetRenderHeight = renderExtentFromAvailable(fullCanvas.size.y);
@@ -8260,16 +8374,16 @@ int main(int argc, char** argv) {
                 const bool imageHovered = ImGui::IsItemHovered() && !toolsHovered;
                 drawViewportToolRail(imageCanvasMin,selectedSurfelEditorIndex>=0);
                 auto* overlay=ImGui::GetWindowDrawList();
-                overlay->AddText(ImVec2(imageMin.x+12,imageMin.y+10),ImGui::GetColorU32(viewer::ui::muted),calibrated ? displayedCamera.name : "User perspective");
+                overlay->AddText(ImVec2(imageMin.x+12,imageMin.y+10), ImGui::GetColorU32(viewer::ui::muted),
+                    calibrated ? displayedCamera.name : displayedCamera.orthographic ? "User orthographic" : "User perspective");
 
                 const bool overlayMatchesScene=displayedOverlayPointCloud==currentPointCloudPath&&displayedOverlayScene==currentScenePath;
                 if(overlayMatchesScene)refreshLightMarkerMetadata();
                 const auto hoveredLightMarker=drawDisplayedLightMarkers(displayedCamera,imageMin,imageSize,
-                    imageHovered&&!navigationInputCaptured&&overlayMatchesScene,sceneSelectionKind,selectedSurfelEditorIndex,selectedLightIndex);
+                    imageHovered&&!navigationInputCaptured&&!navigationMouse&&overlayMatchesScene,sceneSelectionKind,selectedSurfelEditorIndex,selectedLightIndex);
 
                 std::optional<int> transportMarkerPick;
                 if (viewImageMode == ViewImageMode::TransportScore && transportXray && !transportScores.empty()) {
-                    const auto cameraView = Pale::surfaceOverlapView(displayedCamera);
                     auto* draw = ImGui::GetWindowDrawList();
                     draw->PushClipRect(imageMin, ImVec2(imageMin.x + imageSize.x, imageMin.y + imageSize.y), true);
                     const auto mouse = ImGui::GetMousePos();
@@ -8277,23 +8391,21 @@ int main(int argc, char** argv) {
                     std::size_t shown = 0;
                     for (const auto& marker : transportMarkers) {
                         if (marker.primitive >= transportScores.size() || transportScores[marker.primitive] >= transportThreshold) continue;
-                        const auto center = cameraView.worldToCamera * glm::vec4(marker.center, 1);
-                        if (center.z >= 0) continue;
-                        const float u = (cameraView.cx + cameraView.fx * center.x / -center.z) / cameraView.width;
-                        const float v = (cameraView.cy - cameraView.fy * center.y / -center.z) / cameraView.height;
-                        if (!(u >= 0 && u < 1 && v >= 0 && v < 1)) continue;
+                        const auto projected = viewer::projectViewportPoint(displayedCamera, marker.center,
+                            {imageMin.x, imageMin.y}, {imageSize.x, imageSize.y});
+                        if (!projected) continue;
                         if (++shown > 20000) break;
-                        const ImVec2 screen(imageMin.x + u * imageSize.x, imageMin.y + v * imageSize.y);
+                        const ImVec2 screen(projected->x, projected->y);
                         draw->AddCircleFilled(screen, 2.5f, IM_COL32(255, 45, 140, 200));
                         if (marker.editableIndex >= 0 && marker.editableIndex == selectedSurfelEditorIndex)
                             draw->AddCircle(screen, 6.0f, IM_COL32(255, 255, 255, 255), 12, 2.0f);
                         const float distance = (screen.x - mouse.x) * (screen.x - mouse.x) + (screen.y - mouse.y) * (screen.y - mouse.y);
-                        if (imageHovered && marker.editableIndex >= 0 && distance < nearest) { nearest = distance; transportMarkerPick = marker.editableIndex; }
+                        if (imageHovered && !navigationMouse && marker.editableIndex >= 0 && distance < nearest) { nearest = distance; transportMarkerPick = marker.editableIndex; }
                     }
                     draw->PopClipRect();
                 }
                 const bool lightMarkerInput = (hoveredLightMarker || pressedLightMarker) && !ImGuizmo::IsUsingAny();
-                ImGuizmo::Enable(!lightMarkerInput&&!ImGui::GetTopMostPopupModal());
+                ImGuizmo::Enable(!lightMarkerInput&&!navigationMouse&&!ImGui::GetTopMostPopupModal());
                 bool viewportGizmoHovered = false;
                 bool viewportGizmoUsing = false;
                 const int firstHandleIndex=ImGui::GetWindowDrawList()->IdxBuffer.Size;
@@ -8306,7 +8418,7 @@ int main(int argc, char** argv) {
                     glm::mat4 view = syclMatrixToGlm(displayedCamera.view);
                     glm::mat4 projection = syclMatrixToGlm(displayedCamera.proj);
 
-                    ImGuizmo::SetOrthographic(false);
+                    ImGuizmo::SetOrthographic(displayedCamera.orthographic != 0u);
                     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
                     ImGuizmo::SetRect(imageMin.x, imageMin.y, imageSize.x, imageSize.y);
                     ImGuizmo::PushID("area-light-gizmo");
@@ -8355,7 +8467,7 @@ int main(int argc, char** argv) {
                                 glm::mat4 view = syclMatrixToGlm(displayedCamera.view);
                                 glm::mat4 projection = syclMatrixToGlm(displayedCamera.proj);
 
-                                ImGuizmo::SetOrthographic(false);
+                                ImGuizmo::SetOrthographic(displayedCamera.orthographic != 0u);
                                 ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
                                 ImGuizmo::SetRect(imageMin.x, imageMin.y, imageSize.x, imageSize.y);
                                 ImGuizmo::PushID("surfel-gizmo");
@@ -8390,31 +8502,7 @@ int main(int argc, char** argv) {
                 }
                 if(overlayMatchesScene)displayedSelectedHandles.capture(*ImGui::GetWindowDrawList(),firstHandleIndex,imageMin,imageSize);
                 ImGuizmo::Enable(!ImGui::GetTopMostPopupModal());
-                if (!navigationInputCaptured && !calibrated && cameraSource == CameraSource::Viewport) {
-                    glm::mat4 viewGizmoMatrix = orbit.viewMatrix();
-                    const ImVec2 viewGizmoSize{92.0f, 92.0f};
-                    const ImVec2 viewGizmoPosition{
-                        imageMin.x + imageSize.x - viewGizmoSize.x - 12.0f,
-                        imageMin.y + 12.0f,
-                    };
-                    ImGuizmo::ViewManipulate(
-                        glm::value_ptr(viewGizmoMatrix),
-                        orbit.distance,
-                        viewGizmoPosition,
-                        viewGizmoSize,
-                        IM_COL32(16, 16, 16, 96));
-                    if (ImGuizmo::IsUsingViewManipulate() && orbit.adoptViewRotation(viewGizmoMatrix)) {
-                        cameraDirty = true;
-                    }
-                    viewportGizmoHovered = viewportGizmoHovered || ImGuizmo::IsViewManipulateHovered();
-                    viewportGizmoUsing = viewportGizmoUsing || ImGuizmo::IsUsingViewManipulate();
-                }
 
-                if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
-                    !ImGui::IsMouseDown(ImGuiMouseButton_Middle) &&
-                    !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                    viewportGizmoMouseCapture = false;
-                }
                 if (viewportGizmoUsing ||
                     (viewportGizmoHovered &&
                      (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
@@ -8424,7 +8512,7 @@ int main(int argc, char** argv) {
                 }
 
                 const bool viewportCameraInputBlocked =
-                    previewNoticeHovered || navigationInputCaptured || toolsHovered || viewportGizmoUsing ||
+                    previewNoticeHovered || navigationInputCaptured || navigationMouse || toolsHovered || viewportGizmoUsing ||
                     (!lightMarkerInput && (viewportGizmoHovered || viewportGizmoMouseCapture));
                 const ImVec2 imageMax{imageMin.x + imageSize.x, imageMin.y + imageSize.y};
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -8476,11 +8564,11 @@ int main(int argc, char** argv) {
                         ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
                         ImGui::IsMouseDragging(ImGuiMouseButton_Right);
                     const bool zooming = io.MouseWheel != 0.0f;
-                    if(calibrated && !orbitDragging) {
+                    if(calibrated && cameraSource == CameraSource::SceneXml && !orbitDragging) {
                         if(panDragging)cameraImageView.drag(io.MouseDelta);
                         if(zooming)cameraImageView.zoomAt(io.MousePos,imageCanvasMin,available,io.MouseWheel);
                     } else if (calibrated || cameraSource == CameraSource::Viewport) {
-                        if (calibrated) {
+                        if (calibrated && cameraSource == CameraSource::SceneXml) {
                             orbit = makeOrbitCameraFromSceneCamera(displayedCamera, displayedBounds, orbit);
                             cameraSource = CameraSource::Viewport;
                             renderRequested = true;
@@ -8508,6 +8596,7 @@ int main(int argc, char** argv) {
             } else {
                 ImGui::TextWrapped("%s", training.openedReconstruction?"Loading saved reconstruction...":modelReadOnly() ? "Waiting for the launched training run to publish a scene. See Run monitor for initialization or errors." : "No preview yet");
             }
+            navigationGizmo.draw(*ImGui::GetWindowDrawList(), viewportBackgroundColor);
             drawAdjointKernelStatus(viewportCanvas,kernelStatus);
             drawViewportStatus(false);
             ImGui::End();

@@ -42,15 +42,23 @@ namespace Pale {
         glm::mat4 worldToCamera{1};
         float fx = 1, fy = 1, cx = 0, cy = 0;
         unsigned width = 0, height = 0;
+        bool orthographic = false;
         bool operator==(const SurfaceOverlapView&) const = default;
 
         bool rayTo(const glm::vec3& position, glm::vec3& direction, float& distance) const {
             if (width && height) {
                 const auto local = glm::vec3(worldToCamera * glm::vec4(position, 1));
                 if (!(local.z < 0)) return false;
-                const float x = cx + fx * local.x / -local.z;
-                const float y = cy - fy * local.y / -local.z;
+                const float depth = -local.z;
+                const float divisor = orthographic ? 1.0f : depth;
+                const float x = cx + fx * local.x / divisor;
+                const float y = cy - fy * local.y / divisor;
                 if (!(x >= 0 && x < width && y >= 0 && y < height)) return false;
+                if (orthographic) {
+                    direction = -glm::vec3(worldToCamera[0][2], worldToCamera[1][2], worldToCamera[2][2]);
+                    distance = depth;
+                    return std::isfinite(distance);
+                }
             }
             const auto delta = position - origin;
             distance = glm::length(delta);
