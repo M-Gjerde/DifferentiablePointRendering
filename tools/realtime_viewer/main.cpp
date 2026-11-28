@@ -159,6 +159,8 @@ namespace {
         std::filesystem::path assetsDir = PALE_DEFAULT_ASSET_DIR;
         std::filesystem::path pointCloudPath = "OptimizerTests/initial_points.ply";
         std::filesystem::path scenePath = "OptimizerTests/scene.xml";
+        std::filesystem::path renderPreset;
+        std::filesystem::path renderPng;
         uint32_t width = 0;
         uint32_t height = 0;
         bool sharedSlabs = false;
@@ -1746,7 +1748,11 @@ namespace {
                 return argv[++i];
             };
 
-            if (arg == "--assets") {
+            if (arg == "--render-preset") {
+                args.renderPreset = std::filesystem::absolute(requireValue("--render-preset"));
+            } else if (arg == "--render-png") {
+                args.renderPng = std::filesystem::absolute(requireValue("--render-png"));
+            } else if (arg == "--assets") {
                 args.assetsDir = requireValue("--assets");
             } else if (arg == "--pointcloud") {
                 args.pointCloudPath = requireValue("--pointcloud");
@@ -2020,6 +2026,48 @@ namespace {
             sycl::free(ptr, queue);
             ptr = nullptr;
         }
+    }
+
+    std::vector<float> renderSurfelAa(Pale::PathTracer& tracer, sycl::queue queue,
+                                      const Pale::SensorGPU& sensor, int grid) {
+        const auto& settings = tracer.getSettings();
+        if (grid == 1 || sensor.camera.orthographic || settings.sharedHeightEnabled ||
+            settings.integratorKind != Pale::IntegratorKind::photonMapping)
+            return {};
+        std::vector<Pale::SensorGPU> samples{sensor};
+        auto& sample = samples.front();
+        auto& camera = sample.camera;
+        if (!camera.hasPinholeIntrinsics) {
+            camera.fx = camera.fy = .5f * camera.height / std::tan(.5f * glm::radians(camera.fovy));
+            camera.cx = .5f * camera.width;
+            camera.cy = .5f * camera.height;
+            camera.hasPinholeIntrinsics = 1;
+        }
+        const float cx = camera.cx, cy = camera.cy;
+        std::vector<float> sum(static_cast<std::size_t>(camera.width) * camera.height * 4u, 0.f);
+        for (int y = 0; y < grid; ++y) {
+            for (int x = 0; x < grid; ++x) {
+                camera.cx = cx - ((x + .5f) / grid - .5f);
+                camera.cy = cy - ((y + .5f) / grid - .5f);
+                clearSensor(queue, sample);
+                tracer.renderForward(samples);
+                const auto rgba = Pale::downloadSensorRGBARAW(queue, sample);
+                for (std::size_t i = 0; i < sum.size(); ++i) sum[i] += rgba[i];
+            }
+        }
+        const float weight = 1.f / (grid * grid);
+        for (float& value : sum) value *= weight;
+        return sum;
+    }
+
+    std::vector<float> renderDisplayFrame(Pale::PathTracer& tracer, sycl::queue queue,
+                                          Pale::SensorGPU& sensor, int grid) {
+        auto rgb = renderSurfelAa(tracer, queue, sensor, grid);
+        if (!rgb.empty()) return rgb;
+        clearSensor(queue, sensor);
+        std::vector<Pale::SensorGPU> sensors{sensor};
+        tracer.renderForward(sensors);
+        return Pale::downloadSensorRGBARAW(queue, sensor);
     }
 
     void destroySensor(sycl::queue queue, Pale::SensorGPU& sensor) {
@@ -2724,6 +2772,30 @@ namespace {
 int main(int argc, char** argv) {
     try {
         AppArgs args = parseArgs(argc, argv);
+        YAML::Node preset(YAML::NodeType::Map);
+        std::optional<viewer::BlenderAgx> blenderAgx;
+        if (!args.renderPreset.empty()) {
+            preset = YAML::LoadFile(args.renderPreset.string());
+            const auto base = args.renderPreset.parent_path();
+            if (!args.sceneInputSpecified) {
+                args.scenePath = base / preset["scene"].as<std::string>();
+                args.pointCloudPath = base / preset["pointcloud"].as<std::string>();
+                args.sceneInputSpecified = true;
+            }
+            if (preset["blender_agx_lut"])
+                blenderAgx.emplace(base / preset["blender_agx_lut"].as<std::string>());
+        }
+        float exposure = preset["exposure"].as<float>(1.f);
+        const auto gridSetting = preset["aa_grid"];
+        bool legacySlabAa = !gridSetting && preset["slab_aa_grid"].IsDefined();
+        int aaGrid = (gridSetting ? gridSetting : preset["slab_aa_grid"]).as<int>(1);
+        if (!std::isfinite(exposure) || exposure <= 0.f ||
+            (aaGrid != 1 && aaGrid != 2 && aaGrid != 4))
+            throw std::runtime_error("Render preset needs positive exposure and an AA grid of 1, 2 or 4");
+        const auto aaGridFor = [&](const Pale::PathTracerSettings& settings) {
+            return legacySlabAa && Pale::rendererDebugMaxLocalSurfelHits(settings) == 1u ? 1 : aaGrid;
+        };
+        bool useBlenderAgx = blenderAgx.has_value();
         const std::filesystem::path assetsDirectory =
             std::filesystem::absolute(args.assetsDir).lexically_normal();
         const std::filesystem::path repositoryRoot = std::filesystem::path(PALE_DEFAULT_ASSET_DIR).parent_path();
@@ -2774,7 +2846,8 @@ int main(int argc, char** argv) {
         Pale::AssetAccessFromManager assetAccessor(assetManager);
 
         Pale::SceneBuild::BuildOptions buildOptions{};
-        buildOptions.bvhMaxLeafPoints = 4u;
+        buildOptions.bvhMaxLeafPoints = preset["bvh_max_leaf_points"].as<uint32_t>(4u);
+        if (buildOptions.bvhMaxLeafPoints == 0u) throw std::runtime_error("BVH leaves must hold at least one point");
         buildOptions.pointBvhUseBinnedSah = true;
 
         Pale::SceneBuild::BuildProducts buildProducts =
@@ -2831,12 +2904,39 @@ int main(int argc, char** argv) {
         }
 
         Pale::PathTracerSettings settings = makeDefaultSettings();
+        settings.rendererDebugMaxLocalSurfelHits = preset["max_local_surfel_hits"].as<uint32_t>(settings.rendererDebugMaxLocalSurfelHits);
+        settings.rendererDebugLocalLayerDepthEpsilon = preset["local_layer_depth_epsilon"].as<float>(settings.rendererDebugLocalLayerDepthEpsilon);
+        settings.rendererDebugLocalLayerNormalCosineThreshold = preset["local_layer_normal_cosine_threshold"].as<float>(settings.rendererDebugLocalLayerNormalCosineThreshold);
+        settings.rendererDebugShareLocalLayerDirectLighting = preset["share_local_layer_direct_lighting"].as<bool>(settings.rendererDebugShareLocalLayerDirectLighting);
+        settings.random.seed = preset["seed"].as<uint32_t>(settings.random.seed);
+        settings.numForwardPasses = preset["forward_passes"].as<uint32_t>(settings.numForwardPasses);
+        settings.photonsPerLaunch = preset["photons"].as<uint64_t>(settings.photonsPerLaunch);
+        settings.maxBounces = preset["bounces"].as<uint32_t>(settings.maxBounces);
         if (args.sharedSlabs) {
             settings.sharedHeightEnabled = true;
             settings.sharedHeightTwoSlabs = true;
             settings.sharedHeightShading = 2;
         }
         Pale::PathTracer tracer(queue, settings);
+        if (!args.renderPng.empty()) {
+            if (buildProducts.cameraGPUs.empty()) throw std::runtime_error("PNG capture needs a scene camera");
+            tracer.setScene(sceneGpu, buildProducts);
+            auto capture = createSensor(queue, buildProducts.cameraGPUs.front());
+            try {
+                const auto raw = renderDisplayFrame(tracer, queue, capture, aaGridFor(settings));
+                const viewer::DisplayTransform display{exposure, 1.f, true, useBlenderAgx ? &*blenderAgx : nullptr};
+                const auto png = viewer::straightAlphaScreenshot(raw, display);
+                if (!Pale::Utils::savePNG(args.renderPng, png, capture.width, capture.height))
+                    throw std::runtime_error("Failed to save " + args.renderPng.string());
+            } catch (...) {
+                destroySensor(queue, capture);
+                Pale::SceneUpload::freeBuffers(sceneGpu, queue);
+                throw;
+            }
+            destroySensor(queue, capture);
+            Pale::SceneUpload::freeBuffers(sceneGpu, queue);
+            return 0;
+        }
         Pale::SceneBuild::BuildProducts renderBuildProducts = buildProducts;
         renderBuildProducts.cameraGPUs.clear();
         Pale::SensorGPU sensor{};
@@ -2845,7 +2945,8 @@ int main(int argc, char** argv) {
         bool tracerDirty = true;
         bool autoRender = true;
         bool renderRequested = true;
-        CameraSource cameraSource = CameraSource::Viewport;
+        CameraSource cameraSource = preset["scene_camera"].as<bool>(false) && !buildProducts.cameraGPUs.empty()
+            ? CameraSource::SceneXml : CameraSource::Viewport;
         int selectedSceneCameraIndex = 0;
         bool walkNavigationActive = false;
         OrbitCamera orbitBeforeWalk = orbit;
@@ -2943,7 +3044,6 @@ int main(int argc, char** argv) {
         bool viewportPickArmed = false;
         std::string surfelLightStatus;
         std::string surfelEditorStatus;
-        float exposure = 1.0f;
         float gamma = 1.0f;
         bool useSrgbEncoding = true;
         double lastRenderMs = 0.0;
@@ -5389,11 +5489,15 @@ int main(int argc, char** argv) {
 
             std::vector<Pale::SensorGPU> renderSensors{sensor};
             const auto start = std::chrono::steady_clock::now();
+            auto aa = viewImageMode == ViewImageMode::Rendered && !interactivePreview
+                ? renderSurfelAa(tracer, queue, sensor, aaGridFor(activeTracerSettings)) : std::vector<float>{};
+            // Restore center-ray buffers for picking, diagnostics and adjoints after the AA samples.
+            if (!aa.empty()) clearSensor(queue, sensor);
             tracer.renderForward(renderSensors);
             // Loss/adjoint passes overwrite this buffer. Keep the completed primal
             // and its display settings together, even during diagnostic views.
-            rawRenderPixels = Pale::downloadSensorRGBARAW(queue, sensor);
-            displayedTransform = {exposure, gamma, useSrgbEncoding};
+            rawRenderPixels = aa.empty() ? Pale::downloadSensorRGBARAW(queue, sensor) : std::move(aa);
+            displayedTransform = {exposure, gamma, useSrgbEncoding, useBlenderAgx ? &*blenderAgx : nullptr};
             if (viewImageMode == ViewImageMode::RawLinear) {
                 rawLinearPixels = viewer::rawLinearPreview(rawRenderPixels);
             } else {
@@ -6219,14 +6323,14 @@ int main(int argc, char** argv) {
             const auto modelBounds = orbitVideoBounds.model;
             const auto initialOffset = Pale::sycl2glm(displayedCamera.pos) - camera.target;
             const auto renderSettings = makeViewerDebugSettings(settings, ViewImageMode::Rendered);
-            const viewer::DisplayTransform display{exposure, gamma, useSrgbEncoding};
+            const viewer::DisplayTransform display{exposure, gamma, useSrgbEncoding, useBlenderAgx ? &*blenderAgx : nullptr};
             const auto background = viewportBackgroundColor;
             const bool forceOpacity = forceRenderOpacity;
             auto result = std::make_shared<std::string>();
             orbitVideoStatus.clear();
             orbitVideoFrames.store(0);
             cancelOrbitVideo.store(false);
-            startPreviewJob([&, directory, width, height, fps, frameCount, elevation, initialOffset, camera = camera,
+            startPreviewJob([&, directory, width, height, fps, frameCount, elevation, initialOffset, camera = camera, grid = aaGridFor(renderSettings),
                     modelBounds, renderSettings, display, background, forceOpacity, result]() mutable {
                 try {
                     viewer::OrbitVideoEncoder encoder(cancelOrbitVideo);
@@ -6244,18 +6348,14 @@ int main(int argc, char** argv) {
                     exportSensor.exposureCorrection = display.exposure;
                     exportSensor.gammaCorrection = display.gamma;
                     exportSensor.useSrgbEncoding = display.srgb;
-                    std::vector<Pale::SensorGPU> sensors(1);
                     viewer::ViewportBackgroundCache backgroundCache;
                     std::vector<uint8_t> framePixels;
                     Pale::ScopedTimerDetail::setProfilingEnabled(false);
                     for (int frame = 0; frame < frameCount && !cancelOrbitVideo.load(); ++frame) {
                         camera.lookAlong(-viewer::orbitVideoEyeDirection(initialOffset, elevation, frame, frameCount));
                         exportSensor.camera = camera.makeGpuCamera(width, height);
-                        clearSensor(queue, exportSensor);
-                        sensors[0] = exportSensor;
-                        exportTracer.renderForward(sensors, false);
-                        queue.wait_and_throw();
-                        composeViewportPixels(Pale::downloadSensorRGBARAW(queue, exportSensor), display, camera,
+                        auto rgb = renderDisplayFrame(exportTracer, queue, exportSensor, grid);
+                        composeViewportPixels(rgb, display, camera,
                             exportSensor.camera, modelBounds, width, height, false, forceOpacity,
                             background, backgroundCache, framePixels);
                         if (!encoder.writeFrame(framePixels)) break;
@@ -7319,10 +7419,21 @@ int main(int argc, char** argv) {
                     if (ImGui::DragFloat("Exposure", &exposure, 0.01f, 0.001f, 100.0f, "%.3f")) {
                         renderRequested = true;
                     }
-                    if (ImGui::Checkbox("sRGB output", &useSrgbEncoding)) {
+                    if (blenderAgx && ImGui::Checkbox("Blender AgX (sRGB)", &useBlenderAgx))
+                        renderRequested = true;
+                    const int currentGrid = aaGridFor(settings);
+                    int aaIndex = currentGrid == 4 ? 2 : (currentGrid == 2 ? 1 : 0);
+                    if (ImGui::Combo("Surfel anti-aliasing", &aaIndex, "Off\0" "4 rays/pixel\0" "16 rays/pixel\0")) {
+                        aaGrid = 1 << aaIndex;
+                        legacySlabAa = false;
                         renderRequested = true;
                     }
-                    if (!useSrgbEncoding &&
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Average subpixel rays in linear light for depth-ordered and slab compositing.");
+                    if (!useBlenderAgx && ImGui::Checkbox("sRGB output", &useSrgbEncoding)) {
+                        renderRequested = true;
+                    }
+                    if (!useBlenderAgx && !useSrgbEncoding &&
                         ImGui::DragFloat("Gamma", &gamma, 0.01f, 0.1f, 5.0f, "%.3f")) {
                         renderRequested = true;
                     }

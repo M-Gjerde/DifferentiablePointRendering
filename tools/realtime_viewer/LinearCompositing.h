@@ -1,4 +1,5 @@
 #pragma once
+#include "BlenderAgx.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +12,7 @@ namespace viewer {
         float exposure = 1.0f;
         float gamma = 1.0f;
         bool srgb = true;
+        const BlenderAgx* agx = nullptr;
     };
 
     inline float encodeDisplay(float linear, const DisplayTransform& transform) {
@@ -40,6 +42,20 @@ namespace viewer {
         for (std::size_t i = 0; i < raw.size(); i += 4u) {
             const bool hasContribution = raw[i+3] > 0 || raw[i] != 0 || raw[i+1] != 0 || raw[i+2] != 0;
             const float alpha = forceOpaque && hasContribution ? 1.0f : std::clamp(raw[i+3], 0.0f, 1.0f);
+            if (transform.agx) {
+                if (hasContribution) {
+                    const float coverage = std::clamp(raw[i+3], 0.f, 1.f);
+                    const float weight = coverage > 0.f ? coverage : 1.f;
+                    const float gain = transform.exposure / weight;
+                    const auto fg = transform.agx->displayLinear(raw[i]*gain, raw[i+1]*gain, raw[i+2]*gain);
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        const float bg = alpha < 1.f ? decodeDisplay(background[i+c] / 255.f, {}) : 0.f;
+                        background[i+c] = displayByte(encodeDisplay(weight*fg[c] + (1.f-alpha)*bg, {}));
+                    }
+                }
+                background[i+3] = 255u;
+                continue;
+            }
             for (std::size_t c = 0; c < 3u; ++c) {
                 const float bg = decodeDisplay(background[i+c] / 255.0f, transform);
                 const float linear = raw[i+c] * transform.exposure + (1.0f - alpha) * bg;
@@ -59,6 +75,12 @@ namespace viewer {
             const float alpha = std::clamp(raw[i+3], 0.0f, 1.0f);
             pixels[i+3] = displayByte(alpha);
             if (pixels[i+3] == 0u) continue;
+            if (transform.agx) {
+                const float gain = transform.exposure / alpha;
+                const auto fg = transform.agx->displayLinear(raw[i]*gain, raw[i+1]*gain, raw[i+2]*gain);
+                for (std::size_t c = 0; c < 3; ++c) pixels[i+c] = displayByte(encodeDisplay(fg[c], {}));
+                continue;
+            }
             for (std::size_t c = 0; c < 3u; ++c)
                 pixels[i+c] = displayByte(encodeDisplay(raw[i+c] / alpha * transform.exposure, transform));
         }

@@ -294,6 +294,17 @@ connection. An informational AdaptiveCpp JIT warning alone is not an error.
 ./build-realtime/PaleRealtimeViewer --assets Assets --pointcloud points.ply --scene cbox.xml
 ```
 
+For a saved figure, launch `PaleRealtimeViewer --render-preset /path/to/viewer.yaml`.
+Add `--render-png /path/to/frame.png` to capture the first scene camera without a window.
+The preset resolves `scene`, `pointcloud` and optional `blender_agx_lut` paths relative
+to the YAML file. Set `scene_camera: true` to open the calibrated view. The AgX option
+uses Blender 5.3's `AgX_Base_sRGB.cube`, the base look and the sRGB display. Exposure
+is a linear multiplier before the view transform. Under **Display → Appearance**,
+**Surfel anti-aliasing** sets the same sampling grid for depth ordering and slab
+compositing. In a preset, `aa_grid: 4` averages 16 perspective rays per pixel in
+linear light. Use `aa_grid: 2` for four rays or `aa_grid: 1` for one. Older
+presets with only `slab_aa_grid` retain their slab-only setting.
+
 **Scene Tree** groups surfel geometry, mesh materials, emitters and
 calibrated cameras. Search by name and click a row to select it. Clicking a
 camera also opens **Ground truth comparison**. Large surfel-emitter collections
